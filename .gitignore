@@ -62,7 +62,8 @@ Thumbs.db
 *.zip
 
 # Build output, managed deps, and scratch (added 2026-06-03)
-build_desktop/
+# build_*/ catches any alternate/side-by-side build dir (build_desktop, build_v5_eth, ...)
+build_*/
 managed_components/
 dependencies.lock
 scratch/
