@@ -34,7 +34,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipServer.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
                     REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns
-                    PRIV_REQUIRES ${EXTRA_REQUIRES})
+                    PRIV_REQUIRES ${EXTRA_REQUIRES} esp_wifi)
 
 # Issue #49: the display transport reserves Core 1 for the LVGL graphics task and
 # runs the SIP engine on Core 0, so the UDP receiver (which carries SIP signaling)
