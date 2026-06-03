@@ -24,9 +24,18 @@
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_idf_version.h"
 #include "esp_eth.h"
+// W5500 driver headers: ESP-IDF v6.0+ split the W5500 MAC/PHY driver out of the
+// core esp_eth component into the standalone `espressif/w5500` managed component,
+// which ships these dedicated headers. On v5.x the W5500 API (eth_w5500_config_t,
+// ETH_W5500_DEFAULT_CONFIG, esp_eth_mac_new_w5500, esp_eth_phy_new_w5500) is
+// declared by esp_eth.h above, and these headers do not exist — including them
+// unconditionally is what broke the `eth` CI matrix on v5.1.2/v5.2.1.
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
 #include "esp_eth_mac_w5500.h"
 #include "esp_eth_phy_w5500.h"
+#endif
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "esp_mac.h"     // esp_read_mac, ESP_MAC_ETH
