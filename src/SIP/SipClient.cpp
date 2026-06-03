@@ -1,9 +1,8 @@
 #include "SipClient.hpp"
 
 SipClient::SipClient()
-	: _expiresSeconds(0)
+	: _address{}, _expiresSeconds(0)
 {
-	_address = {};
 }
 
 SipClient::SipClient(std::string number, sockaddr_in address, int expiresSeconds)

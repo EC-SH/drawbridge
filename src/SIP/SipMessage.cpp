@@ -361,7 +361,7 @@ void SipMessage::setContentLength(std::string value)
 	reparse();
 }
 
-void SipMessage::addHeader(std::string name, std::string value)
+void SipMessage::addHeader(const std::string& name, const std::string& value)
 {
 	size_t clPos = findHeader(_contentLength);
 	if (clPos != std::string::npos)

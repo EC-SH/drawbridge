@@ -596,7 +596,7 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 					auto answeringClient = clientOpt.value();
 
 					SipSdpMessage* sdpMessage = nullptr;
-					if (data && data->hasSdp())
+					if (data->hasSdp())
 					{
 						sdpMessage = static_cast<SipSdpMessage*>(data.get());
 					}
@@ -664,7 +664,7 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 			}
 
 			SipSdpMessage* sdpMessage = nullptr;
-			if (data && data->hasSdp())
+			if (data->hasSdp())
 			{
 				sdpMessage = static_cast<SipSdpMessage*>(data.get());
 			}

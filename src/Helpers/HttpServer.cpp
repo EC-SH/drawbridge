@@ -571,7 +571,7 @@ static std::string urlDecode(const std::string& src)
 {
 	std::string ret;
 	char ch = '\0';
-	int ii = 0;
+	unsigned int ii = 0;
 	for (size_t pos = 0; pos < src.length(); ++pos) {
 		if (src[pos] == '+') {
 			ret += ' ';
