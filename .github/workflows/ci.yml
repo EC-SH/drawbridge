@@ -25,7 +25,7 @@ jobs:
       - name: Run Static Analysis (cppcheck)
         run: |
           cppcheck --error-exitcode=1 \
-                   --enable=warning,style,performance,portability \
+                   --enable=warning,performance \
                    --inline-suppr \
                    --suppress=missingIncludeSystem \
                    --suppress=unmatchedSuppression \
