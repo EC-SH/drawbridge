@@ -27,6 +27,8 @@
 #include "esp_eth.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "esp_mac.h"     // esp_read_mac, ESP_MAC_ETH
+#include "esp_timer.h"   // esp_timer_get_time
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"

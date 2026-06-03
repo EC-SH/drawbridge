@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <vector>
 
-#if defined(ESP_PLATFORM)
+#if defined(POCKETDIAL_HAS_WIFI)
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -617,7 +617,7 @@ static std::string getFormParam(const std::string& body, const std::string& key)
 
 void HttpServer::sendApiWifiScan(int sock)
 {
-#if defined(ESP_PLATFORM)
+#if defined(POCKETDIAL_HAS_WIFI)
 	// Switch mode to AP+STA so we can scan
 	wifi_mode_t current_mode;
 	if (esp_wifi_get_mode(&current_mode) == ESP_OK) {
@@ -685,7 +685,7 @@ void HttpServer::sendApiWifiConnect(int sock, const std::string& body)
 		return;
 	}
 
-#if defined(ESP_PLATFORM)
+#if defined(POCKETDIAL_HAS_WIFI)
 	nvs_handle_t nvs_handle;
 	esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
 	if (err == ESP_OK) {
@@ -713,7 +713,7 @@ void HttpServer::sendApiWifiConnect(int sock, const std::string& body)
 
 void HttpServer::sendApiWifiModeAp(int sock)
 {
-#if defined(ESP_PLATFORM)
+#if defined(POCKETDIAL_HAS_WIFI)
 	nvs_handle_t nvs_handle;
 	esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
 	if (err == ESP_OK) {
