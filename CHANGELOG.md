@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (fix/esp-idf-ci-failures) - 2026-06-03
+
+### Fixed
+- Isolate `esp_wifi` requirement in `main/CMakeLists.txt` to only `wifi` and `display` transport components, ensuring the `eth` transport compiles without wifi dependencies.
+- Add `cppcheck` suppressions in `.github/workflows/ci.yml` for third-party QR code files (`qrcode.c` and `qrcode.h`).
+
 ## Unreleased (fix/cppcheck-warnings) - 2026-06-03
 
 ### Fixed

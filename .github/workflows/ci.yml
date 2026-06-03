@@ -29,6 +29,8 @@ jobs:
                    --inline-suppr \
                    --suppress=missingIncludeSystem \
                    --suppress=unmatchedSuppression \
+                   --suppress=*:main/ui/qrcode.c \
+                   --suppress=*:main/ui/qrcode.h \
                    -I src/Helpers -I src/SIP -I main \
                    src/ main/
 
