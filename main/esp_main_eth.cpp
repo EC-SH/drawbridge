@@ -140,11 +140,10 @@ static esp_eth_handle_t eth_init_w5500(void)
     devcfg.spics_io_num   = W5500_CS_GPIO;
     devcfg.queue_size     = 20;
 
-    spi_device_handle_t spi_handle = nullptr;
-    ESP_ERROR_CHECK(spi_bus_add_device(W5500_SPI_HOST, &devcfg, &spi_handle));
-
     // ── MAC config ──────────────────────────────────────────────────────
-    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(spi_handle);
+    // ESP-IDF v5.1+ changed the macro to accept (spi_host, &spi_devcfg);
+    // the driver now allocates the SPI device internally.
+    eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(W5500_SPI_HOST, &devcfg);
     w5500_config.int_gpio_num = static_cast<gpio_num_t>(W5500_INT_GPIO);
 
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
