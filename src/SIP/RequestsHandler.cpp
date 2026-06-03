@@ -110,7 +110,40 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 		}
 
 		maybeSweep();
-		auto it = _handlers.find(std::string(request->getType()));
+
+		// Route responses by parsed numeric status code so dispatch is immune to
+		// reason-phrase variation (e.g. "486 Busy" vs "486 Busy Here"). Requests and
+		// anything without a status line fall back to the method/start-line token.
+		std::string handlerKey;
+		auto status = request->getStatusInfo();
+		if (status.has_value())
+		{
+			switch (status->code)
+			{
+				case 100: handlerKey = SipMessageTypes::TRYING;             break;
+				case 180: handlerKey = SipMessageTypes::RINGING;            break;
+				case 200: handlerKey = SipMessageTypes::OK;                 break;
+				case 480: handlerKey = SipMessageTypes::UNAVAILABLE;        break;
+				case 486: handlerKey = SipMessageTypes::BUSY;               break;
+				case 487: handlerKey = SipMessageTypes::REQUEST_TERMINATED; break;
+				default:  handlerKey = std::string(request->getType());     break;
+			}
+		}
+		else
+		{
+			handlerKey = std::string(request->getType());
+		}
+
+		// Surface inbound client-error (4xx) responses once. Deferred via _logQueue
+		// so the write happens outside the lock (Issue #24); replaces the per-parse
+		// printf the parser used to do. softFail -> warning (stdout), else error (stderr).
+		if (status.has_value() && status->klass == PocketDial::SipStatusClass::ClientError)
+		{
+			queueLog("[SIP] " + std::string(status->softFail ? "WARN " : "ERROR ")
+				+ std::string(request->getHeader()), !status->softFail);
+		}
+
+		auto it = _handlers.find(handlerKey);
 		if (it != _handlers.end())
 		{
 			it->second(std::move(request));

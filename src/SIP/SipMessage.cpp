@@ -49,6 +49,7 @@ void SipMessage::parse()
 	_contact = {};
 	_contactNumber = {};
 	_contentLength = {};
+	_statusInfo.reset();
 
 	// 1. Separate header block and body payload
 	size_t bodyStart = _messageStr.find("\r\n\r\n");
@@ -92,6 +93,7 @@ void SipMessage::parse()
 		{
 			_type = _header;
 		}
+		_statusInfo = PocketDial::parseSipStatusLine(_header);
 		return;
 	}
 
@@ -101,6 +103,7 @@ void SipMessage::parse()
 	{
 		_type = _header;
 	}
+	_statusInfo = PocketDial::parseSipStatusLine(_header);
 
 	// Helper to match headers case-insensitively and handle compact names
 	auto matchHeader = [](std::string_view line, std::string_view fullHdr, std::string_view compactHdr = "") -> bool {

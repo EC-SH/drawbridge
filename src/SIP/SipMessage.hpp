@@ -14,6 +14,9 @@
 #include <string>
 #include <string_view>
 #include <stdexcept>
+#include <optional>
+
+#include "SipStatus.hpp"
 
 class SipMessage
 {
@@ -54,6 +57,7 @@ public:
 	std::string_view getContactNumber() const;
 	std::string_view getContentLength() const;
 	sockaddr_in getSource() const;
+	std::optional<PocketDial::SipStatusInfo> getStatusInfo() const { return _statusInfo; }
 
 	// Issue #42: virtual SDP probe replaces dynamic_cast so call setup works
 	// on the Arduino ESP32 toolchain, which builds with RTTI disabled (-fno-rtti).
@@ -82,6 +86,7 @@ protected:
 	std::string_view _contentLength;
 	std::string _messageStr;
 	bool _hasSdp = false;
+	std::optional<PocketDial::SipStatusInfo> _statusInfo;
 
 	sockaddr_in _src{};
 };

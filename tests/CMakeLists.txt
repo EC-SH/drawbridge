@@ -17,7 +17,9 @@ include_directories(${gtest_SOURCE_DIR}/include ../src/SIP ../src/Helpers)
 add_executable(sip_parser_tests
     SipMessage_test.cpp
     SipMessage_header_test.cpp
+    SipStatus_test.cpp
     ../src/SIP/SipMessage.cpp
+    ../src/SIP/SipStatus.cpp
 )
 
 target_link_libraries(sip_parser_tests PRIVATE gtest gtest_main)
