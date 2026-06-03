@@ -25,6 +25,8 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_eth.h"
+#include "esp_eth_mac_w5500.h"
+#include "esp_eth_phy_w5500.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "esp_mac.h"     // esp_read_mac, ESP_MAC_ETH
