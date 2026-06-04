@@ -2,6 +2,7 @@
 #include <cstdio>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -45,8 +46,6 @@ static const char *TAG = "main_display";
 #define TOUCH_RST   12
 #define TOUCH_INT   11
 
-#define BATTERY_ADC_PIN 5
-
 // Onboarding credentials
 #define ONBOARDING_SSID "My-Ap"
 #define ONBOARDING_PASS "12345678"
@@ -55,6 +54,7 @@ static const char *TAG = "main_display";
 static SipServer* g_sipServer = nullptr;
 static HttpServer* g_httpServer = nullptr;
 static DnsServer* g_dnsServer = nullptr;
+static QueueHandle_t s_log_queue = NULL;
 
 static std::string g_localIp = "192.168.4.1";
 static int g_stationNum = 0;
@@ -64,8 +64,6 @@ static bool g_setupComplete = false;
 static int prevStations = -1;
 static int prevExtensions = -1;
 static int prevSessions = -1;
-static float batteryVolts = 0.0f;
-static int batteryPercent = -1;
 
 // Forward event declarations
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
@@ -84,7 +82,7 @@ extern "C" {
                 len--;
             }
             if (len > 0) {
-                ui_add_log(buf);
+                xQueueSend(s_log_queue, buf, 0);  // non-blocking; drop if full
             }
         }
         if (original_log_vprintf) {
@@ -184,8 +182,11 @@ static esp_lcd_touch_handle_t hardware_touch_init() {
 // ─── LVGL Tick & Execution loops ───
 static void lvgl_task(void *pvParameters) {
     ESP_LOGI("LVTask", "Core 1 Graphics task running...");
+    char log_buf[256];
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10));
+        while (xQueueReceive(s_log_queue, log_buf, 0) == pdTRUE)
+            ui_add_log(log_buf);
         lv_timer_handler();
     }
 }
@@ -302,11 +303,6 @@ static void system_status_task(void *pvParameters) {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(500));
         ticks++;
-
-        // Read battery voltage from Divider GPIO 5 (Simulated or ADC read)
-        batteryVolts = 3.7f + ((float)(rand() % 40) / 100.0f); // Simulated 3.7V - 4.1V
-        batteryPercent = (int)((batteryVolts - 3.3f) / (4.2f - 3.3f) * 100.0f);
-        ui_set_battery(batteryVolts, batteryPercent);
 
         if (g_setupComplete) {
             uint32_t uptime = esp_timer_get_time() / 1000000;
@@ -426,6 +422,7 @@ extern "C" void app_main(void) {
     ui_init();
 
     // Intercept ESP_LOGI and route logs to console log textarea
+    s_log_queue = xQueueCreate(8, 256);
     original_log_vprintf = esp_log_set_vprintf(screen_log_vprintf);
 
     // 4. Retrieve saved operational Wi-Fi configuration from NVS
