@@ -2,6 +2,7 @@
 #include "HttpServer.hpp"
 #include "RequestsHandler.hpp"
 #include "AdminAuth.hpp"
+#include "OtaUpdater.hpp"
 #include "index_html.h"
 #include "IPHelper.hpp"
 #include <cstring>
@@ -16,6 +17,15 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_system.h"
+#endif
+
+#if defined(ESP_PLATFORM)
+// OTA reboot path needs esp_restart() + a deferred-restart FreeRTOS task. These
+// are available on EVERY ESP transport (WiFi, Ethernet, display), not just
+// POCKETDIAL_HAS_WIFI, so guard them on the platform rather than the transport.
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #endif
 
 // Captive-portal decay hold. The display app's decay watchdog reads this; the web
@@ -168,6 +178,78 @@ void HttpServer::handleClient(int clientSock)
 	// If the headers indicate a Content-Length larger than what arrived in the
 	// first segment, keep reading until we have it all.
 	std::string raw(buf.data(), static_cast<size_t>(bytesRead));
+
+	// --- OTA upload interception (firmware streaming) -------------------------
+	// A firmware image is >1.5 MB, so it must NOT flow through the 16 KB-capped
+	// buffered path below. As soon as we have the request line + full header
+	// block in the first recv, detect "POST /api/ota/upload" and hand off to the
+	// streaming handler, which drains the body in fixed chunks. We require the
+	// header terminator (\r\n\r\n) to be present in this first segment — it is
+	// for any real HTTP client (headers are a few hundred bytes, the 4 KB recv
+	// covers them; the multi-MB part is the body, which we stream).
+	{
+		size_t reqLineEnd = raw.find("\r\n");
+		size_t hdrEnd     = raw.find("\r\n\r\n");
+		if (reqLineEnd != std::string::npos && hdrEnd != std::string::npos)
+		{
+			// Cheap method+path probe on the request line only.
+			const std::string reqLine = raw.substr(0, reqLineEnd);
+			if (reqLine.compare(0, 5, "POST ") == 0 &&
+			    reqLine.find(" /api/ota/upload ") != std::string::npos)
+			{
+				// Parse just the header block (parseRequest tolerates a truncated
+				// body) to get method/path/origin/host/cookie for the auth gate.
+				HttpRequest otaReq = parseRequest(raw.substr(0, hdrEnd + 4));
+
+				// Same-origin + (provisioned ? authed) gate — identical policy to
+				// the other mutating endpoints.
+				if (!isSameOrigin(otaReq))
+				{
+					sendResponse(clientSock, 403, "Forbidden", "application/json",
+					             "{\"error\":\"cross-origin request rejected\"}");
+					closeSocket(clientSock);
+					return;
+				}
+				if (AdminAuth::isProvisioned() && !isAuthed(otaReq))
+				{
+					sendResponse(clientSock, 401, "Unauthorized", "application/json",
+					             "{\"error\":\"authentication required\"}");
+					closeSocket(clientSock);
+					return;
+				}
+
+				// Parse Content-Length WITHOUT the 16 KB cap (firmware is large).
+				size_t otaLen = 0;
+				size_t cl = raw.find("Content-Length:");
+				if (cl == std::string::npos) cl = raw.find("content-length:");
+				if (cl != std::string::npos && cl < hdrEnd)
+				{
+					size_t p = cl + 15;
+					while (p < hdrEnd && std::isspace(static_cast<unsigned char>(raw[p]))) ++p;
+					while (p < hdrEnd && std::isdigit(static_cast<unsigned char>(raw[p])))
+					{
+						// Clamp to a sane ceiling (32 MB > 16 MB flash) to bound work.
+						if (otaLen > 32u * 1024u * 1024u) { otaLen = 32u * 1024u * 1024u; break; }
+						otaLen = otaLen * 10 + static_cast<size_t>(raw[p] - '0');
+						++p;
+					}
+				}
+				if (otaLen == 0)
+				{
+					sendResponse(clientSock, 411, "Length Required", "application/json",
+					             "{\"error\":\"OTA upload requires a non-zero Content-Length\"}");
+					closeSocket(clientSock);
+					return;
+				}
+
+				handleOtaUpload(clientSock, raw, hdrEnd + 4, otaLen);
+				closeSocket(clientSock);
+				return;
+			}
+		}
+	}
+	// --- end OTA interception -------------------------------------------------
+
 	size_t clPos = raw.find("Content-Length:");
 	if (clPos == std::string::npos)
 		clPos = raw.find("content-length:");
@@ -369,6 +451,32 @@ void HttpServer::handleClient(int clientSock)
 			sendApiAdminLogout(clientSock, req);
 		}
 	}
+	else if (req.method == "GET" && req.path == "/api/ota/status")
+	{
+		// Read-only OTA introspection (partition labels + pending flag). No
+		// secrets, so it's readable like /api/status — safe pre-auth.
+		sendApiOtaStatus(clientSock);
+	}
+	else if (req.method == "POST" && req.path == "/api/ota/reboot")
+	{
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
+		else
+		{
+			sendApiOtaReboot(clientSock);
+		}
+	}
+	// NOTE: POST /api/ota/upload is handled earlier in handleClient() via the
+	// streaming interception (it must bypass the 16 KB buffered body path), so
+	// it deliberately does NOT appear in this route table.
 	else
 	{
 		send404(clientSock);
@@ -1018,6 +1126,160 @@ void HttpServer::sendApiAdminLogout(int sock, const HttpRequest& req)
 	std::string cookie = "Set-Cookie: pd_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0";
 	sendResponseWithHeader(sock, 200, "OK", "application/json",
 	                       "{\"status\":\"ok\"}", cookie);
+}
+
+bool HttpServer::streamBody(int sock, const char* prefix, size_t prefixLen,
+                            size_t contentLength,
+                            const std::function<bool(const uint8_t*, size_t)>& chunkSink)
+{
+	size_t consumed = 0;
+
+	// 1) Feed any body bytes that already arrived in the header recv.
+	if (prefixLen > 0)
+	{
+		size_t take = (prefixLen <= contentLength) ? prefixLen : contentLength;
+		if (take > 0 && !chunkSink(reinterpret_cast<const uint8_t*>(prefix), take))
+			return false;
+		consumed += take;
+	}
+
+	// 2) Drain the rest off the socket in fixed 4 KB chunks. Heap-allocated
+	//    (the accept-loop thread has a ~3 KB pthread stack on ESP — see
+	//    handleClient — so a stack buffer would overflow). The per-socket
+	//    SO_RCVTIMEO (5 s, set in handleClient) bounds a stalled sender.
+	std::vector<uint8_t> chunk(4096);
+	while (consumed < contentLength)
+	{
+		size_t want = contentLength - consumed;
+		if (want > chunk.size()) want = chunk.size();
+#if defined _WIN32 || defined _WIN64
+		int n = recv(sock, reinterpret_cast<char*>(chunk.data()), static_cast<int>(want), 0);
+#else
+		int n = static_cast<int>(recv(sock, chunk.data(), want, 0));
+#endif
+		if (n <= 0)
+			return false; // peer closed early or timed out → incomplete body
+		if (!chunkSink(chunk.data(), static_cast<size_t>(n)))
+			return false;
+		consumed += static_cast<size_t>(n);
+	}
+	return consumed == contentLength;
+}
+
+void HttpServer::handleOtaUpload(int sock, const std::string& alreadyRead,
+                                 size_t bodyStart, size_t contentLength)
+{
+	const char*  prefix    = (bodyStart <= alreadyRead.size())
+	                             ? alreadyRead.data() + bodyStart : nullptr;
+	const size_t prefixLen = (bodyStart <= alreadyRead.size())
+	                             ? alreadyRead.size() - bodyStart : 0;
+
+#if defined(ESP_PLATFORM)
+	// Device path: stream the body straight into the inactive OTA slot.
+	OtaUpdater ota;
+	if (!ota.begin(contentLength))
+	{
+		// Drain the body so the client's send completes and we can reply cleanly
+		// instead of resetting the connection mid-upload.
+		streamBody(sock, prefix, prefixLen, contentLength,
+		           [](const uint8_t*, size_t) { return true; });
+		sendResponse(sock, 500, "Internal Server Error", "application/json",
+		             "{\"error\":\"ota begin failed: " + jsonEscape(ota.lastError()) + "\"}");
+		return;
+	}
+
+	bool writeOk = streamBody(sock, prefix, prefixLen, contentLength,
+		[&ota](const uint8_t* p, size_t n) { return ota.write(p, n); });
+
+	if (!writeOk)
+	{
+		ota.abort();
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"incomplete upload or flash write failed: "
+		             + jsonEscape(ota.lastError()) + "\"}");
+		return;
+	}
+
+	if (!ota.end())
+	{
+		// end() already released the handle; report the validation error.
+		sendResponse(sock, 422, "Unprocessable Entity", "application/json",
+		             "{\"error\":\"image rejected: " + jsonEscape(ota.lastError()) + "\"}");
+		return;
+	}
+
+	if (!ota.activate())
+	{
+		sendResponse(sock, 500, "Internal Server Error", "application/json",
+		             "{\"error\":\"activate failed: " + jsonEscape(ota.lastError()) + "\"}");
+		return;
+	}
+
+	std::ostringstream json;
+	json << "{\"status\":\"ok\",\"bytes\":" << ota.bytesWritten()
+	     << ",\"rebootRequired\":true"
+	     << ",\"nextPartition\":\"" << jsonEscape(OtaUpdater::nextUpdatePartitionLabel()) << "\""
+	     << ",\"message\":\"image staged; POST /api/ota/reboot to boot it\"}";
+	sendResponse(sock, 200, "OK", "application/json", json.str());
+#else
+	// Host stub: real flashing is impossible off-device. Drain the body (bounded
+	// by Content-Length + the 5 s socket timeout) so curl completes cleanly, then
+	// return 501. We do NOT simulate success — a 200 here could be mistaken for a
+	// real update in tooling/CI.
+	(void)contentLength;
+	streamBody(sock, prefix, prefixLen, contentLength,
+	           [](const uint8_t*, size_t) { return true; });
+	sendResponse(sock, 501, "Not Implemented", "application/json",
+	             "{\"error\":\"OTA only available on device\"}");
+#endif
+}
+
+void HttpServer::sendApiOtaStatus(int sock)
+{
+	std::ostringstream json;
+	json << "{";
+	json << "\"running\":\""  << jsonEscape(OtaUpdater::runningPartitionLabel())    << "\",";
+	json << "\"boot\":\""     << jsonEscape(OtaUpdater::bootPartitionLabel())       << "\",";
+	json << "\"next\":\""     << jsonEscape(OtaUpdater::nextUpdatePartitionLabel()) << "\",";
+	json << "\"pendingVerify\":" << (OtaUpdater::isPendingVerify() ? "true" : "false") << ",";
+#if defined(ESP_PLATFORM)
+	json << "\"otaSupported\":true,";
+#else
+	json << "\"otaSupported\":false,";
+#endif
+	json << "\"error\":\"\"";
+	json << "}";
+	sendResponse(sock, 200, "OK", "application/json", json.str());
+}
+
+void HttpServer::sendApiOtaReboot(int sock)
+{
+#if defined(ESP_PLATFORM)
+	// Only reboot if there is actually a staged image to boot into; otherwise a
+	// stray POST would needlessly bounce the device.
+	if (OtaUpdater::bootPartitionLabel() == OtaUpdater::runningPartitionLabel())
+	{
+		sendResponse(sock, 409, "Conflict", "application/json",
+		             "{\"error\":\"no pending OTA image to boot into\"}");
+		return;
+	}
+
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"message\":\"rebooting into the new image...\"}");
+
+	// Defer the restart so the HTTP response flushes first (mirrors the WiFi
+	// connect/mode endpoints' delayed-restart pattern).
+	xTaskCreate([](void*) {
+		vTaskDelay(pdMS_TO_TICKS(1000));
+		esp_restart();
+	}, "ota_reboot", 2048, NULL, 5, NULL);
+#else
+	// Host stub: never actually exit the process (the smoke-test harness keeps
+	// running). Report a simulated success.
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"simulated\":true,"
+	             "\"message\":\"reboot is a no-op on the desktop build\"}");
+#endif
 }
 
 void HttpServer::sendRedirect(int sock, const std::string& location)

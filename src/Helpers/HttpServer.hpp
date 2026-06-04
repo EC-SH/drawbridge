@@ -71,6 +71,28 @@ private:
 	void sendApiAdminLogin(int sock, const HttpRequest& req);
 	void sendApiAdminLogout(int sock, const HttpRequest& req);
 
+	// --- OTA firmware-update endpoints (see OtaUpdater.hpp + docs/OTA.md) ---
+	// Streams the request body straight into the inactive OTA slot. This MUST
+	// bypass the 16 KB buffered path in handleClient(); see handleOtaUpload().
+	// On host this is a stub that drains the body and replies 501.
+	// `headerBytesRead` is the already-recv'd buffer (request line + headers and
+	// possibly the first body bytes); `contentLength` is the parsed body size.
+	void handleOtaUpload(int sock, const std::string& alreadyRead,
+	                     size_t bodyStart, size_t contentLength);
+	// Read-only JSON: running / boot / next partition, pending flag, last error.
+	void sendApiOtaStatus(int sock);
+	// Reboots into a staged image (device) or simulates it (host).
+	void sendApiOtaReboot(int sock);
+
+	// Streaming helper for the OTA upload: drains exactly `contentLength` bytes
+	// from `sock`, feeding `chunkSink(ptr, len)` for each chunk. `prefix`/
+	// `prefixLen` are body bytes already present in the initial header recv.
+	// Returns true iff the full body was consumed. Used so the same draining
+	// logic backs both the device write path and the host discard path.
+	bool streamBody(int sock, const char* prefix, size_t prefixLen,
+	                size_t contentLength,
+	                const std::function<bool(const uint8_t*, size_t)>& chunkSink);
+
 	// Returns true if the request has no Origin header (direct browser nav / curl)
 	// or if the Origin host matches the Host header (same-origin). Blocks CSRF from
 	// third-party pages on the same AP.

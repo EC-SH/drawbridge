@@ -40,6 +40,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/Helpers/UdpServer.cpp"
                             "../src/Helpers/HttpServer.cpp"
                             "../src/Helpers/AdminAuth.cpp"
+                            "../src/Helpers/OtaUpdater.cpp"
                             "../src/SIP/RequestsHandler.cpp"
                             "../src/SIP/Session.cpp"
                             "../src/SIP/SipClient.cpp"
@@ -49,7 +50,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipServer.cpp"
                             "../src/SIP/SipStatus.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
-                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns ${EXTRA_REQUIRES}
+                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update ${EXTRA_REQUIRES}
                     PRIV_REQUIRES esp_wifi)
 
 # Issue #49: the display transport reserves Core 1 for the LVGL graphics task and
