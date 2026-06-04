@@ -1,7 +1,7 @@
 # pocket-dial
 
-> [!WARNING]
-> **Stability Notice**: This repository contains bleeding-edge development builds. For stable, tested releases, please use [GitHub Releases](../../releases) or the latest stable branch. Production deployments should pin to a specific release tag.
+> [!NOTE]
+> **Latest release: [v1.2.0](../../releases/latest)** — hardware-verified on the JC3248W535 display board (boots, joins Wi-Fi, SIP + dashboard confirmed working). **Prebuilt, flashable firmware is attached to the release** — see [Install](#install). `main` carries newer in-development changes; pin to a release tag for production.
 
 A self-contained, enterprise-capable SIP PBX on a $10 microcontroller. Flash an ESP32-S3, connect softphones or physical IP phones to its network, and make direct VoIP calls instantly. No routers, [...]
 
@@ -13,32 +13,76 @@ Now with **native touch display support** and **W5500 wired-Ethernet capability*
 
 ---
 
+## Install
+
+There are three ways to run pocket-dial. **Most people want Option 1.**
+
+### 🔌 Option 1 — Flash prebuilt firmware to an ESP32-S3 (easiest, no toolchain)
+
+Download the firmware for your board from the **[latest release](../../releases/latest)** and pick the matching variant:
+
+| Variant | Board / use |
+|---------|-------------|
+| `*-display.*` | Guition JC3248W535 3.5" touch display |
+| `*-eth.*` | W5500 wired Ethernet / PoE (Waveshare ESP32-S3-ETH, LilyGO T-ETH) |
+| `*-wifi.*` | Generic ESP32-S3 (Wi-Fi SoftAP) |
+
+Flash with [esptool](https://github.com/espressif/esptool) (`pip install esptool`). Example for the **display** build — replace `COM3` with your serial port (`/dev/ttyUSB0` on Linux/macOS):
+
+```bash
+esptool --chip esp32s3 -p COM3 -b 460800 write_flash \
+  0x0     bootloader-esp32s3-display.bin \
+  0x8000  partition-table-esp32s3-display.bin \
+  0x20000 SipServer-esp32s3-display.bin
+```
+
+(Swap `display` → `eth`/`wifi` for the other variants. Exact offsets are also in the release's `flasher_args-*.json`; verify downloads against `SHA256SUMS`.) Power-cycle the board and it boots the SIP registrar + dashboard. On first boot it raises an open Wi-Fi AP `esp32-sipserver`; connect a softphone to `192.168.4.1:5060`. See [Configuration](#configuration).
+
+### 🛠 Option 2 — Build the firmware from source
+
+For development or custom configs (ESP-IDF v5.3+ or Arduino). See **[Building](#building)** — e.g. `idf.py -D SIP_TRANSPORT=display flash monitor`.
+
+### 💻 Option 3 — Run on a computer or Raspberry Pi (no ESP32 needed)
+
+The same SIP engine runs as a desktop/server binary on Linux/macOS/Windows. Needs CMake + a C++17 compiler:
+
+```bash
+# One-liner: download the latest release source, build, and run
+curl -fsSL https://raw.githubusercontent.com/GlomarGadaffi/pocket-dial/main/install.sh | sh
+
+# …or from a clone:
+./quickstart.sh                 # Windows: quickstart.bat
+./quickstart.sh --service       # install as a systemd service (Linux)
+```
+
+See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
+
+---
+
 ## Project Status & MVP Roadmap
 
-> [!WARNING]
-> **Current Phase**: Beta / Pre-MVP Validation
-> 
-> The core SIP engine is production-ready with all critical concurrency and security issues resolved (v1.4.0). MVP readiness depends on:
+> [!NOTE]
+> **Current phase**: v1.2.0 released — hardware-validated MVP.
+>
+> The core SIP engine (concurrency- and security-hardened) is now joined by admin authentication, OTA firmware updates, and a display build verified end-to-end on real hardware.
 
-### ✅ **MVP Features - Completed**
+### ✅ **Completed**
 - Core SIP signaling (REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS)
 - Peer-to-peer RTP media routing
-- WiFi AP mode with captive portal onboarding
-- Web dashboard & HTTP status API
+- Wi-Fi AP mode with captive-portal onboarding **+ Wi-Fi STATION (client) mode**
+- Web dashboard with **admin PIN authentication** and **OTA firmware updates**
 - Virtual extensions (Echo `777`, Broadcast `999`)
-- Concurrency & memory safety hardening
-- Input validation & rate limiting
-- Desktop (Linux/Windows) debug mode
-- Arduino IDE sketch templates
+- **Call Detail Records (`/api/cdr`)** and **Do-Not-Disturb (`/api/dnd`)**
+- Concurrency & memory-safety hardening, input validation, per-IP rate limiting
+- Configurable memory pools + hardware tiers ([SCALING.md](docs/SCALING.md))
+- Desktop (Linux/Windows) mode + Arduino IDE sketch templates
+- **End-to-end hardware validation on the JC3248W535** (Issue #44) ✅
 
-### ⏳ **MVP Blockers - In Progress**
-- **Physical Hardware Validation** (Issue #44): End-to-end SIP call test on JC3248W535EN smart display hardware — currently offline, awaiting re-connection
-- **Arduino IDE Compatibility** (Issue #41): Platform detection guards verification for hobbyist deployment paths
-
-### 🔜 **Post-MVP Features - Backlog**
-- Zero-Touch Phone Auto-Provisioning (Issue #35) — HTTP config push to Polycom/Yealink/Cisco phones
-- Live SIP Tracer in Web Terminal (Issue #32) — WebSocket packet streaming
-- PCAP Dump Endpoint (Issue #33) — Wireshark integration via `/api/diagnostics/pcap`
+### ⏳ **In Progress / Backlog**
+- Arduino IDE platform-guard verification (Issue #41)
+- Raise UDP RX mailbox + multi-IP load testing (Issues #78, #79)
+- SD-card support (Issue #80)
+- Zero-Touch Phone Auto-Provisioning (#35), Live SIP Tracer (#32), PCAP dump (#33)
 
 **For detailed issue tracking and resolved items, see [ISSUES.md](ISSUES.md) and the [GitHub Issue Tracker](../../issues).**
 
@@ -53,6 +97,7 @@ Now with **native touch display support** and **W5500 wired-Ethernet capability*
 
 ## Table of Contents
 
+* [Install](#install)
 * [Features](#features)
 * [How It Works](#how-it-works)
 * [Architecture](#architecture)

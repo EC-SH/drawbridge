@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
 # default to latest stable release tag
-$tag     = 'v1.1.0'
-$zipDir  = 'pocket-dial-1.1.0'
+$tag     = 'v1.2.0'
+$zipDir  = 'pocket-dial-1.2.0'
 $url     = "https://github.com/GlomarGadaffi/pocket-dial/archive/refs/tags/$tag.zip"
 
 # check if we requested bleeding edge / unreleased
