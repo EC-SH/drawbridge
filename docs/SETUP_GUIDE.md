@@ -1,0 +1,248 @@
+# First-Time Setup Guide
+
+This guide takes a freshly flashed **pocket-dial** device from power-on to a working
+test call. It assumes a Wi-Fi SoftAP build (the default standalone Access Point mode);
+notes call out where the wired-Ethernet and touch-display variants differ.
+
+If you have not flashed firmware yet, do that first — see the build instructions in
+[../README.md](../README.md#building) and, for updating an already-flashed device,
+[OTA.md](OTA.md). This document picks up **after** the firmware is on the board.
+
+**What you will do:**
+
+1. [Power on and join the device's Wi-Fi](#1-power-on-and-join-the-device)
+2. [Open the dashboard](#2-open-the-dashboard)
+3. [Set the admin PIN (do this first)](#3-set-the-admin-pin-first)
+4. [Register a softphone or IP phone](#4-register-a-phone)
+5. [Make a test call (777 echo, then 999 all-page)](#5-make-a-test-call)
+6. [Quick-start checklist](#6-quick-start-checklist)
+
+---
+
+## 1. Power on and join the device
+
+When a standalone Wi-Fi build boots, it spawns its own **open** access point and runs an
+internal DHCP server. The SIP registrar binds to `192.168.4.1:5060` and the HTTP
+dashboard to `192.168.4.1:80`.
+
+| Setting | Value | Source |
+| :--- | :--- | :--- |
+| SoftAP SSID | `esp32-sipserver` | `main/esp_main.cpp` (`EXAMPLE_ESP_WIFI_SSID`) |
+| Security | Open — no password | `WIFI_AUTH_OPEN` (`main/esp_main.cpp`) |
+| Channel | 1 | `EXAMPLE_ESP_WIFI_CHANNEL` |
+| Max associated stations | 10 | `EXAMPLE_MAX_STA_CONN` |
+| Gateway / server IP | `192.168.4.1` | DHCP server default |
+| Hostname (mDNS) | `pocketdial.local` | `mdns_hostname_set("pocketdial")` |
+
+**Steps:**
+
+1. Power the board over USB-C (or PoE on a wired board).
+2. On your laptop or phone, open Wi-Fi settings and join **`esp32-sipserver`**. No
+   password is required.
+3. Wait for your client to receive a DHCP lease (an address in the `192.168.4.x` range).
+
+> [!IMPORTANT]
+> The SoftAP is **open** by default — anyone in radio range can join. Treat the device
+> as exposed to everyone on its link and set the admin PIN immediately (step 3). See
+> [THREAT_MODEL.md](THREAT_MODEL.md) for the full security posture and the recommended
+> WPA2 hardening.
+
+### Variant: captive-portal onboarding (touch-display build)
+
+The Guition JC3248W535 display build can boot into a **captive-portal onboarding** mode
+that brings up a separate setup AP named **`My-Ap`** (`ONBOARDING_SSID` in
+`main/esp_main_display.cpp`) and shows a join QR code on screen. When you join, the
+device redirects all web traffic to its setup page so you can either join an existing
+Wi-Fi network (Station mode) or stay in Standalone AP mode.
+
+> [!NOTE]
+> The onboarding portal has a **5-minute decay watchdog** (`CAPTIVE_DECAY_SECONDS = 300`
+> in `main/esp_main_display.cpp`): if no configuration is confirmed within five minutes,
+> the device reboots into Standalone AP mode (`esp32-sipserver`) on its own. If your
+> portal disappears, just re-join `esp32-sipserver` and continue from step 2.
+
+### Variant: wired Ethernet / PoE
+
+W5500/LAN8720 builds (`SIP_TRANSPORT=eth`) are nodes on your wired LAN and obtain an
+address via DHCP (with static fallback). There is no SoftAP; reach the dashboard at the
+device's LAN IP or at `pocketdial.local`. See [HARDWARE_SELECTION.md](HARDWARE_SELECTION.md)
+for board specifics.
+
+---
+
+## 2. Open the dashboard
+
+Open a browser on the joined client and navigate to:
+
+```
+http://192.168.4.1
+```
+
+or, where mDNS resolves:
+
+```
+http://pocketdial.local
+```
+
+You should see the retro CGA dashboard. It renders live data from
+[`GET /api/status`](API.md#get-apistatus): the server IP/port, uptime, processed/dropped
+packet counters, the list of registered extensions, and any active call sessions.
+
+If the page does not load, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#dashboard-unreachable).
+
+---
+
+## 3. Set the admin PIN (first)
+
+> [!IMPORTANT]
+> **Set the admin PIN before doing anything else.** A factory-fresh device is
+> *unprovisioned*: its state-changing endpoints are protected only by a same-origin/CSRF
+> check, so any peer on the open AP could disconnect calls, rewrite Wi-Fi credentials,
+> switch modes, or factory-reset the device. The instant a PIN is set, those endpoints
+> require an authenticated session. This is the **first-run onboarding step**
+> (see [THREAT_MODEL.md](THREAT_MODEL.md) §5.1).
+
+Once a PIN is set, the following state-changing endpoints require a valid `pd_session`
+cookie (else they return `401`): `/api/kill`, `/api/wifi/connect`, `/api/wifi/mode_ap`,
+`/api/factory-reset`, and the OTA endpoints (`/api/ota/upload`, `/api/ota/reboot`).
+
+### Set the PIN from the dashboard
+
+Use the admin/security control on the dashboard to set your PIN. Under the hood this
+POSTs to `/api/admin/set-pin`.
+
+### Set the PIN from the command line
+
+```bash
+DEVICE=http://192.168.4.1     # or http://pocketdial.local
+
+curl -s -H "Origin: $DEVICE" \
+     -X POST --data "pin=YOUR_PIN" \
+     "$DEVICE/api/admin/set-pin"
+# -> {"status":"ok","provisioned":true}
+```
+
+PIN rules and behavior, from `src/Helpers/AdminAuth.{hpp,cpp}` and the threat model:
+
+| Property | Value |
+| :--- | :--- |
+| Minimum length | 4 characters (`kMinPinLength`); a too-short PIN returns `400` |
+| Storage | Salted, iterated SHA-256 — 50,000 rounds, 128-bit random salt (NVS keys `admin_salt` / `admin_hash`) |
+| Brute-force lockout | 5 consecutive failed logins → 60-second lockout (`429`); auto-clears |
+| Session token | ≥128-bit opaque, `HttpOnly` + `SameSite=Strict` cookie, 30-minute absolute expiry |
+
+> [!TIP]
+> The hash is salted and iterated, but a short numeric PIN is still trivially crackable
+> if an attacker ever obtains the flash contents physically. **Use ≥6 alphanumeric
+> characters** (THREAT_MODEL.md §5.2, P0 guidance).
+
+### Log in
+
+After the PIN is set, obtain a session before calling any gated endpoint:
+
+```bash
+curl -s -c cookies.txt -H "Origin: $DEVICE" \
+     -X POST --data "pin=YOUR_PIN" \
+     "$DEVICE/api/admin/login"
+# -> {"status":"ok","authenticated":true}   (sets a pd_session cookie)
+```
+
+You can verify provisioning state any time with the read-only endpoint
+`GET /api/admin/status`, which returns only booleans (`provisioned`, `authenticated`).
+
+---
+
+## 4. Register a phone
+
+pocket-dial is a SIP registrar. Any SIP client — a softphone app or a hardware IP phone —
+registers against it with these settings:
+
+| Field | Value | Notes |
+| :--- | :--- | :--- |
+| SIP server / registrar / proxy | `192.168.4.1` | Or the device's LAN IP on wired builds; `pocketdial.local` where mDNS resolves |
+| Port | `5060` | UDP signaling port |
+| Transport | **UDP** | The engine only speaks UDP |
+| Username / Auth ID / extension | your choice, e.g. `1001` | The registrar keys clients by this extension (AOR) |
+| Password | (any / blank) | There is **no SIP digest authentication** today — the registrar accepts the REGISTER on the open link. See [THREAT_MODEL.md](THREAT_MODEL.md) S-3 |
+| Codec | **G.711 only** — µ-law (PCMU, payload 0) and a-law (PCMA, payload 8), plus telephone-event (101) | The server rewrites SDP to `0 8 101` via `enforceG711()` |
+| Registration expiry | up to `3600` s | `DEFAULT_EXPIRES`/`MAX_EXPIRES`; higher requests are capped to 3600 |
+
+> [!IMPORTANT]
+> **Do not reuse the extensions `777` or `999`.** They are reserved virtual extensions
+> (echo test and all-page broadcast — see step 5).
+
+**Steps:**
+
+1. Open your SIP client and create a new account/identity.
+2. Enter server `192.168.4.1`, port `5060`, transport **UDP**.
+3. Choose an extension (e.g. `1001`) as the username.
+4. Restrict the codec list to **G.711 µ-law and a-law** (disable Opus, G.722, G.729).
+5. Save. The client should show "registered".
+6. Confirm on the dashboard: the extension appears in the `clients` list of
+   [`GET /api/status`](API.md#get-apistatus).
+
+Register a **second** extension (e.g. `1002`) on another client so you can place a real
+call later. Per-client walkthroughs and known quirks are in
+[PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md).
+
+> [!NOTE]
+> The registrar pings each registered client with a SIP `OPTIONS` keepalive every 5
+> seconds and prunes a client after ~15 seconds of silence (`RequestsHandler.cpp`). A
+> phone that does not answer OPTIONS may be dropped from the registrar.
+
+---
+
+## 5. Make a test call
+
+### 5a. Echo test — dial `777`
+
+`777` is a built-in echo loopback. When an endpoint dials `777`, the server answers
+`200 OK` using **the caller's own SDP connection info**, so the phone streams its audio
+back to its own receive port — a zero-DSP hardware echo test (`RequestsHandler::onInvite`).
+
+1. From a registered phone, dial **`777`**.
+2. The call connects immediately. Speak — you should hear your own voice echoed back.
+3. Hang up.
+
+If you hear nothing, your audio path (codec/RTP) is the suspect — see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#one-way-or-no-audio).
+
+### 5b. All-page broadcast — dial `999`
+
+`999` is a parallel intercom/all-page. Dialing it forks the INVITE to **every other
+registered extension** at once, injecting auto-answer headers; the first device to answer
+`200 OK` is connected and the rest are cancelled (`RequestsHandler` broadcast handler).
+
+1. Make sure at least one **other** extension is registered (e.g. `1002` from step 4).
+2. From one phone, dial **`999`**.
+3. Every other registered phone is paged simultaneously. When one answers, it is bridged
+   to the caller and the others stop ringing.
+
+### 5c. Direct extension-to-extension call
+
+1. From `1001`, dial `1002` (the second extension you registered).
+2. The callee rings; answer it.
+3. Audio (RTP) flows **peer-to-peer** directly between the two phones — the device only
+   brokers signaling (see [ARCHITECTURE.md](ARCHITECTURE.md) and [SCALING.md](SCALING.md)).
+4. The active call appears in the `sessions` list on the dashboard.
+
+---
+
+## 6. Quick-start checklist
+
+- [ ] Firmware flashed (see [README.md](../README.md#building) / [OTA.md](OTA.md)).
+- [ ] Powered on; joined Wi-Fi SSID **`esp32-sipserver`** (open) — or completed the
+      `My-Ap` captive portal on the display build.
+- [ ] Dashboard reachable at `http://192.168.4.1` (or `http://pocketdial.local`).
+- [ ] **Admin PIN set** via `/api/admin/set-pin` (≥6 alphanumeric chars recommended).
+- [ ] Logged in (`/api/admin/login`) before using any gated control.
+- [ ] First softphone/IP phone registered: server `192.168.4.1:5060`, **UDP**, **G.711**,
+      extension e.g. `1001`.
+- [ ] Second extension registered (e.g. `1002`).
+- [ ] Dialed **`777`** — heard echo.
+- [ ] Dialed **`999`** — other phones paged.
+- [ ] Placed a direct `1001 → 1002` call — two-way audio.
+
+**Next:** [PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md) ·
+[HARDWARE_SELECTION.md](HARDWARE_SELECTION.md) ·
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [SCALING.md](SCALING.md)

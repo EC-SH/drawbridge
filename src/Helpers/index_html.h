@@ -547,11 +547,174 @@ R"rawhtml(
   overflow-y: auto;
 }
 
+/* ─── ADMIN / SECURITY + OTA PANELS ─── */
+.adm-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+}
+.adm-form label {
+  color: var(--cyan);
+  font-size: 15px;
+}
+.adm-input {
+  background: var(--black);
+  border: 1px solid var(--dk-cyan);
+  color: var(--green);
+  font-family: inherit;
+  font-size: 15px;
+  padding: 4px 8px;
+  outline: none;
+  min-width: 120px;
+  flex: 1 1 120px;
+}
+.adm-input:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 6px rgba(85,255,255,0.3);
+}
+input[type="file"].adm-input {
+  padding: 3px 4px;
+  color: var(--gray);
+}
+.adm-note {
+  color: var(--dk-yellow);
+  font-size: 14px;
+  margin: 2px 0;
+}
+.adm-msg {
+  font-size: 14px;
+  margin: 2px 0;
+  min-height: 16px;
+}
+.adm-state-ok { color: var(--green); text-shadow: 0 0 6px rgba(85,255,85,0.4); }
+.adm-locked-note {
+  color: var(--dk-red);
+  font-size: 14px;
+  margin: 2px 0;
+}
+/* Disabled (gated) controls */
+.btn-retro:disabled,
+.btn-retro[disabled] {
+  background: var(--dk-gray);
+  color: var(--bg-dark);
+  border-color: var(--dk-gray);
+  cursor: not-allowed;
+  opacity: 0.6;
+  text-shadow: none;
+}
+.btn-retro:disabled:hover,
+.btn-retro[disabled]:hover { background: var(--dk-gray); color: var(--bg-dark); }
+/* OTA progress bar */
+#ota-progress-wrap {
+  display: none;
+  margin: 4px 0;
+  height: 14px;
+  border: 1px solid var(--dk-cyan);
+  background: var(--black);
+  position: relative;
+}
+#ota-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--dk-cyan);
+  transition: width 0.15s linear;
+}
+#ota-progress-text {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  text-align: center;
+  font-size: 12px;
+  line-height: 14px;
+  color: var(--fg);
+  text-shadow: 0 0 4px rgba(0,0,0,0.8);
+}
+.ota-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 0;
+  font-size: 15px;
+}
+.ota-row .status-label { color: var(--gray); }
+.ota-row .status-value { color: var(--cyan); text-shadow: 0 0 6px rgba(85,255,255,0.3); }
+
 /* ─── RESPONSIVE ─── */
 @media (max-width: 800px) {
-  #body-area { flex-direction: column; }
-  #right-panel { width: 100%; flex-direction: row; justify-content: center; }
+  html, body { overflow: auto; height: auto; }
+  #crt-monitor { height: auto; min-height: 100%; border-radius: 0; }
+  #main-content { height: auto; overflow: visible; }
+  #body-area { flex-direction: column; overflow: visible; }
+  #left-panels { overflow: visible; }
+  #right-panel { width: 100%; flex-direction: row; justify-content: center; flex-wrap: wrap; }
   #retro-canvas { width: 150px !important; height: 150px !important; }
+  #header { flex-direction: column; align-items: stretch; gap: 4px; }
+  #header .menu-items { flex-wrap: wrap; justify-content: center; }
+  .panel-border-top, .panel-border-bottom { font-size: 12px; }
+  /* Tap-friendly controls */
+  .btn-retro { padding: 8px 16px; font-size: 16px; margin-bottom: 4px; }
+  .menu-btn { padding: 6px 10px; font-size: 16px; }
+  .adm-input { font-size: 16px; padding: 8px; flex-basis: 100%; }
+  .adm-form { flex-direction: column; align-items: stretch; }
+  .adm-form label { width: 100%; }
+  #terminal-container { min-height: 220px; }
+  /* Modals fill the small screen */
+  #wifi-modal, #help-modal {
+    min-width: 0;
+    width: 94vw;
+    max-width: 94vw;
+    max-height: 90vh;
+  }
+}
+
+/* ─── PHOSPHOR THEME PALETTES ─── */
+/* Default (no class) keeps the classic CGA blue defined in :root above.
+   Each theme just remaps the few colour variables; the layout is untouched. */
+body.theme-green {
+  --bg:#001500; --bg-dark:#000a00; --panel-bg:rgba(0,40,0,0.55);
+  --fg:#33FF66; --cyan:#33FF99; --yellow:#9CFF6A; --green:#33FF66;
+  --magenta:#7CFF8A; --dk-cyan:#0a8040; --gray:#5fae6f; --dk-gray:#205028;
+  --glow-cyan:0 0 8px rgba(51,255,153,0.6),0 0 2px rgba(51,255,153,0.3);
+  --glow-white:0 0 8px rgba(51,255,102,0.5),0 0 2px rgba(51,255,102,0.2);
+}
+body.theme-amber {
+  --bg:#1a0f00; --bg-dark:#0d0700; --panel-bg:rgba(60,35,0,0.55);
+  --fg:#FFB000; --cyan:#FFC850; --yellow:#FFD773; --green:#FFB000;
+  --magenta:#FF9C3A; --dk-cyan:#a86a00; --gray:#b98a40; --dk-gray:#5a3a00;
+  --glow-cyan:0 0 8px rgba(255,200,80,0.6),0 0 2px rgba(255,200,80,0.3);
+  --glow-white:0 0 8px rgba(255,176,0,0.5),0 0 2px rgba(255,176,0,0.2);
+}
+body.theme-cga {
+  /* High-contrast CGA palette 1: cyan / magenta / white on black */
+  --bg:#000000; --bg-dark:#0a000a; --panel-bg:rgba(40,0,40,0.5);
+  --fg:#FFFFFF; --cyan:#55FFFF; --yellow:#FF55FF; --green:#55FFFF;
+  --magenta:#FF55FF; --dk-cyan:#00AAAA; --gray:#AAAAAA; --dk-gray:#555555;
+  --glow-cyan:0 0 8px rgba(85,255,255,0.6),0 0 2px rgba(85,255,255,0.3);
+  --glow-white:0 0 8px rgba(255,255,255,0.5),0 0 2px rgba(255,255,255,0.2);
+}
+body.theme-white {
+  /* Monochrome white phosphor */
+  --bg:#0a0a0a; --bg-dark:#000000; --panel-bg:rgba(40,40,40,0.5);
+  --fg:#E8E8E8; --cyan:#FFFFFF; --yellow:#FFFFFF; --green:#D8D8D8;
+  --magenta:#C8C8C8; --dk-cyan:#888888; --gray:#AAAAAA; --dk-gray:#555555;
+  --glow-cyan:0 0 8px rgba(255,255,255,0.55),0 0 2px rgba(255,255,255,0.3);
+  --glow-white:0 0 8px rgba(255,255,255,0.5),0 0 2px rgba(255,255,255,0.2);
+}
+/* The CRT flicker overlay tints toward the active background for cohesion */
+body.theme-green  #crt-monitor::after { background:rgba(0,40,0,0.04); }
+body.theme-amber  #crt-monitor::after { background:rgba(60,35,0,0.04); }
+body.theme-cga    #crt-monitor::after { background:rgba(40,0,40,0.04); }
+body.theme-white  #crt-monitor::after { background:rgba(60,60,60,0.04); }
+
+/* ─── ASCII OPERATOR / ABOUT BOX ─── */
+.ascii-operator {
+  color: var(--cyan);
+  text-shadow: var(--glow-cyan);
+  font-size: 13px;
+  line-height: 1.05;
+  white-space: pre;
+  margin: 0 0 8px 0;
+  text-align: center;
 }
 </style>
 </head>
@@ -568,6 +731,8 @@ R"rawhtml(
         <button class="menu-btn" onclick="refreshNow()" title="Refresh">[F5 Refresh]</button>
         <button class="menu-btn" onclick="oracleSpeak()" title="Query Oracle">[F7 Oracle]</button>
         <button class="menu-btn" onclick="showWifi()" title="WiFi">[F9 WiFi]</button>
+        <button class="menu-btn" id="theme-btn" onclick="cyclePhosphor()" title="Cycle phosphor palette">[Phosphor]</button>
+        <button class="menu-btn" id="sound-btn" onclick="toggleSound()" title="Toggle UI sounds (off by default)">[Sound: OFF]</button>
       </div>
     </div>
 
@@ -630,6 +795,87 @@ R"rawhtml(
           <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
         </div>
 
+        <!-- ADMIN / SECURITY PANEL -->
+        <div class="panel">
+          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
+          <div class="panel-title"> ║ ▣ ADMIN / SECURITY</div>
+          <div class="panel-body">
+            <div id="admin-loading" style="color:var(--dk-gray);">Querying admin status...</div>
+
+            <!-- STATE A: not provisioned → set PIN -->
+            <div id="admin-setpin" style="display:none;">
+              <div class="adm-note">No admin PIN set. Create one to protect this device.</div>
+              <div class="adm-form">
+                <label for="adm-newpin">New PIN:</label>
+                <input class="adm-input" type="password" id="adm-newpin" inputmode="numeric" autocomplete="off" placeholder="min 4 chars">
+                <button class="btn-retro" onclick="adminSetPin()">⚿ Set PIN</button>
+              </div>
+            </div>
+
+            <!-- STATE B: provisioned, not authenticated → login -->
+            <div id="admin-login" style="display:none;">
+              <div class="adm-note">Admin login required.</div>
+              <div class="adm-form">
+                <label for="adm-pin">PIN:</label>
+                <input class="adm-input" type="password" id="adm-pin" inputmode="numeric" autocomplete="off" placeholder="Enter PIN">
+                <button class="btn-retro" onclick="adminLogin()">⮞ Login</button>
+              </div>
+            </div>
+
+            <!-- STATE C: authenticated -->
+            <div id="admin-loggedin" style="display:none;">
+              <div class="adm-msg adm-state-ok">● Logged in — admin controls unlocked.</div>
+              <div class="adm-form">
+                <button class="btn-retro" onclick="adminChangePinPrompt()" title="Set a new admin PIN">⚿ Change PIN</button>
+                <button class="btn-retro btn-danger" onclick="adminLogout()">⮜ Logout</button>
+              </div>
+            </div>
+
+            <!-- Inline change-pin (shown from STATE C) -->
+            <div id="admin-changepin" style="display:none;">
+              <div class="adm-form">
+                <label for="adm-changepin-val">New PIN:</label>
+                <input class="adm-input" type="password" id="adm-changepin-val" inputmode="numeric" autocomplete="off" placeholder="min 4 chars">
+                <button class="btn-retro" onclick="adminSetPin('change')">Save</button>
+                <button class="btn-retro btn-danger" onclick="document.getElementById('admin-changepin').style.display='none';">Cancel</button>
+              </div>
+            </div>
+
+            <div class="adm-msg" id="admin-msg"></div>
+          </div>
+          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
+        </div>
+
+        <!-- FIRMWARE UPDATE (OTA) PANEL -->
+        <div class="panel">
+          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
+          <div class="panel-title"> ║ ⬆ FIRMWARE UPDATE (OTA)</div>
+          <div class="panel-body">
+            <div class="ota-row"><span class="status-label">OTA Support ·</span><span class="status-value" id="ota-supported">—</span></div>
+            <div class="ota-row"><span class="status-label">Running ·····</span><span class="status-value" id="ota-running">—</span></div>
+            <div class="ota-row"><span class="status-label">Boot Part ···</span><span class="status-value" id="ota-boot">—</span></div>
+            <div class="ota-row"><span class="status-label">Next Part ···</span><span class="status-value" id="ota-next">—</span></div>
+            <div class="adm-msg" id="ota-state-msg" style="color:var(--dk-gray);"></div>
+
+            <div id="ota-controls" style="margin-top:4px;">
+              <div class="adm-note" id="ota-gate-note" style="display:none;">Admin login required to update firmware.</div>
+              <div class="adm-form">
+                <input class="adm-input" type="file" id="ota-file" accept=".bin">
+              </div>
+              <div id="ota-progress-wrap">
+                <div id="ota-progress-bar"></div>
+                <div id="ota-progress-text">0%</div>
+              </div>
+              <div class="adm-form">
+                <button class="btn-retro" id="ota-upload-btn" onclick="otaUpload()">⬆ Upload firmware</button>
+                <button class="btn-retro btn-danger" id="ota-reboot-btn" onclick="otaReboot()">⟳ Reboot device</button>
+              </div>
+              <div class="adm-msg" id="ota-msg"></div>
+            </div>
+          </div>
+          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
+        </div>
+
       </div> <!-- /left-panels -->
 
       <!-- RIGHT COLUMN: 3D Wireframe -->
@@ -676,6 +922,15 @@ R"rawhtml(
     <button class="btn-retro" onclick="closeHelp()">✕ Close</button>
   </div>
   <div id="help-modal-body">
+    <div class="ascii-operator">    .-"""""-.
+   /  _   _  \    ~ SWITCHBOARD OPERATOR ~
+   |  o   o  |    "Number, please?"
+   |    ^    |    .--.__.--.
+    \  '-'  /    (  patch  )
+     '-...-'      '--.  .--'
+    __|___|__        ||
+   [_O_____O_]   ====[]====
+   /  PBX-1  \   |  |  |  |</div>
     <span style="color:var(--yellow);">═══ CGA CRT SIP Switchboard v5.03 ═══</span><br><br>
     <span style="color:var(--cyan);">KEYBOARD SHORTCUTS:</span><br>
     <span style="color:var(--green);">  F1</span>  — This help screen<br>
@@ -694,7 +949,12 @@ R"rawhtml(
     <span style="color:var(--green);">  kill &lt;ext&gt;</span> — Terminate an extension<br>
     <span style="color:var(--green);">  clear</span>      — Clear terminal output<br>
     <span style="color:var(--green);">  ver</span>        — Show version info<br>
-    <span style="color:var(--green);">  ascii</span>      — Display classic bell ASCII art<br><br>
+    <span style="color:var(--green);">  ascii</span>      — Display classic bell ASCII art<br>
+    <span style="color:var(--green);">  about</span>      — Meet the switchboard operator<br>
+    <span style="color:var(--green);">  operator</span>   — Ring the operator for assistance<br>
+    <span style="color:var(--green);">  theme</span>      — Cycle phosphor palette<br>
+    <span style="color:var(--green);">  sound</span>      — Toggle UI sounds (off by default)<br>
+    <span style="color:var(--green);">  matrix</span>     — Follow the white rabbit<br><br>
     <span style="color:var(--dk-gray);">  "CGA CRT Console: 640x480 resolution, 16 vibrant colors, and pure low-latency SIP."</span><br>
   </div>
 )rawhtml"
@@ -715,18 +975,19 @@ R"rawhtml(
     <div id="wifi-networks-list">
       <div style="color:var(--dk-gray);">Press "Scan Networks" to discover available WiFi...</div>
     </div>
+    <div id="wifi-admin-note" class="adm-note" style="display:none;">⚿ Admin login required for the controls below. Use the ADMIN / SECURITY panel to log in.</div>
     <div id="wifi-connect-form">
       <label>SSID: <span id="wifi-selected-ssid" style="color:var(--green);"></span></label>
       <label style="margin-top:4px;">Password:</label>
       <input type="password" id="wifi-password" placeholder="Enter network key...">
       <div style="margin-top:6px;">
-        <button class="btn-retro" onclick="connectWifi()">⚡ Connect</button>
+        <button class="btn-retro" id="wifi-connect-btn" onclick="connectWifi()">⚡ Connect</button>
         <button class="btn-retro btn-danger" onclick="cancelWifiConnect()">Cancel</button>
       </div>
     </div>
     <div style="margin-top:12px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
       <div style="font-size:14px; color:var(--dk-yellow); margin-bottom:4px;">Standalone AP Mode:</div>
-      <button class="btn-retro" onclick="startApMode()">⚡ Host Standalone AP</button>
+      <button class="btn-retro" id="wifi-ap-btn" onclick="startApMode()">⚡ Host Standalone AP</button>
       <div style="font-size:11px; color:var(--dk-cyan); margin-top:4px;">Persists across reboots. (Unconfigured devices auto-switch to Standalone ~5&nbsp;min after power-on.)</div>
     </div>
     <div style="margin-top:10px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
@@ -734,7 +995,7 @@ R"rawhtml(
     </div>
     <div style="margin-top:12px; border-top:1px dashed var(--dk-red); padding-top:8px;">
       <div style="font-size:14px; color:var(--dk-red); margin-bottom:4px;">Danger Zone:</div>
-      <button class="btn-retro btn-danger" onclick="factoryReset()">⚠ Factory Reset</button>
+      <button class="btn-retro btn-danger" id="wifi-reset-btn" onclick="factoryReset()">⚠ Factory Reset</button>
     </div>
   </div>
 </div>
@@ -753,6 +1014,18 @@ let cmdHistory = [];
 let cmdHistoryIdx = -1;
 let oracleInterval = null;
 let selectedSSID = '';
+// Admin auth state: drives gating of dangerous controls + OTA.
+let adminState = { provisioned: false, authenticated: false };
+let otaUploading = false;
+// Whimsy state (pure client-side, persisted in localStorage).
+const PHOSPHOR_THEMES = ['cga', 'green', 'amber', 'cga2', 'white'];
+// Map the cycle key to the body class (cga2 = high-contrast cyan/magenta CGA).
+const PHOSPHOR_CLASS = { cga:'', green:'theme-green', amber:'theme-amber', cga2:'theme-cga', white:'theme-white' };
+const PHOSPHOR_LABEL = { cga:'CGA Blue', green:'Green', amber:'Amber', cga2:'Cyan/Mag', white:'White' };
+let phosphorIdx = 0;
+let soundEnabled = false;   // OPT-IN: never autoplay; defaults OFF.
+let audioCtx = null;        // lazily created on first user gesture.
+let matrixTimer = null;
 )rawhtml"
 R"rawhtml(
 // ─── SYSTEM ORACLE WORD GENERATOR ───
@@ -848,10 +1121,33 @@ function bootSequence() {
     { t: 'System Oracle ....... ACTIVE', c: 'var(--green)' },
     { t: 'RNG seed generated .. 0x' + Math.floor(Math.random()*0xFFFFFFFF).toString(16).toUpperCase(), c: 'var(--magenta)' },
     { t: '' },
+    { t: '>>> SWITCHBOARD ONLINE — operator standing by <<<', c: 'var(--magenta)' },
     { t: 'System ready. Type "help" for commands.', c: 'var(--fg)' },
     { t: '' },
   ];
   bootLines.forEach(l => termPrint(l.t, l.c));
+}
+
+// A brief, skippable typewriter flourish shown ONCE on first load.
+// It never blocks usability: the dashboard is already interactive underneath.
+function bootFlourish() {
+  const msg = '☼  CGA CRT SWITCHBOARD ONLINE — patching you through  ☼';
+  const line = document.createElement('div');
+  line.style.color = 'var(--cyan)';
+  line.style.textShadow = 'var(--glow-cyan)';
+  termOutput.insertBefore(line, termOutput.firstChild);
+  let i = 0;
+  const skip = () => { line.textContent = msg; cleanup(); };
+  function cleanup() {
+    document.removeEventListener('keydown', skip, true);
+    termOutput.removeEventListener('click', skip, true);
+  }
+  document.addEventListener('keydown', skip, true);
+  termOutput.addEventListener('click', skip, true);
+  const timer = setInterval(() => {
+    if (i >= msg.length) { clearInterval(timer); cleanup(); return; }
+    line.textContent = msg.slice(0, ++i);
+  }, 18);   // ~0.7s total; fast and non-blocking
 }
 
 function processCommand(cmd) {
@@ -879,6 +1175,11 @@ function processCommand(cmd) {
       termPrint('  clear       Clear terminal output', 'var(--cyan)');
       termPrint('  ver         Show version info', 'var(--cyan)');
       termPrint('  ascii       Display classic bell ASCII art', 'var(--cyan)');
+      termPrint('  about       Meet the switchboard operator', 'var(--cyan)');
+      termPrint('  operator    Ring the operator for assistance', 'var(--cyan)');
+      termPrint('  theme       Cycle phosphor palette', 'var(--cyan)');
+      termPrint('  sound       Toggle UI sounds (off by default)', 'var(--cyan)');
+      termPrint('  matrix      Follow the white rabbit', 'var(--cyan)');
       termPrint('');
       break;
 
@@ -961,12 +1262,20 @@ function processCommand(cmd) {
         termPrint(' Usage: kill <extension_number>', 'var(--red)');
       } else {
         const ext = parts[1];
+        if (adminState.provisioned && !adminState.authenticated) {
+          termPrint(' Admin login required. Open ADMIN / SECURITY panel to log in.', 'var(--red)');
+          break;
+        }
         termPrint(' Sending KILL signal to extension ' + ext + '...', 'var(--yellow)');
         fetch('/api/kill', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: 'extension=' + encodeURIComponent(ext)
-        }).then(r => r.text()).then(t => {
+        }).then(r => {
+          if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+          return r.text();
+        }).then(t => {
           termPrint(' ' + (t || 'Extension terminated.'), 'var(--green)');
         }).catch(e => {
           termPrint(' ERROR: ' + e.message, 'var(--red)');
@@ -1007,6 +1316,37 @@ function processCommand(cmd) {
       break;
 )rawhtml"
 R"rawhtml(
+    case 'about':
+      termPrint('');
+      printOperator();
+      termPrint('');
+      termPrint(' CGA CRT SipServer — a retro-console SIP switchboard.', 'var(--yellow)');
+      termPrint(' Hand-soldered phosphor, vacuum-tube vibes, zero spoons.', 'var(--gray)');
+      termPrint('');
+      break;
+
+    case 'operator':
+      termPrint('');
+      printOperator();
+      termPrint('');
+      termPrint(' OPERATOR: "Switchboard online. One moment, connecting you now..."', 'var(--magenta)');
+      ringPreview();
+      termPrint('');
+      break;
+
+    case 'theme':
+      cyclePhosphor();
+      break;
+
+    case 'sound':
+      toggleSound();
+      break;
+
+    case 'matrix':
+      termPrint('');
+      matrixRain();
+      break;
+
     default:
       termPrint(' Unknown command: "' + escapeHtml(command) + '". Type "help" for commands.', 'var(--red)');
       break;
@@ -1248,9 +1588,13 @@ function connectWifi() {
 
   fetch('/api/wifi/connect', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'ssid=' + encodeURIComponent(selectedSSID) + '&password=' + encodeURIComponent(pw)
-  }).then(r => r.text()).then(t => {
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+    return r.text();
+  }).then(t => {
     statusEl.textContent = 'Connected to ' + selectedSSID + '!';
     statusEl.style.color = 'var(--green)';
     cancelWifiConnect();
@@ -1269,8 +1613,12 @@ function startApMode() {
 
   fetch('/api/wifi/mode_ap', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  }).then(r => r.json()).then(data => {
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+    return r.json();
+  }).then(data => {
     statusEl.textContent = 'Mode AP set! Rebooting...';
     statusEl.style.color = 'var(--green)';
     termPrint(' WiFi: Operational mode set to Standalone AP. Rebooting...', 'var(--green)');
@@ -1299,11 +1647,416 @@ function factoryReset() {
   if (statusEl) { statusEl.textContent = 'Factory resetting...'; statusEl.style.color = 'var(--red)'; }
   fetch('/api/factory-reset', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'confirm=ERASE'
-  }).then(r => r.json()).then(data => {
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+    return r.json();
+  }).then(data => {
     termPrint(' FACTORY RESET: ' + (data.message || 'Rebooting...'), 'var(--yellow)');
   }).catch(e => termPrint(' RESET ERROR: ' + e.message, 'var(--red)'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//   ADMIN / SECURITY — auth state machine + control gating
+// ═══════════════════════════════════════════════════════════════
+
+function setAdminMsg(text, color) {
+  const el = document.getElementById('admin-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = color || 'var(--gray)';
+}
+
+// Fetch /api/admin/status and re-render the panel + gate all controls.
+function fetchAdminStatus() {
+  return fetch('/api/admin/status', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      adminState.provisioned = !!d.provisioned;
+      adminState.authenticated = !!d.authenticated;
+      renderAdminPanel();
+      applyAuthGating();
+    })
+    .catch(() => { /* silent — leave last known state */ });
+}
+
+// Show exactly one of the three admin states.
+function renderAdminPanel() {
+  const loading   = document.getElementById('admin-loading');
+  const setpin    = document.getElementById('admin-setpin');
+  const login     = document.getElementById('admin-login');
+  const loggedin  = document.getElementById('admin-loggedin');
+  const changepin = document.getElementById('admin-changepin');
+  if (loading) loading.style.display = 'none';
+  setpin.style.display = 'none';
+  login.style.display = 'none';
+  loggedin.style.display = 'none';
+  changepin.style.display = 'none';
+
+  if (!adminState.provisioned) {
+    setpin.style.display = 'block';            // STATE A
+  } else if (!adminState.authenticated) {
+    login.style.display = 'block';             // STATE B
+  } else {
+    loggedin.style.display = 'block';          // STATE C
+  }
+}
+
+// A control is unlocked when the device is unprovisioned OR the admin is logged in.
+function controlsUnlocked() {
+  return !adminState.provisioned || adminState.authenticated;
+}
+
+// Enable/disable + show notes on every gated control (kill is handled in the
+// terminal command, this covers the button-driven controls + OTA).
+function applyAuthGating() {
+  const unlocked = controlsUnlocked();
+  ['wifi-connect-btn', 'wifi-ap-btn', 'wifi-reset-btn', 'ota-upload-btn', 'ota-reboot-btn']
+    .forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) btn.disabled = !unlocked;
+    });
+  const wifiNote = document.getElementById('wifi-admin-note');
+  if (wifiNote) wifiNote.style.display = unlocked ? 'none' : 'block';
+  const otaNote = document.getElementById('ota-gate-note');
+  if (otaNote) otaNote.style.display = unlocked ? 'none' : 'block';
+  const otaFile = document.getElementById('ota-file');
+  if (otaFile) otaFile.disabled = !unlocked;
+}
+
+// Called whenever a gated endpoint returns 401 mid-session.
+function handleAuthExpired() {
+  adminState.authenticated = false;
+  renderAdminPanel();
+  applyAuthGating();
+  setAdminMsg('Session expired — please log in.', 'var(--red)');
+  termPrint(' AUTH: session expired — please log in.', 'var(--red)');
+}
+
+// STATE A / change-pin: POST /api/admin/set-pin (allowed unprovisioned OR authed).
+function adminSetPin(mode) {
+  const inputId = (mode === 'change') ? 'adm-changepin-val' : 'adm-newpin';
+  const pin = document.getElementById(inputId).value;
+  if (!pin || pin.length < 4) {
+    setAdminMsg('PIN must be at least 4 characters.', 'var(--red)');
+    return;
+  }
+  fetch('/api/admin/set-pin', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'pin=' + encodeURIComponent(pin)
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); return; }
+    if (r.status === 400) { setAdminMsg('Invalid PIN (min 4 characters).', 'var(--red)'); return; }
+    if (!r.ok) { setAdminMsg('Failed to set PIN (HTTP ' + r.status + ').', 'var(--red)'); return; }
+    document.getElementById(inputId).value = '';
+    const cp = document.getElementById('admin-changepin');
+    if (cp) cp.style.display = 'none';
+    setAdminMsg('Admin PIN updated.', 'var(--green)');
+    termPrint(' ADMIN: PIN set.', 'var(--green)');
+    fetchAdminStatus();
+  }).catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
+}
+
+// STATE B: POST /api/admin/login.
+function adminLogin() {
+  const pin = document.getElementById('adm-pin').value;
+  if (!pin) { setAdminMsg('Enter your PIN.', 'var(--red)'); return; }
+  fetch('/api/admin/login', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'pin=' + encodeURIComponent(pin)
+  }).then(r => {
+    document.getElementById('adm-pin').value = '';
+    if (r.status === 401) { setAdminMsg('Incorrect PIN.', 'var(--red)'); return; }
+    if (r.status === 429) { setAdminMsg('Locked — wait a minute and try again.', 'var(--red)'); return; }
+    if (r.status === 409) { setAdminMsg('No PIN set yet. Set one first.', 'var(--red)'); fetchAdminStatus(); return; }
+    if (!r.ok) { setAdminMsg('Login failed (HTTP ' + r.status + ').', 'var(--red)'); return; }
+    setAdminMsg('Logged in.', 'var(--green)');
+    termPrint(' ADMIN: logged in.', 'var(--green)');
+    fetchAdminStatus();
+  }).catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
+}
+
+// STATE C: POST /api/admin/logout.
+function adminLogout() {
+  fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' })
+    .then(() => {
+      setAdminMsg('Logged out.', 'var(--yellow)');
+      termPrint(' ADMIN: logged out.', 'var(--yellow)');
+      fetchAdminStatus();
+    })
+    .catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
+}
+
+function adminChangePinPrompt() {
+  const cp = document.getElementById('admin-changepin');
+  cp.style.display = (cp.style.display === 'block') ? 'none' : 'block';
+  if (cp.style.display === 'block') document.getElementById('adm-changepin-val').focus();
+}
+
+// Submit admin forms on Enter.
+['adm-newpin', 'adm-changepin-val'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') adminSetPin(id === 'adm-changepin-val' ? 'change' : undefined);
+  });
+});
+(function() {
+  const el = document.getElementById('adm-pin');
+  if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') adminLogin(); });
+})();
+
+// ═══════════════════════════════════════════════════════════════
+//   FIRMWARE UPDATE (OTA)
+// ═══════════════════════════════════════════════════════════════
+
+function setOtaMsg(text, color) {
+  const el = document.getElementById('ota-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = color || 'var(--gray)';
+}
+
+function fetchOtaStatus() {
+  return fetch('/api/ota/status', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      const dash = '—';
+      document.getElementById('ota-supported').textContent =
+        d.otaSupported ? 'YES' : 'NO (host build)';
+      document.getElementById('ota-running').textContent =
+        d.running ? 'IN PROGRESS' : 'idle';
+      document.getElementById('ota-boot').textContent = d.boot || dash;
+      document.getElementById('ota-next').textContent = d.next || dash;
+      const stateMsg = document.getElementById('ota-state-msg');
+      if (d.pendingVerify) {
+        stateMsg.textContent = 'New firmware pending verification.';
+        stateMsg.style.color = 'var(--yellow)';
+      } else if (d.error) {
+        stateMsg.textContent = 'Last error: ' + d.error;
+        stateMsg.style.color = 'var(--red)';
+      } else {
+        stateMsg.textContent = '';
+      }
+    })
+    .catch(() => { /* silent */ });
+}
+
+// Upload raw .bin bytes via XHR so we get an upload progress %.
+function otaUpload() {
+  if (otaUploading) return;
+  if (!controlsUnlocked()) { setOtaMsg('Admin login required.', 'var(--red)'); return; }
+  const fileEl = document.getElementById('ota-file');
+  const file = fileEl && fileEl.files && fileEl.files[0];
+  if (!file) { setOtaMsg('Choose a firmware .bin file first.', 'var(--red)'); return; }
+
+  const wrap = document.getElementById('ota-progress-wrap');
+  const bar = document.getElementById('ota-progress-bar');
+  const text = document.getElementById('ota-progress-text');
+  wrap.style.display = 'block';
+  bar.style.width = '0%';
+  text.textContent = '0%';
+  otaUploading = true;
+  document.getElementById('ota-upload-btn').disabled = true;
+  setOtaMsg('Uploading ' + file.name + ' (' + file.size.toLocaleString() + ' bytes)...', 'var(--yellow)');
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/ota/upload', true);
+  xhr.withCredentials = true;          // send the HttpOnly session cookie
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+  xhr.upload.onprogress = function(e) {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      bar.style.width = pct + '%';
+      text.textContent = pct + '%';
+    }
+  };
+
+  xhr.onload = function() {
+    otaUploading = false;
+    applyAuthGating();   // re-evaluate the upload button enabled state
+    if (xhr.status === 200) {
+      bar.style.width = '100%';
+      text.textContent = '100%';
+      let info = {};
+      try { info = JSON.parse(xhr.responseText); } catch (e) {}
+      setOtaMsg('Upload complete (' + (info.bytes || file.size) + ' bytes). Reboot to apply.', 'var(--green)');
+      termPrint(' OTA: upload complete. Reboot to apply.', 'var(--green)');
+      fetchOtaStatus();
+      if (info.rebootRequired && confirm('Firmware uploaded. Reboot now to apply the update?')) {
+        otaReboot(true);
+      }
+    } else if (xhr.status === 401) {
+      handleAuthExpired();
+      setOtaMsg('Session expired — please log in.', 'var(--red)');
+    } else if (xhr.status === 501) {
+      setOtaMsg('OTA only available on device (not in host build).', 'var(--red)');
+    } else {
+      setOtaMsg('Upload failed (HTTP ' + xhr.status + ').', 'var(--red)');
+    }
+  };
+
+  xhr.onerror = function() {
+    otaUploading = false;
+    applyAuthGating();
+    setOtaMsg('Upload failed — network error.', 'var(--red)');
+  };
+
+  xhr.send(file);   // raw bytes as the request body
+}
+
+function otaReboot(skipConfirm) {
+  if (!controlsUnlocked()) { setOtaMsg('Admin login required.', 'var(--red)'); return; }
+  if (!skipConfirm && !confirm('Reboot the device now? Any active calls will drop.')) return;
+  setOtaMsg('Rebooting device...', 'var(--yellow)');
+  termPrint(' OTA: reboot requested.', 'var(--yellow)');
+  fetch('/api/ota/reboot', { method: 'POST', credentials: 'same-origin' })
+    .then(r => {
+      if (r.status === 401) { handleAuthExpired(); return; }
+      setOtaMsg('Reboot signal sent. Device is restarting...', 'var(--green)');
+    })
+    .catch(() => {
+      // A dropped connection here is expected — the device is rebooting.
+      setOtaMsg('Reboot signal sent. Device is restarting...', 'var(--green)');
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//   WHIMSY — phosphor themes, opt-in audio, terminal easter eggs
+//   (all pure client-side; no backend calls, no external assets)
+// ═══════════════════════════════════════════════════════════════
+
+// ─── PHOSPHOR THEME SWITCHER (persisted) ───
+function applyPhosphor(idx) {
+  phosphorIdx = ((idx % PHOSPHOR_THEMES.length) + PHOSPHOR_THEMES.length) % PHOSPHOR_THEMES.length;
+  const key = PHOSPHOR_THEMES[phosphorIdx];
+  // Remove every theme class, then add the active one (blank = default CGA blue).
+  Object.values(PHOSPHOR_CLASS).forEach(c => { if (c) document.body.classList.remove(c); });
+  if (PHOSPHOR_CLASS[key]) document.body.classList.add(PHOSPHOR_CLASS[key]);
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = '[' + PHOSPHOR_LABEL[key] + ']';
+  try { localStorage.setItem('cga.phosphor', key); } catch (e) {}
+}
+function cyclePhosphor() {
+  blip(660);
+  applyPhosphor(phosphorIdx + 1);
+  termPrint(' Phosphor palette: ' + PHOSPHOR_LABEL[PHOSPHOR_THEMES[phosphorIdx]], 'var(--cyan)');
+}
+function restorePhosphor() {
+  let key = 'cga';
+  try { key = localStorage.getItem('cga.phosphor') || 'cga'; } catch (e) {}
+  const i = PHOSPHOR_THEMES.indexOf(key);
+  applyPhosphor(i >= 0 ? i : 0);
+}
+
+// ─── OPT-IN AUDIO (WebAudio, no files, OFF by default, no autoplay) ───
+function ensureAudio() {
+  if (!soundEnabled) return null;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (!audioCtx) { try { audioCtx = new AC(); } catch (e) { return null; } }
+  if (audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}); }
+  return audioCtx;
+}
+// A tiny percussive blip — used for clicks (cheap: one oscillator, ~60ms).
+function blip(freq) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(freq || 880, t);
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(0.06, t + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.start(t); osc.stop(t + 0.07);
+}
+// A soft two-tone ring preview (classic 440/480Hz cadence, single short burst).
+function ringPreview() {
+  const ctx = ensureAudio();
+  if (!ctx) { termPrint(' (enable [Sound] to hear the ring preview)', 'var(--dk-gray)'); return; }
+  const t = ctx.currentTime;
+  [440, 480].forEach(f => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(f, t);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.05, t + 0.02);
+    gain.gain.setValueAtTime(0.05, t + 0.55);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(t); osc.stop(t + 0.72);
+  });
+}
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  const btn = document.getElementById('sound-btn');
+  if (btn) btn.textContent = '[Sound: ' + (soundEnabled ? 'ON' : 'OFF') + ']';
+  try { localStorage.setItem('cga.sound', soundEnabled ? '1' : '0'); } catch (e) {}
+  if (soundEnabled) {
+    ensureAudio();   // create within this user gesture so it's allowed to play
+    blip(880);
+    termPrint(' Audio enabled. Try the "operator" command for a ring preview.', 'var(--green)');
+  } else {
+    termPrint(' Audio muted.', 'var(--gray)');
+  }
+}
+function restoreSound() {
+  let on = false;
+  try { on = localStorage.getItem('cga.sound') === '1'; } catch (e) {}
+  soundEnabled = on;
+  const btn = document.getElementById('sound-btn');
+  if (btn) btn.textContent = '[Sound: ' + (on ? 'ON' : 'OFF') + ']';
+  // NOTE: do NOT create/resume AudioContext here — that would be autoplay.
+}
+
+// ─── MATRIX RAIN (terminal easter egg; auto-stops, key/click to abort) ───
+function matrixRain() {
+  if (matrixTimer) return;
+  termPrint(' Wake up... following the white rabbit. (press any key to stop)', 'var(--green)');
+  const glyphs = '01<>{}[]#$%&*+=ｦｱｳｴｵｶｷｸｹｺﾅﾆﾇﾉ';
+  let frames = 0;
+  function stop() {
+    if (!matrixTimer) return;
+    clearInterval(matrixTimer); matrixTimer = null;
+    document.removeEventListener('keydown', stop, true);
+    termOutput.removeEventListener('click', stop, true);
+    termPrint(' ...there is no spoon.', 'var(--dk-gray)');
+  }
+  matrixTimer = setInterval(() => {
+    let row = '';
+    const n = 44;
+    for (let i = 0; i < n; i++) row += glyphs[Math.floor(Math.random() * glyphs.length)];
+    termPrint(row, 'var(--green)');
+    if (++frames >= 24) stop();
+  }, 70);
+  document.addEventListener('keydown', stop, true);
+  termOutput.addEventListener('click', stop, true);
+}
+
+// ─── ASCII OPERATOR (about box, rendered into the terminal) ───
+function printOperator() {
+  const art = [
+    "    .-\"\"\"\"\"-.",
+    "   /  _   _  \\     ~ SWITCHBOARD OPERATOR ~",
+    "   |  o   o  |     \"Number, please?\"",
+    "   |    ^    |      .--.__.--.",
+    "    \\  '-'  /      (  patch   )",
+    "     '-...-'        '--.  .--'",
+    "    __|___|__          ||",
+    "   [_O_____O_]     ====[]====",
+    "   /  PBX-1  \\     |  |  |  |",
+  ];
+  art.forEach(l => termPrint(l, 'var(--cyan)'));
 }
 
 // ─── 3D WIREFRAME ROTATING TESSERACT ───
@@ -1435,9 +2188,21 @@ function factoryReset() {
 })();
 
 // ─── INIT ───
+restorePhosphor();          // apply persisted palette before first paint settles
+restoreSound();             // restore the toggle label (does NOT start audio)
 bootSequence();
+bootFlourish();             // one quick, skippable typewriter line on top
+// Subtle click blip on any button press (only audible once Sound is enabled).
+document.addEventListener('click', function(e) {
+  if (e.target && e.target.closest && e.target.closest('button')) blip(720);
+}, true);
 fetchStatus();
+fetchAdminStatus();
+fetchOtaStatus();
 setInterval(fetchStatus, 3000);
+// Re-check auth + OTA state periodically (e.g. session lapses, OTA progress).
+setInterval(fetchAdminStatus, 15000);
+setInterval(() => { if (!otaUploading) fetchOtaStatus(); }, 15000);
 oracleInterval = setInterval(updateOracle, 12000);
 
 // Focus terminal on load (desktop only — avoid popping the mobile keyboard)

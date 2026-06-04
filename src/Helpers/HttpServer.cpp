@@ -1,6 +1,7 @@
 // HttpServer.cpp: Issues #23 and #28 resolved.
 #include "HttpServer.hpp"
 #include "RequestsHandler.hpp"
+#include "CallDetailRecord.hpp"
 #include "AdminAuth.hpp"
 #include "OtaUpdater.hpp"
 #include "index_html.h"
@@ -27,6 +28,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
+
+// Forward declarations for the file-local form/URL helpers (defined lower down).
+// sendApiDnd() uses getFormParam() but is defined earlier in this TU.
+static std::string getFormParam(const std::string& body, const std::string& key);
 
 // Captive-portal decay hold. The display app's decay watchdog reads this; the web
 // "/api/configuring" confirm sets it to pause the auto-switch to Standalone while a user is
@@ -61,7 +66,15 @@ HttpServer::HttpServer(const std::string& ip, int port, RequestsHandler* handler
 
 	sockaddr_in addr{};
 	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = inet_addr(_ip.c_str());
+	// Bind to all interfaces (INADDR_ANY) rather than the one configured IP.
+	// Binding a listening socket to a specific, dynamically-assigned address is
+	// fragile on lwip: in Wi-Fi STATION mode the DHCP-assigned IP is bound here,
+	// and connections to it were accepted by lwip into the backlog but never
+	// serviced (dashboard unreachable on a LAN, while the SoftAP's static
+	// 192.168.4.1 worked). INADDR_ANY serves on every interface/IP and is robust
+	// across AP/STA mode switches and IP/lease changes. _ip is still used for
+	// display/logging and the captive-portal same-origin check.
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	addr.sin_port = htons(static_cast<uint16_t>(_port));
 
 	if (bind(_listenSock, reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr)) < 0)
@@ -349,6 +362,29 @@ void HttpServer::handleClient(int clientSock)
 			sendApiKill(clientSock, req.body);
 		}
 	}
+	else if (req.method == "GET" && req.path == "/api/cdr")
+	{
+		// Read-only Call Detail Records — ungated like /api/status.
+		sendApiCdr(clientSock);
+	}
+	else if (req.method == "POST" && req.path == "/api/dnd")
+	{
+		// Mutating: same gate as /api/kill (same-origin + auth once provisioned).
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
+		else
+		{
+			sendApiDnd(clientSock, req.body);
+		}
+	}
 	else if (req.method == "GET" && req.path == "/api/wifi/scan")
 	{
 		sendApiWifiScan(clientSock);
@@ -621,6 +657,7 @@ void HttpServer::sendApiStatus(int sock)
 
 	std::vector<std::pair<std::string, std::string>> clients;
 	std::vector<std::tuple<std::string, std::string, std::string, int>> sessions;
+	std::vector<std::string> dndExtensions;
 	uint64_t packets = 0;
 	uint64_t dropped = 0;
 
@@ -628,6 +665,7 @@ void HttpServer::sendApiStatus(int sock)
 	{
 		clients = _handler->getActiveClients();
 		sessions = _handler->getActiveSessions();
+		dndExtensions = _handler->getDndExtensions();
 		packets = _handler->getPacketsProcessed();
 		dropped = _handler->getPacketsDropped();   // Issue #38
 	}
@@ -681,6 +719,15 @@ void HttpServer::sendApiStatus(int sock)
 		     << "\",\"state\":\"" << jsonEscape(std::get<2>(sessions[i]))
 		     << "\",\"duration\":\"" << durationBuf << "\"}";
 	}
+	json << "],";
+
+	// DND array: extensions currently in Do Not Disturb (Phase 2).
+	json << "\"dnd\":[";
+	for (size_t i = 0; i < dndExtensions.size(); i++)
+	{
+		if (i > 0) json << ",";
+		json << "\"" << jsonEscape(dndExtensions[i]) << "\"";
+	}
 	json << "]";
 
 	json << "}";
@@ -715,6 +762,71 @@ void HttpServer::sendApiKill(int sock, const std::string& body)
 	}
 	sendResponse(sock, 200, "OK", "application/json",
 	             "{\"status\":\"ok\",\"disconnected\":\"" + jsonEscape(ext) + "\"}");
+}
+
+void HttpServer::sendApiCdr(int sock)
+{
+	std::vector<CallDetailRecord> records;
+	if (_handler != nullptr)
+	{
+		records = _handler->getCallDetailRecords();   // newest first, thread-safe copy
+	}
+
+	uint64_t nowMs = currentTimeMs();   // same steady-clock basis as the CDR startMs
+
+	std::ostringstream json;
+	json << "[";
+	for (size_t i = 0; i < records.size(); i++)
+	{
+		if (i > 0) json << ",";
+		const CallDetailRecord& r = records[i];
+		// "ageSec": seconds since the call started, derived from the shared
+		// steady-clock basis (no wall clock / RTC is guaranteed on the device).
+		uint64_t ageSec = (nowMs >= r.startMs) ? (nowMs - r.startMs) / 1000 : 0;
+		json << "{\"caller\":\"" << jsonEscape(r.caller) << "\","
+		     << "\"callee\":\"" << jsonEscape(r.callee) << "\","
+		     << "\"startMs\":" << r.startMs << ","
+		     << "\"ageSec\":" << ageSec << ","
+		     << "\"duration\":" << r.durationSec << ","
+		     << "\"result\":\"" << cdrResultToString(r.result) << "\"}";
+	}
+	json << "]";
+
+	sendResponse(sock, 200, "OK", "application/json", json.str());
+}
+
+void HttpServer::sendApiDnd(int sock, const std::string& body)
+{
+	std::string ext = getFormParam(body, "extension");
+	std::string on  = getFormParam(body, "on");
+
+	if (ext.empty())
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"missing extension parameter\"}");
+		return;
+	}
+
+	// Reject the virtual extensions: DND must never affect echo (777) or
+	// broadcast (999) — they are not real endpoints.
+	if (ext == "777" || ext == "999")
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"cannot set DND on a virtual extension\"}");
+		return;
+	}
+
+	// Accept 1/true/on as enable; anything else (incl. "0") disables.
+	bool enable = (on == "1" || on == "true" || on == "on");
+
+	if (_handler != nullptr)
+	{
+		_handler->setDnd(ext, enable);
+	}
+
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"extension\":\"" + jsonEscape(ext) +
+	             "\",\"dnd\":" + (enable ? "true" : "false") + "}");
 }
 
 bool HttpServer::isSameOrigin(const HttpRequest& req) const

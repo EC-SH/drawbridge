@@ -9,6 +9,7 @@
 #include "IDGen.hpp"
 #include "IPHelper.hpp"
 #include "PoolConfig.hpp"
+#include "CallDetailRecord.hpp"
 
 std::vector<std::shared_ptr<SipMessage>> RequestsHandler::_messagePool;
 
@@ -447,6 +448,22 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	// Do Not Disturb (Phase 2): if the target extension has DND enabled, decline
+	// with 480 Temporarily Unavailable instead of ringing it. This branch is reached
+	// only for ordinary extensions — the virtual 777 (echo) and 999 (broadcast)
+	// extensions are handled above and so are never affected by DND.
+	if (isDndEnabled(destNumber))
+	{
+		auto response = getMessageFromPool(data->toString(), data->getSource());
+		response->setHeader("SIP/2.0 480 Temporarily Unavailable");
+		response->clearBody();
+		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		response->setContact(buildContact(caller.value()->getNumber()));
+		endHandle(data->getFromNumber(), response);
+		return;
+	}
+
 	// Check if the called is registered
 	auto called = findClient(data->getToNumber());
 	if (!called.has_value())
@@ -816,8 +833,19 @@ bool RequestsHandler::setCallState(std::string_view callID, Session::State state
 
 void RequestsHandler::endCall(std::string_view callID, std::string_view srcNumber, std::string_view destNumber, std::string_view reason)
 {
+	// Capture the session (for CDR start time / final state) BEFORE we erase it.
+	std::shared_ptr<Session> ending;
+	auto sit = _sessions.find(std::string(callID));
+	if (sit != _sessions.end())
+	{
+		ending = sit->second;
+	}
+
 	if (_sessions.erase(std::string(callID)) > 0)
 	{
+		// Record exactly once per torn-down dialog (Phase 2 CDR).
+		recordCdr(ending, srcNumber, destNumber);
+
 		std::ostringstream message;
 		message << "Session has been disconnected between " << srcNumber << " and " << destNumber;
 		if (!reason.empty())
@@ -834,6 +862,70 @@ void RequestsHandler::endCall(std::string_view callID, std::string_view srcNumbe
 			session->release();
 			break;
 		}
+	}
+}
+
+uint64_t RequestsHandler::nowEpochMs() const
+{
+	return static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void RequestsHandler::recordCdr(const std::shared_ptr<Session>& session,
+	std::string_view srcNumber, std::string_view destNumber)
+{
+	CallDetailRecord rec;
+	rec.caller = std::string(srcNumber);
+	rec.callee = std::string(destNumber);
+
+	uint64_t startMs = nowEpochMs();
+	uint32_t durationSec = 0;
+	CdrResult result = CdrResult::Failed;
+
+	if (session)
+	{
+		auto now = std::chrono::steady_clock::now();
+		startMs = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				session->getStartTime().time_since_epoch()).count());
+
+		switch (session->getState())
+		{
+			// Both Connected and Bye are "answered": a normal call ends via BYE, which
+			// sets the state to Bye (NOT Connected) just before endCall() runs, while
+			// the echo (777) path tears down straight from Connected. Session::setState
+			// resets _startTime to the connect instant on the Connected transition and
+			// the later Bye transition does NOT touch it, so getStartTime() still marks
+			// the answer instant in both cases — talk time is now - startTime.
+			case Session::State::Connected:
+			case Session::State::Bye:
+				result = CdrResult::Answered;
+				{
+					int64_t secs = static_cast<int64_t>(
+						std::chrono::duration_cast<std::chrono::seconds>(
+							now - session->getStartTime()).count());
+					if (secs < 0) secs = 0;
+					durationSec = static_cast<uint32_t>(secs);
+				}
+				break;
+			case Session::State::Busy:        result = CdrResult::Busy;        break;
+			case Session::State::Cancel:      result = CdrResult::Cancelled;   break;
+			case Session::State::Unavailable: result = CdrResult::Unavailable; break;
+			default:                          result = CdrResult::Failed;      break;
+		}
+	}
+
+	rec.startMs = startMs;
+	rec.durationSec = durationSec;
+	rec.result = result;
+
+	// Fixed ring write: overwrite the oldest slot once full (no heap growth).
+	_cdrRing[_cdrHead] = std::move(rec);
+	_cdrHead = (_cdrHead + 1) % POCKETDIAL_CDR_RECORDS;
+	if (_cdrCount < POCKETDIAL_CDR_RECORDS)
+	{
+		++_cdrCount;
 	}
 }
 
@@ -1097,6 +1189,76 @@ uint64_t RequestsHandler::getPacketsDropped() const
 	return _packetsDropped.load(std::memory_order_relaxed);
 }
 
+std::vector<CallDetailRecord> RequestsHandler::getCallDetailRecords()
+{
+	std::lock_guard<std::mutex> lock(_snapshotMutex);
+	return _snapshot.cdr;
+}
+
+void RequestsHandler::setDnd(const std::string& extension, bool on)
+{
+	std::vector<std::pair<bool, std::string>> localLogs;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (on)
+		{
+			// Bound the map so a flood of distinct extensions can't grow the heap
+			// without limit. Mirror the client-pool cap; reject new keys past it.
+			if (_dnd.find(extension) == _dnd.end() &&
+				_dnd.size() >= static_cast<size_t>(POCKETDIAL_MAX_CLIENTS))
+			{
+				queueLog("DND set ignored (table full) for extension " + extension, true);
+			}
+			else
+			{
+				_dnd[extension] = true;
+			}
+		}
+		else
+		{
+			// Turning DND off frees the slot, so the map only ever holds the
+			// extensions that are actively in DND (bounded by registrations).
+			_dnd.erase(extension);
+		}
+		queueLog("DND " + std::string(on ? "enabled" : "disabled") + " for extension " + extension);
+
+		// Refresh the DND view in the dashboard snapshot immediately so the UI
+		// reflects the change without waiting for the next tick().
+		{
+			std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+			_snapshot.dnd.clear();
+			_snapshot.dnd.reserve(_dnd.size());
+			for (const auto& [ext, enabled] : _dnd)
+			{
+				if (enabled) _snapshot.dnd.push_back(ext);
+			}
+		}
+
+		localLogs = std::move(_logQueue);
+		_logQueue.clear();
+	}
+
+	for (const auto& log : localLogs)
+	{
+		if (log.first) std::cerr << log.second << std::endl;
+		else std::cout << log.second << std::endl;
+	}
+}
+
+bool RequestsHandler::isDndEnabled(const std::string& extension)
+{
+	// Internal lookup: invoked from onInvite() which already holds _mutex, so this
+	// must NOT take _mutex (std::mutex is non-recursive). Bounded map lookup.
+	auto it = _dnd.find(extension);
+	return it != _dnd.end() && it->second;
+}
+
+std::vector<std::string> RequestsHandler::getDndExtensions()
+{
+	std::lock_guard<std::mutex> lock(_snapshotMutex);
+	return _snapshot.dnd;
+}
+
 size_t RequestsHandler::getClientCount()
 {
 	std::lock_guard<std::mutex> lock(_snapshotMutex);
@@ -1176,6 +1338,22 @@ void RequestsHandler::tick()
 					now - session->getStartTime()).count());
 			}
 			nextSnapshot.sessions.emplace_back(caller, callee, sessionStateToString(session->getState()), durationSec);
+		}
+
+		// CDR view: copy the ring out newest-first into the snapshot.
+		nextSnapshot.cdr.reserve(_cdrCount);
+		for (size_t i = 0; i < _cdrCount; ++i)
+		{
+			// _cdrHead points one past the newest; walk backwards with wrap.
+			size_t idx = (_cdrHead + POCKETDIAL_CDR_RECORDS - 1 - i) % POCKETDIAL_CDR_RECORDS;
+			nextSnapshot.cdr.push_back(_cdrRing[idx]);
+		}
+
+		// DND view: extensions currently in DND.
+		nextSnapshot.dnd.reserve(_dnd.size());
+		for (const auto& [ext, enabled] : _dnd)
+		{
+			if (enabled) nextSnapshot.dnd.push_back(ext);
 		}
 
 		{
