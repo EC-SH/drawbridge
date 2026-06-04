@@ -55,10 +55,9 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Build ESP-IDF firmware for the primary targets. esp32s3 x {wifi, eth} is the
-  # minimum required set. (The "display" transport is esp32s3-only and pulls
-  # heavy managed components; it is left as a documented stub here exactly as in
-  # ci.yml — uncomment the include entry once it is verified to build.)
+  # Build ESP-IDF firmware for the primary targets: esp32s3 x {wifi, eth} plus
+  # the esp32s3 display build (added via the include leg below; verified to build
+  # on ESP-IDF v5.2.1).
   # ---------------------------------------------------------------------------
   build-firmware:
     name: Build Firmware (${{ matrix.target-chip }} / ${{ matrix.sip-transport }})
@@ -68,9 +67,10 @@ jobs:
       matrix:
         target-chip: [ 'esp32s3' ]
         sip-transport: [ 'wifi', 'eth' ]
-        # include:
-        #   - target-chip: 'esp32s3'
-        #     sip-transport: 'display'
+        # display: esp32s3-only, verified to build on ESP-IDF v5.2.1.
+        include:
+          - target-chip: 'esp32s3'
+            sip-transport: 'display'
 
     container:
       image: espressif/idf:v5.2.1

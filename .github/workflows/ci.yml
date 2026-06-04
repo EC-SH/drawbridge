@@ -198,19 +198,15 @@ jobs:
         idf-version: [ 'v5.1.2', 'v5.2.1' ]
         target-chip: [ 'esp32', 'esp32s3' ]
         sip-transport: [ 'wifi', 'eth' ]
-        # The "display" transport is intentionally NOT in the base matrix. It
-        # only makes sense on esp32s3 and pulls heavy managed components
-        # (lvgl ^8.3.11, esp_lcd_touch, the AXS15231B driver — see
-        # main/idf_component.yml) which need a component-manager fetch and often
-        # an `idf.py reconfigure` after `set-target`. It could not be verified in
-        # the host CI sandbox (no idf.py), so rather than risk breaking the whole
-        # matrix it is left as a documented stub. To enable, uncomment the
-        # `include:` block below (esp32s3 + display only) and confirm it builds.
-        #
-        # include:
-        #   - idf-version: 'v5.2.1'
-        #     target-chip: 'esp32s3'
-        #     sip-transport: 'display'
+        # The "display" transport is esp32s3-only and pulls heavy managed
+        # components (lvgl ^8.3.11, esp_lcd_touch, the AXS15231B driver — see
+        # main/idf_component.yml). Verified to build on esp32s3 + ESP-IDF v5.2.1
+        # (set-target + build, app image ~1.5 MB), so it is added as a single
+        # include leg rather than expanding the full matrix.
+        include:
+          - idf-version: 'v5.2.1'
+            target-chip: 'esp32s3'
+            sip-transport: 'display'
 
     container:
       image: espressif/idf:${{ matrix.idf-version }}
