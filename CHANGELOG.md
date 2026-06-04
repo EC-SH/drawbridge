@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.2.0 - 2026-06-04
+
+Production-hardening + feature release. Verified end-to-end on a JC3248W535
+display board (ESP-IDF v5.3.5): builds, flashes, boots, joins Wi-Fi as a client,
+serves the dashboard, and handles SIP registration/calls at single-digit-ms
+latency.
+
+### Added
+- **Admin authentication**: PIN + server-side session layer (salted, iterated
+  SHA-256; HttpOnly cookie; brute-force lockout). Dashboard Security panel
+  (set-PIN / login / logout) gating every state-changing control. `THREAT_MODEL.md`.
+- **OTA firmware updates**: dual-OTA partition table, streaming `/api/ota/upload`
+  (bypasses the 16 KB body cap), anti-rollback confirmation on healthy boot, and
+  a dashboard Firmware-Update panel. `OTA.md`.
+- **Configurable SIP memory pools** (`PoolConfig.hpp`) with 3 documented hardware
+  tiers. `SCALING.md`.
+- **PBX features**: Call Detail Records (`GET /api/cdr`) and per-extension
+  Do-Not-Disturb (`POST /api/dnd`, 480-on-INVITE).
+- **Operator docs**: Setup, Hardware-Selection, Phone-Compatibility, Troubleshooting;
+  plus server-side RTP design (`RTP.md`) and a technical feature roadmap.
+- **SIP load/stress suite** (`tests/load/`) + on-device findings; CI now runs the
+  unit suite, a partition-table guard, and a tag-triggered release workflow.
+
+### Fixed
+- **Display STA-mode watchdog**: coalesce/rate-limit the on-screen log so a log
+  flood can't pin Core 1 on full-screen repaints (task-WDT eliminated).
+- **Dashboard unreachable in STATION mode**: the HTTP accept loop's `std::thread`
+  had a 3 KB pthread stack that `sendApiStatus` overflowed on-device; raised to
+  8 KB and bound the listener to `INADDR_ANY` (robust across AP/STA + DHCP changes).
+
 ## Unreleased (fix/esp-idf-ci-failures) - 2026-06-03
 
 ### Fixed
