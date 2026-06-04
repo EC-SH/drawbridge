@@ -1,12 +1,46 @@
 # pocket-dial
 
-A self-contained, enterprise-capable SIP PBX on a $10 microcontroller. Flash an ESP32-S3, connect softphones or physical IP phones to its network, and make direct VoIP calls instantly. No routers, no upstream trunks, no complex servers — the registrar, proxy, DHCP server, HTTP management server, and access point all run concurrently on a single dual-core chip.
+> [!WARNING]
+> **Stability Notice**: This repository contains bleeding-edge development builds. For stable, tested releases, please use [GitHub Releases](../../releases) or the latest stable branch. Production deployments should pin to a specific release tag.
+
+A self-contained, enterprise-capable SIP PBX on a $10 microcontroller. Flash an ESP32-S3, connect softphones or physical IP phones to its network, and make direct VoIP calls instantly. No routers, [...]
 
 Now with **native touch display support** and **W5500 wired-Ethernet capability**:
-* **Guition JC3248W535EN HMI Target**: Features a native **ESP-IDF v5.3 + LVGL 8.3** application driving a 3.5" IPS capacitive touchscreen with a retro CGA CRT-style switchboard dashboard — displaying live uptime, battery stats, registration counts, active sessions, and a real-time scrollable system console log directly on the panel.
-* **Wired-Ethernet & PoE Support**: Pre-configured transport targets for Waveshare ESP32-S3-ETH and LilyGO T-ETH boards, bridging pocket-dial to professional wired and Power-over-Ethernet network segments.
-* **SIP Virtual Extensions**: Features an inline **SIP Echo Test (`777`)** with zero-media-processing SDP loopback, and a **Parallel Broadcast / All-Page Intercom (`999`)** with target-URI rewriting and dynamic SIP auto-answer injection.
-* **Strict VoIP Interoperability**: Resolves early media loopback loops and ringing hangs on professional devices (like Yealink IP phones) by automatically stripping caller SDPs from all provisional `180 Ringing` responses via `clearBody()`, while enforcing PCMU/PCMA G.711 codec compliance.
+* **Guition JC3248W535EN HMI Target**: Features a native **ESP-IDF v5.3 + LVGL 8.3** application driving a 3.5" IPS capacitive touchscreen with a retro CGA CRT-style switchboard dashboard — displ[...]
+* **Wired-Ethernet & PoE Support**: Pre-configured transport targets for Waveshare ESP32-S3-ETH and LilyGO T-ETH boards, bridging pocket-dial to professional wired and Power-over-Ethernet network s[...]
+* **SIP Virtual Extensions**: Features an inline **SIP Echo Test (`777`)** with zero-media-processing SDP loopback, and a **Parallel Broadcast / All-Page Intercom (`999`)** with target-URI rewritin[...]
+* **Strict VoIP Interoperability**: Resolves early media loopback loops and ringing hangs on professional devices (like Yealink IP phones) by automatically stripping caller SDPs from all provisiona[...]
+
+---
+
+## Project Status & MVP Roadmap
+
+> [!WARNING]
+> **Current Phase**: Beta / Pre-MVP Validation
+> 
+> The core SIP engine is production-ready with all critical concurrency and security issues resolved (v1.4.0). MVP readiness depends on:
+
+### ✅ **MVP Features - Completed**
+- Core SIP signaling (REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS)
+- Peer-to-peer RTP media routing
+- WiFi AP mode with captive portal onboarding
+- Web dashboard & HTTP status API
+- Virtual extensions (Echo `777`, Broadcast `999`)
+- Concurrency & memory safety hardening
+- Input validation & rate limiting
+- Desktop (Linux/Windows) debug mode
+- Arduino IDE sketch templates
+
+### ⏳ **MVP Blockers - In Progress**
+- **Physical Hardware Validation** (Issue #44): End-to-end SIP call test on JC3248W535EN smart display hardware — currently offline, awaiting re-connection
+- **Arduino IDE Compatibility** (Issue #41): Platform detection guards verification for hobbyist deployment paths
+
+### 🔜 **Post-MVP Features - Backlog**
+- Zero-Touch Phone Auto-Provisioning (Issue #35) — HTTP config push to Polycom/Yealink/Cisco phones
+- Live SIP Tracer in Web Terminal (Issue #32) — WebSocket packet streaming
+- PCAP Dump Endpoint (Issue #33) — Wireshark integration via `/api/diagnostics/pcap`
+
+**For detailed issue tracking and resolved items, see [ISSUES.md](ISSUES.md) and the [GitHub Issue Tracker](../../issues).**
 
 ---
 
@@ -41,32 +75,32 @@ Now with **native touch display support** and **W5500 wired-Ethernet capability*
 
 ## Features
 
-* **Standalone AP Mode (ESP32-S3)** — Spawns an open Wi-Fi access point (`esp32-sipserver`), runs an internal DHCP server, and binds the SIP registrar to `192.168.4.1:5060`. Connect, register, and call with zero external infrastructure.
+* **Standalone AP Mode (ESP32-S3)** — Spawns an open Wi-Fi access point (`esp32-sipserver`), runs an internal DHCP server, and binds the SIP registrar to `192.168.4.1:5060`. Connect, register, a[...]
 * **W5500 Ethernet / PoE Transport** — Direct network interface driver support for wired RJ45 and Power-over-Ethernet environments, featuring DHCP or static IP fallbacks.
-* **Captive Portal Wi-Fi Onboarding** — When unconfigured, spawns a secure setup SoftAP (`My-Ap`) and displays a join QR code on screen. Intercepts HTTP traffic via a background DNS redirection server (Port 53), leading clients to a retro-themed onboarding wizard at `192.168.4.1` to provision router credentials or toggle permanent Standalone AP mode.
-* **Smart Touchscreen Dashboard** — Native ESP-IDF 5.3 + LVGL 8.3 CGA-style HMI. Double-buffered in external OPI PSRAM (307.2 KB 16-bit color frames). Tap to cycle phosphorus theme colors (CGA Blue / Amber CRT / Green Phosphor), reset via touch dialog, or monitor system console logs captured from standard stdout (`esp_log_set_vprintf`).
-* **Active Keepalive OPTIONS & Pruning** — Periodically dispatches OPTIONS ping packets to all active clients. Automatically reaps dead bindings upon lease timeouts or silent periods to bound memory.
-* **Robust Concurrency & Headless Fallback** — Dedicated, core-isolated FreeRTOS tasks. SIP signaling executes on Core 1, and HTTP/Web dashboard operations execute on Core 0. If the display panel fails to initialize, the server falls back to headless operation seamlessly.
+* **Captive Portal Wi-Fi Onboarding** — When unconfigured, spawns a secure setup SoftAP (`My-Ap`) and displays a join QR code on screen. Intercepts HTTP traffic via a background DNS redirection [...]
+* **Smart Touchscreen Dashboard** — Native ESP-IDF 5.3 + LVGL 8.3 CGA-style HMI. Double-buffered in external OPI PSRAM (307.2 KB 16-bit color frames). Tap to cycle phosphorus theme colors (CGA B[...]
+* **Active Keepalive OPTIONS & Pruning** — Periodically dispatches OPTIONS ping packets to all active clients. Automatically reaps dead bindings upon lease timeouts or silent periods to bound me[...]
+* **Robust Concurrency & Headless Fallback** — Dedicated, core-isolated FreeRTOS tasks. SIP signaling executes on Core 1, and HTTP/Web dashboard operations execute on Core 0. If the display pane[...]
 
 ---
 
 ## How It Works
 
-The device boots as its own isolated telecommunication hub. Media (RTP) flows directly **peer-to-peer (P2P)** between the endpoints over the local wireless or wired segment. The board brokers signaling handshakes (`INVITE`, `200 OK`, `ACK`, `BYE`), allowing the microcontroller to coordinate high-bandwidth calls without processing or routing the audio packets themselves.
+The device boots as its own isolated telecommunication hub. Media (RTP) flows directly **peer-to-peer (P2P)** between the endpoints over the local wireless or wired segment. The board brokers sign[...]
 
 ```
-                  ┌──────────────────────┐
-                  │  pocket-dial Server  │
-                  │   (SIP Signaling)    │
-                  └──────────────────────┘
-                       ▲            ▲
-             INVITE /  │            │  INVITE /
-             200 OK    │            │  200 OK
-                       ▼            ▼
-             ┌───────────┐        ┌───────────┐
-             │ Phone 102 │◀══════▶│ Phone 105 │
-             │  (Caller) │   RTP  │  (Callee) │
-             └───────────┘  Audio └───────────┘
+                   ┌──────────────────────┐
+                   │  pocket-dial Server  │
+                   │   (SIP Signaling)    │
+                   └──────────────────────┘
+                        ▲            ▲
+              INVITE /  │            │  INVITE /
+              200 OK    │            │  200 OK
+                        ▼            ▼
+              ┌───────────┐        ┌───────────┐
+              │ Phone 102 │◀══════▶│ Phone 105 │
+              │  (Caller) │   RTP  │  (Callee) │
+              └───────────┘  Audio └───────────┘
 ```
 
 ---
@@ -188,7 +222,7 @@ pocket-dial includes two built-in virtual extensions to test network media paths
 * Resolves the need for server-side audio transcoding or DSP, producing a zero-latency hardware echo test.
 
 ### 2. Parallel Intercom / Emergency Broadcast (`999`)
-* Dialing `999` invokes parallel forking. The server registers a broadcast session, saves the caller's `INVITE`, and cloning it, dispatches concurrent `INVITE` requests to **every registered extension** on the network (excluding the caller).
+* Dialing `999` invokes parallel forking. The server registers a broadcast session, saves the caller's `INVITE`, and cloning it, dispatches concurrent `INVITE` requests to **every registered exte[...]
 * **Auto-Answer Injection**: Injects VoIP-standard auto-answer headers into the outgoing forks:
   * `Call-Info: <sip:any>;answer-after=0`
   * `Alert-Info: info=alert-autoanswer`
@@ -196,16 +230,16 @@ pocket-dial includes two built-in virtual extensions to test network media paths
   * `Alert-Info: intercom=true`
   * `P-Auto-Answer: normal`
 * **Target-URI Rewriting**: Rewrites the Request-URI and `To` headers dynamically to use the target's unique extension rather than `999` (essential for phone-side SIP validation rules).
-* **Race Connection**: The first device to answer with `200 OK` is connected to the caller. The server forwards its SDP and immediately fires off a `CANCEL` to all losing ringing targets so their alarms cease instantly. If an endpoint answers too late, the server sends an inline `BYE` to close its session cleanly.
+* **Race Connection**: The first device to answer with `200 OK` is connected to the caller. The server forwards its SDP and immediately fires off a `CANCEL` to all losing ringing targets so their[...]
 
 ---
 
 ## VoIP Interoperability & SDP Stripping
 
-During testing with strict, professional SIP terminals (like Yealink IP phones), standard softphone behaviors can introduce early media loops or codec failures. pocket-dial applies two core signaling rules to guarantee perfect voice paths:
+During testing with strict, professional SIP terminals (like Yealink IP phones), standard softphone behaviors can introduce early media loops or codec failures. pocket-dial applies two core signa[...]
 
-1. **Ringing SDP Stripper (`clearBody`)**: When forwarding a `180 Ringing` packet, any copy of the caller's SDP is erased via `ringing->clearBody()`. The body is removed and the `Content-Length` header is rewritten to `0`. This prevents phones from opening pre-handshake early media RTP loops, avoiding local echo loops and ensuring the call transitions cleanly to "Connected" upon answering.
-2. **Strict Codec Enforcement (`enforceG711`)**: Strips non-G.711 audio configurations (like HD G.722 or Opus codecs) from forked `INVITE` and `200 OK` SDP packages, locking the media session to **PCMU / PCMA G.711** (`0 8 101`). This eliminates dead air and codec negotiation failures during auto-answers.
+1. **Ringing SDP Stripper (`clearBody`)**: When forwarding a `180 Ringing` packet, any copy of the caller's SDP is erased via `ringing->clearBody()`. The body is removed and the `Content-Length` [...]
+2. **Strict Codec Enforcement (`enforceG711`)**: Strips non-G.711 audio configurations (like HD G.722 or Opus codecs) from forked `INVITE` and `200 OK` SDP packages, locking the media session to [...]
 
 ---
 
@@ -214,7 +248,7 @@ During testing with strict, professional SIP terminals (like Yealink IP phones),
 To facilitate automated signaling tests and validation in lab networks without physical button presses, the directory contains:
 
 ### `scratch/yealink_controller.py`
-A comprehensive Python CLI tool that exploits the remote control **Action URI** endpoints on Yealink IP phones. It bypasses Web UI form handshakes and security limits by performing secure Basic Auth and anti-CSRF token-signed RSA/AES configuration provisioning uploads.
+A comprehensive Python CLI tool that exploits the remote control **Action URI** endpoints on Yealink IP phones. It bypasses Web UI form handshakes and security limits by performing secure Basic A[...]
 
 #### Basic Usage:
 ```bash
