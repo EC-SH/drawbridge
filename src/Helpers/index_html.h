@@ -547,11 +547,124 @@ R"rawhtml(
   overflow-y: auto;
 }
 
+/* ─── ADMIN / SECURITY + OTA PANELS ─── */
+.adm-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+}
+.adm-form label {
+  color: var(--cyan);
+  font-size: 15px;
+}
+.adm-input {
+  background: var(--black);
+  border: 1px solid var(--dk-cyan);
+  color: var(--green);
+  font-family: inherit;
+  font-size: 15px;
+  padding: 4px 8px;
+  outline: none;
+  min-width: 120px;
+  flex: 1 1 120px;
+}
+.adm-input:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 6px rgba(85,255,255,0.3);
+}
+input[type="file"].adm-input {
+  padding: 3px 4px;
+  color: var(--gray);
+}
+.adm-note {
+  color: var(--dk-yellow);
+  font-size: 14px;
+  margin: 2px 0;
+}
+.adm-msg {
+  font-size: 14px;
+  margin: 2px 0;
+  min-height: 16px;
+}
+.adm-state-ok { color: var(--green); text-shadow: 0 0 6px rgba(85,255,85,0.4); }
+.adm-locked-note {
+  color: var(--dk-red);
+  font-size: 14px;
+  margin: 2px 0;
+}
+/* Disabled (gated) controls */
+.btn-retro:disabled,
+.btn-retro[disabled] {
+  background: var(--dk-gray);
+  color: var(--bg-dark);
+  border-color: var(--dk-gray);
+  cursor: not-allowed;
+  opacity: 0.6;
+  text-shadow: none;
+}
+.btn-retro:disabled:hover,
+.btn-retro[disabled]:hover { background: var(--dk-gray); color: var(--bg-dark); }
+/* OTA progress bar */
+#ota-progress-wrap {
+  display: none;
+  margin: 4px 0;
+  height: 14px;
+  border: 1px solid var(--dk-cyan);
+  background: var(--black);
+  position: relative;
+}
+#ota-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--dk-cyan);
+  transition: width 0.15s linear;
+}
+#ota-progress-text {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  text-align: center;
+  font-size: 12px;
+  line-height: 14px;
+  color: var(--fg);
+  text-shadow: 0 0 4px rgba(0,0,0,0.8);
+}
+.ota-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 0;
+  font-size: 15px;
+}
+.ota-row .status-label { color: var(--gray); }
+.ota-row .status-value { color: var(--cyan); text-shadow: 0 0 6px rgba(85,255,255,0.3); }
+
 /* ─── RESPONSIVE ─── */
 @media (max-width: 800px) {
-  #body-area { flex-direction: column; }
-  #right-panel { width: 100%; flex-direction: row; justify-content: center; }
+  html, body { overflow: auto; height: auto; }
+  #crt-monitor { height: auto; min-height: 100%; border-radius: 0; }
+  #main-content { height: auto; overflow: visible; }
+  #body-area { flex-direction: column; overflow: visible; }
+  #left-panels { overflow: visible; }
+  #right-panel { width: 100%; flex-direction: row; justify-content: center; flex-wrap: wrap; }
   #retro-canvas { width: 150px !important; height: 150px !important; }
+  #header { flex-direction: column; align-items: stretch; gap: 4px; }
+  #header .menu-items { flex-wrap: wrap; justify-content: center; }
+  .panel-border-top, .panel-border-bottom { font-size: 12px; }
+  /* Tap-friendly controls */
+  .btn-retro { padding: 8px 16px; font-size: 16px; margin-bottom: 4px; }
+  .menu-btn { padding: 6px 10px; font-size: 16px; }
+  .adm-input { font-size: 16px; padding: 8px; flex-basis: 100%; }
+  .adm-form { flex-direction: column; align-items: stretch; }
+  .adm-form label { width: 100%; }
+  #terminal-container { min-height: 220px; }
+  /* Modals fill the small screen */
+  #wifi-modal, #help-modal {
+    min-width: 0;
+    width: 94vw;
+    max-width: 94vw;
+    max-height: 90vh;
+  }
 }
 </style>
 </head>
@@ -625,6 +738,87 @@ R"rawhtml(
                   <tr><td colspan="4" style="color:var(--dk-gray)">No active sessions</td></tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
+        </div>
+
+        <!-- ADMIN / SECURITY PANEL -->
+        <div class="panel">
+          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
+          <div class="panel-title"> ║ ▣ ADMIN / SECURITY</div>
+          <div class="panel-body">
+            <div id="admin-loading" style="color:var(--dk-gray);">Querying admin status...</div>
+
+            <!-- STATE A: not provisioned → set PIN -->
+            <div id="admin-setpin" style="display:none;">
+              <div class="adm-note">No admin PIN set. Create one to protect this device.</div>
+              <div class="adm-form">
+                <label for="adm-newpin">New PIN:</label>
+                <input class="adm-input" type="password" id="adm-newpin" inputmode="numeric" autocomplete="off" placeholder="min 4 chars">
+                <button class="btn-retro" onclick="adminSetPin()">⚿ Set PIN</button>
+              </div>
+            </div>
+
+            <!-- STATE B: provisioned, not authenticated → login -->
+            <div id="admin-login" style="display:none;">
+              <div class="adm-note">Admin login required.</div>
+              <div class="adm-form">
+                <label for="adm-pin">PIN:</label>
+                <input class="adm-input" type="password" id="adm-pin" inputmode="numeric" autocomplete="off" placeholder="Enter PIN">
+                <button class="btn-retro" onclick="adminLogin()">⮞ Login</button>
+              </div>
+            </div>
+
+            <!-- STATE C: authenticated -->
+            <div id="admin-loggedin" style="display:none;">
+              <div class="adm-msg adm-state-ok">● Logged in — admin controls unlocked.</div>
+              <div class="adm-form">
+                <button class="btn-retro" onclick="adminChangePinPrompt()" title="Set a new admin PIN">⚿ Change PIN</button>
+                <button class="btn-retro btn-danger" onclick="adminLogout()">⮜ Logout</button>
+              </div>
+            </div>
+
+            <!-- Inline change-pin (shown from STATE C) -->
+            <div id="admin-changepin" style="display:none;">
+              <div class="adm-form">
+                <label for="adm-changepin-val">New PIN:</label>
+                <input class="adm-input" type="password" id="adm-changepin-val" inputmode="numeric" autocomplete="off" placeholder="min 4 chars">
+                <button class="btn-retro" onclick="adminSetPin('change')">Save</button>
+                <button class="btn-retro btn-danger" onclick="document.getElementById('admin-changepin').style.display='none';">Cancel</button>
+              </div>
+            </div>
+
+            <div class="adm-msg" id="admin-msg"></div>
+          </div>
+          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
+        </div>
+
+        <!-- FIRMWARE UPDATE (OTA) PANEL -->
+        <div class="panel">
+          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
+          <div class="panel-title"> ║ ⬆ FIRMWARE UPDATE (OTA)</div>
+          <div class="panel-body">
+            <div class="ota-row"><span class="status-label">OTA Support ·</span><span class="status-value" id="ota-supported">—</span></div>
+            <div class="ota-row"><span class="status-label">Running ·····</span><span class="status-value" id="ota-running">—</span></div>
+            <div class="ota-row"><span class="status-label">Boot Part ···</span><span class="status-value" id="ota-boot">—</span></div>
+            <div class="ota-row"><span class="status-label">Next Part ···</span><span class="status-value" id="ota-next">—</span></div>
+            <div class="adm-msg" id="ota-state-msg" style="color:var(--dk-gray);"></div>
+
+            <div id="ota-controls" style="margin-top:4px;">
+              <div class="adm-note" id="ota-gate-note" style="display:none;">Admin login required to update firmware.</div>
+              <div class="adm-form">
+                <input class="adm-input" type="file" id="ota-file" accept=".bin">
+              </div>
+              <div id="ota-progress-wrap">
+                <div id="ota-progress-bar"></div>
+                <div id="ota-progress-text">0%</div>
+              </div>
+              <div class="adm-form">
+                <button class="btn-retro" id="ota-upload-btn" onclick="otaUpload()">⬆ Upload firmware</button>
+                <button class="btn-retro btn-danger" id="ota-reboot-btn" onclick="otaReboot()">⟳ Reboot device</button>
+              </div>
+              <div class="adm-msg" id="ota-msg"></div>
             </div>
           </div>
           <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
@@ -715,18 +909,19 @@ R"rawhtml(
     <div id="wifi-networks-list">
       <div style="color:var(--dk-gray);">Press "Scan Networks" to discover available WiFi...</div>
     </div>
+    <div id="wifi-admin-note" class="adm-note" style="display:none;">⚿ Admin login required for the controls below. Use the ADMIN / SECURITY panel to log in.</div>
     <div id="wifi-connect-form">
       <label>SSID: <span id="wifi-selected-ssid" style="color:var(--green);"></span></label>
       <label style="margin-top:4px;">Password:</label>
       <input type="password" id="wifi-password" placeholder="Enter network key...">
       <div style="margin-top:6px;">
-        <button class="btn-retro" onclick="connectWifi()">⚡ Connect</button>
+        <button class="btn-retro" id="wifi-connect-btn" onclick="connectWifi()">⚡ Connect</button>
         <button class="btn-retro btn-danger" onclick="cancelWifiConnect()">Cancel</button>
       </div>
     </div>
     <div style="margin-top:12px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
       <div style="font-size:14px; color:var(--dk-yellow); margin-bottom:4px;">Standalone AP Mode:</div>
-      <button class="btn-retro" onclick="startApMode()">⚡ Host Standalone AP</button>
+      <button class="btn-retro" id="wifi-ap-btn" onclick="startApMode()">⚡ Host Standalone AP</button>
       <div style="font-size:11px; color:var(--dk-cyan); margin-top:4px;">Persists across reboots. (Unconfigured devices auto-switch to Standalone ~5&nbsp;min after power-on.)</div>
     </div>
     <div style="margin-top:10px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
@@ -734,7 +929,7 @@ R"rawhtml(
     </div>
     <div style="margin-top:12px; border-top:1px dashed var(--dk-red); padding-top:8px;">
       <div style="font-size:14px; color:var(--dk-red); margin-bottom:4px;">Danger Zone:</div>
-      <button class="btn-retro btn-danger" onclick="factoryReset()">⚠ Factory Reset</button>
+      <button class="btn-retro btn-danger" id="wifi-reset-btn" onclick="factoryReset()">⚠ Factory Reset</button>
     </div>
   </div>
 </div>
@@ -753,6 +948,9 @@ let cmdHistory = [];
 let cmdHistoryIdx = -1;
 let oracleInterval = null;
 let selectedSSID = '';
+// Admin auth state: drives gating of dangerous controls + OTA.
+let adminState = { provisioned: false, authenticated: false };
+let otaUploading = false;
 )rawhtml"
 R"rawhtml(
 // ─── SYSTEM ORACLE WORD GENERATOR ───
@@ -961,12 +1159,20 @@ function processCommand(cmd) {
         termPrint(' Usage: kill <extension_number>', 'var(--red)');
       } else {
         const ext = parts[1];
+        if (adminState.provisioned && !adminState.authenticated) {
+          termPrint(' Admin login required. Open ADMIN / SECURITY panel to log in.', 'var(--red)');
+          break;
+        }
         termPrint(' Sending KILL signal to extension ' + ext + '...', 'var(--yellow)');
         fetch('/api/kill', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: 'extension=' + encodeURIComponent(ext)
-        }).then(r => r.text()).then(t => {
+        }).then(r => {
+          if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+          return r.text();
+        }).then(t => {
           termPrint(' ' + (t || 'Extension terminated.'), 'var(--green)');
         }).catch(e => {
           termPrint(' ERROR: ' + e.message, 'var(--red)');
@@ -1248,9 +1454,13 @@ function connectWifi() {
 
   fetch('/api/wifi/connect', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'ssid=' + encodeURIComponent(selectedSSID) + '&password=' + encodeURIComponent(pw)
-  }).then(r => r.text()).then(t => {
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+    return r.text();
+  }).then(t => {
     statusEl.textContent = 'Connected to ' + selectedSSID + '!';
     statusEl.style.color = 'var(--green)';
     cancelWifiConnect();
@@ -1269,8 +1479,12 @@ function startApMode() {
 
   fetch('/api/wifi/mode_ap', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  }).then(r => r.json()).then(data => {
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+    return r.json();
+  }).then(data => {
     statusEl.textContent = 'Mode AP set! Rebooting...';
     statusEl.style.color = 'var(--green)';
     termPrint(' WiFi: Operational mode set to Standalone AP. Rebooting...', 'var(--green)');
@@ -1299,11 +1513,284 @@ function factoryReset() {
   if (statusEl) { statusEl.textContent = 'Factory resetting...'; statusEl.style.color = 'var(--red)'; }
   fetch('/api/factory-reset', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'confirm=ERASE'
-  }).then(r => r.json()).then(data => {
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
+    return r.json();
+  }).then(data => {
     termPrint(' FACTORY RESET: ' + (data.message || 'Rebooting...'), 'var(--yellow)');
   }).catch(e => termPrint(' RESET ERROR: ' + e.message, 'var(--red)'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//   ADMIN / SECURITY — auth state machine + control gating
+// ═══════════════════════════════════════════════════════════════
+
+function setAdminMsg(text, color) {
+  const el = document.getElementById('admin-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = color || 'var(--gray)';
+}
+
+// Fetch /api/admin/status and re-render the panel + gate all controls.
+function fetchAdminStatus() {
+  return fetch('/api/admin/status', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      adminState.provisioned = !!d.provisioned;
+      adminState.authenticated = !!d.authenticated;
+      renderAdminPanel();
+      applyAuthGating();
+    })
+    .catch(() => { /* silent — leave last known state */ });
+}
+
+// Show exactly one of the three admin states.
+function renderAdminPanel() {
+  const loading   = document.getElementById('admin-loading');
+  const setpin    = document.getElementById('admin-setpin');
+  const login     = document.getElementById('admin-login');
+  const loggedin  = document.getElementById('admin-loggedin');
+  const changepin = document.getElementById('admin-changepin');
+  if (loading) loading.style.display = 'none';
+  setpin.style.display = 'none';
+  login.style.display = 'none';
+  loggedin.style.display = 'none';
+  changepin.style.display = 'none';
+
+  if (!adminState.provisioned) {
+    setpin.style.display = 'block';            // STATE A
+  } else if (!adminState.authenticated) {
+    login.style.display = 'block';             // STATE B
+  } else {
+    loggedin.style.display = 'block';          // STATE C
+  }
+}
+
+// A control is unlocked when the device is unprovisioned OR the admin is logged in.
+function controlsUnlocked() {
+  return !adminState.provisioned || adminState.authenticated;
+}
+
+// Enable/disable + show notes on every gated control (kill is handled in the
+// terminal command, this covers the button-driven controls + OTA).
+function applyAuthGating() {
+  const unlocked = controlsUnlocked();
+  ['wifi-connect-btn', 'wifi-ap-btn', 'wifi-reset-btn', 'ota-upload-btn', 'ota-reboot-btn']
+    .forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) btn.disabled = !unlocked;
+    });
+  const wifiNote = document.getElementById('wifi-admin-note');
+  if (wifiNote) wifiNote.style.display = unlocked ? 'none' : 'block';
+  const otaNote = document.getElementById('ota-gate-note');
+  if (otaNote) otaNote.style.display = unlocked ? 'none' : 'block';
+  const otaFile = document.getElementById('ota-file');
+  if (otaFile) otaFile.disabled = !unlocked;
+}
+
+// Called whenever a gated endpoint returns 401 mid-session.
+function handleAuthExpired() {
+  adminState.authenticated = false;
+  renderAdminPanel();
+  applyAuthGating();
+  setAdminMsg('Session expired — please log in.', 'var(--red)');
+  termPrint(' AUTH: session expired — please log in.', 'var(--red)');
+}
+
+// STATE A / change-pin: POST /api/admin/set-pin (allowed unprovisioned OR authed).
+function adminSetPin(mode) {
+  const inputId = (mode === 'change') ? 'adm-changepin-val' : 'adm-newpin';
+  const pin = document.getElementById(inputId).value;
+  if (!pin || pin.length < 4) {
+    setAdminMsg('PIN must be at least 4 characters.', 'var(--red)');
+    return;
+  }
+  fetch('/api/admin/set-pin', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'pin=' + encodeURIComponent(pin)
+  }).then(r => {
+    if (r.status === 401) { handleAuthExpired(); return; }
+    if (r.status === 400) { setAdminMsg('Invalid PIN (min 4 characters).', 'var(--red)'); return; }
+    if (!r.ok) { setAdminMsg('Failed to set PIN (HTTP ' + r.status + ').', 'var(--red)'); return; }
+    document.getElementById(inputId).value = '';
+    const cp = document.getElementById('admin-changepin');
+    if (cp) cp.style.display = 'none';
+    setAdminMsg('Admin PIN updated.', 'var(--green)');
+    termPrint(' ADMIN: PIN set.', 'var(--green)');
+    fetchAdminStatus();
+  }).catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
+}
+
+// STATE B: POST /api/admin/login.
+function adminLogin() {
+  const pin = document.getElementById('adm-pin').value;
+  if (!pin) { setAdminMsg('Enter your PIN.', 'var(--red)'); return; }
+  fetch('/api/admin/login', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'pin=' + encodeURIComponent(pin)
+  }).then(r => {
+    document.getElementById('adm-pin').value = '';
+    if (r.status === 401) { setAdminMsg('Incorrect PIN.', 'var(--red)'); return; }
+    if (r.status === 429) { setAdminMsg('Locked — wait a minute and try again.', 'var(--red)'); return; }
+    if (r.status === 409) { setAdminMsg('No PIN set yet. Set one first.', 'var(--red)'); fetchAdminStatus(); return; }
+    if (!r.ok) { setAdminMsg('Login failed (HTTP ' + r.status + ').', 'var(--red)'); return; }
+    setAdminMsg('Logged in.', 'var(--green)');
+    termPrint(' ADMIN: logged in.', 'var(--green)');
+    fetchAdminStatus();
+  }).catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
+}
+
+// STATE C: POST /api/admin/logout.
+function adminLogout() {
+  fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' })
+    .then(() => {
+      setAdminMsg('Logged out.', 'var(--yellow)');
+      termPrint(' ADMIN: logged out.', 'var(--yellow)');
+      fetchAdminStatus();
+    })
+    .catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
+}
+
+function adminChangePinPrompt() {
+  const cp = document.getElementById('admin-changepin');
+  cp.style.display = (cp.style.display === 'block') ? 'none' : 'block';
+  if (cp.style.display === 'block') document.getElementById('adm-changepin-val').focus();
+}
+
+// Submit admin forms on Enter.
+['adm-newpin', 'adm-changepin-val'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') adminSetPin(id === 'adm-changepin-val' ? 'change' : undefined);
+  });
+});
+(function() {
+  const el = document.getElementById('adm-pin');
+  if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') adminLogin(); });
+})();
+
+// ═══════════════════════════════════════════════════════════════
+//   FIRMWARE UPDATE (OTA)
+// ═══════════════════════════════════════════════════════════════
+
+function setOtaMsg(text, color) {
+  const el = document.getElementById('ota-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = color || 'var(--gray)';
+}
+
+function fetchOtaStatus() {
+  return fetch('/api/ota/status', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      const dash = '—';
+      document.getElementById('ota-supported').textContent =
+        d.otaSupported ? 'YES' : 'NO (host build)';
+      document.getElementById('ota-running').textContent =
+        d.running ? 'IN PROGRESS' : 'idle';
+      document.getElementById('ota-boot').textContent = d.boot || dash;
+      document.getElementById('ota-next').textContent = d.next || dash;
+      const stateMsg = document.getElementById('ota-state-msg');
+      if (d.pendingVerify) {
+        stateMsg.textContent = 'New firmware pending verification.';
+        stateMsg.style.color = 'var(--yellow)';
+      } else if (d.error) {
+        stateMsg.textContent = 'Last error: ' + d.error;
+        stateMsg.style.color = 'var(--red)';
+      } else {
+        stateMsg.textContent = '';
+      }
+    })
+    .catch(() => { /* silent */ });
+}
+
+// Upload raw .bin bytes via XHR so we get an upload progress %.
+function otaUpload() {
+  if (otaUploading) return;
+  if (!controlsUnlocked()) { setOtaMsg('Admin login required.', 'var(--red)'); return; }
+  const fileEl = document.getElementById('ota-file');
+  const file = fileEl && fileEl.files && fileEl.files[0];
+  if (!file) { setOtaMsg('Choose a firmware .bin file first.', 'var(--red)'); return; }
+
+  const wrap = document.getElementById('ota-progress-wrap');
+  const bar = document.getElementById('ota-progress-bar');
+  const text = document.getElementById('ota-progress-text');
+  wrap.style.display = 'block';
+  bar.style.width = '0%';
+  text.textContent = '0%';
+  otaUploading = true;
+  document.getElementById('ota-upload-btn').disabled = true;
+  setOtaMsg('Uploading ' + file.name + ' (' + file.size.toLocaleString() + ' bytes)...', 'var(--yellow)');
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/ota/upload', true);
+  xhr.withCredentials = true;          // send the HttpOnly session cookie
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+  xhr.upload.onprogress = function(e) {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      bar.style.width = pct + '%';
+      text.textContent = pct + '%';
+    }
+  };
+
+  xhr.onload = function() {
+    otaUploading = false;
+    applyAuthGating();   // re-evaluate the upload button enabled state
+    if (xhr.status === 200) {
+      bar.style.width = '100%';
+      text.textContent = '100%';
+      let info = {};
+      try { info = JSON.parse(xhr.responseText); } catch (e) {}
+      setOtaMsg('Upload complete (' + (info.bytes || file.size) + ' bytes). Reboot to apply.', 'var(--green)');
+      termPrint(' OTA: upload complete. Reboot to apply.', 'var(--green)');
+      fetchOtaStatus();
+      if (info.rebootRequired && confirm('Firmware uploaded. Reboot now to apply the update?')) {
+        otaReboot(true);
+      }
+    } else if (xhr.status === 401) {
+      handleAuthExpired();
+      setOtaMsg('Session expired — please log in.', 'var(--red)');
+    } else if (xhr.status === 501) {
+      setOtaMsg('OTA only available on device (not in host build).', 'var(--red)');
+    } else {
+      setOtaMsg('Upload failed (HTTP ' + xhr.status + ').', 'var(--red)');
+    }
+  };
+
+  xhr.onerror = function() {
+    otaUploading = false;
+    applyAuthGating();
+    setOtaMsg('Upload failed — network error.', 'var(--red)');
+  };
+
+  xhr.send(file);   // raw bytes as the request body
+}
+
+function otaReboot(skipConfirm) {
+  if (!controlsUnlocked()) { setOtaMsg('Admin login required.', 'var(--red)'); return; }
+  if (!skipConfirm && !confirm('Reboot the device now? Any active calls will drop.')) return;
+  setOtaMsg('Rebooting device...', 'var(--yellow)');
+  termPrint(' OTA: reboot requested.', 'var(--yellow)');
+  fetch('/api/ota/reboot', { method: 'POST', credentials: 'same-origin' })
+    .then(r => {
+      if (r.status === 401) { handleAuthExpired(); return; }
+      setOtaMsg('Reboot signal sent. Device is restarting...', 'var(--green)');
+    })
+    .catch(() => {
+      // A dropped connection here is expected — the device is rebooting.
+      setOtaMsg('Reboot signal sent. Device is restarting...', 'var(--green)');
+    });
 }
 
 // ─── 3D WIREFRAME ROTATING TESSERACT ───
@@ -1437,7 +1924,12 @@ function factoryReset() {
 // ─── INIT ───
 bootSequence();
 fetchStatus();
+fetchAdminStatus();
+fetchOtaStatus();
 setInterval(fetchStatus, 3000);
+// Re-check auth + OTA state periodically (e.g. session lapses, OTA progress).
+setInterval(fetchAdminStatus, 15000);
+setInterval(() => { if (!otaUploading) fetchOtaStatus(); }, 15000);
 oracleInterval = setInterval(updateOracle, 12000);
 
 // Focus terminal on load (desktop only — avoid popping the mobile keyboard)
