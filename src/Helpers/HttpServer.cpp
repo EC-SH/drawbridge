@@ -17,6 +17,12 @@
 #include "esp_system.h"
 #endif
 
+// Captive-portal decay hold. The display app's decay watchdog reads this; the web
+// "/api/configuring" confirm sets it to pause the auto-switch to Standalone while a user is
+// actively configuring. Defined here so it links in every transport (the display references
+// it via extern; other transports simply never read it).
+volatile bool g_decayHold = false;
+
 HttpServer::HttpServer(const std::string& ip, int port, RequestsHandler* handler)
 	: _ip(ip), _port(port), _listenSock(-1), _handler(handler), _running(false)
 {
@@ -281,6 +287,24 @@ void HttpServer::handleClient(int clientSock)
 		else
 		{
 			sendApiWifiModeAp(clientSock);
+		}
+	}
+	else if (req.method == "POST" && req.path == "/api/configuring")
+	{
+		// "I'm configuring" — hold the captive-portal decay so it doesn't switch to
+		// Standalone out from under the user. Harmless, so no same-origin gate.
+		sendApiConfiguring(clientSock);
+	}
+	else if (req.method == "POST" && req.path == "/api/factory-reset")
+	{
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else
+		{
+			sendApiFactoryReset(clientSock, req.body);
 		}
 	}
 	else
@@ -733,6 +757,45 @@ void HttpServer::sendApiWifiModeAp(int sock)
 #else
 	sendResponse(sock, 501, "Not Implemented", "application/json",
 	             "{\"error\":\"WiFi mode select not available on desktop\"}");
+#endif
+}
+
+void HttpServer::sendApiConfiguring(int sock)
+{
+	// Pause the captive-portal decay watchdog: the user is actively configuring, so don't
+	// auto-switch to Standalone. Held until they save a mode or factory-reset (both reboot).
+	g_decayHold = true;
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"message\":\"Setup mode held \\u2014 auto-switch to Standalone paused.\"}");
+}
+
+void HttpServer::sendApiFactoryReset(int sock, const std::string& body)
+{
+	// Require an explicit confirm token so a stray/accidental POST can't wipe the device.
+	if (getFormParam(body, "confirm") != "ERASE") {
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"factory reset requires confirm=ERASE\"}");
+		return;
+	}
+#if defined(POCKETDIAL_HAS_WIFI)
+	nvs_handle_t nvs_handle;
+	if (nvs_open("storage", NVS_READWRITE, &nvs_handle) == ESP_OK) {
+		nvs_erase_key(nvs_handle, "wifi_mode");
+		nvs_erase_key(nvs_handle, "wifi_ssid");
+		nvs_erase_key(nvs_handle, "wifi_pass");
+		nvs_erase_key(nvs_handle, "decayed");
+		nvs_commit(nvs_handle);
+		nvs_close(nvs_handle);
+	}
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"message\":\"Factory reset. Rebooting to captive-portal setup...\"}");
+	xTaskCreate([](void*) {
+		vTaskDelay(pdMS_TO_TICKS(1000));
+		esp_restart();
+	}, "restart_task", 2048, NULL, 5, NULL);
+#else
+	sendResponse(sock, 501, "Not Implemented", "application/json",
+	             "{\"error\":\"factory reset not available on desktop\"}");
 #endif
 }
 

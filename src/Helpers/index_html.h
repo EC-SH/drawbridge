@@ -661,7 +661,7 @@ R"rawhtml(
       <div id="terminal-output"></div>
       <div id="terminal-input-line">
         <span id="terminal-prompt">C:/SipServer&gt; </span>
-        <input type="text" id="terminal-input" autocomplete="off" spellcheck="false" autofocus>
+        <input type="text" id="terminal-input" autocomplete="off" spellcheck="false">
         <span class="cursor-blink" id="input-cursor"></span>
       </div>
     </div>
@@ -727,6 +727,14 @@ R"rawhtml(
     <div style="margin-top:12px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
       <div style="font-size:14px; color:var(--dk-yellow); margin-bottom:4px;">Standalone AP Mode:</div>
       <button class="btn-retro" onclick="startApMode()">⚡ Host Standalone AP</button>
+      <div style="font-size:11px; color:var(--dk-cyan); margin-top:4px;">Persists across reboots. (Unconfigured devices auto-switch to Standalone ~5&nbsp;min after power-on.)</div>
+    </div>
+    <div style="margin-top:10px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
+      <button class="btn-retro" onclick="holdConfigMode()" title="Pause the automatic switch to Standalone while you configure">⏸ I'm Configuring (hold setup)</button>
+    </div>
+    <div style="margin-top:12px; border-top:1px dashed var(--dk-red); padding-top:8px;">
+      <div style="font-size:14px; color:var(--dk-red); margin-bottom:4px;">Danger Zone:</div>
+      <button class="btn-retro btn-danger" onclick="factoryReset()">⚠ Factory Reset</button>
     </div>
   </div>
 </div>
@@ -801,6 +809,9 @@ function oracleSpeak() {
 // ─── TERMINAL ───
 const termOutput = document.getElementById('terminal-output');
 const termInput = document.getElementById('terminal-input');
+// Touch devices (iPhone/Android): never auto-focus the terminal input — it pops the
+// on-screen keyboard over the captive portal. Users can still tap the input directly.
+const IS_TOUCH = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 const inputCursor = document.getElementById('input-cursor');
 
 function termPrint(text, color) {
@@ -1045,7 +1056,7 @@ termInput.addEventListener('blur',  () => { inputCursor.style.display = 'inline-
 
 // Click anywhere in terminal area to focus input
 document.getElementById('terminal-container').addEventListener('click', function(e) {
-  if (e.target.id !== 'terminal-output') termInput.focus();
+  if (!IS_TOUCH && e.target.id !== 'terminal-output') termInput.focus();
 });
 
 // ─── FORMAT UPTIME ───
@@ -1275,6 +1286,26 @@ function cancelWifiConnect() {
   selectedSSID = '';
 }
 
+function holdConfigMode() {
+  fetch('/api/configuring', { method: 'POST' })
+    .then(r => r.json()).then(data => {
+      termPrint(' SETUP: ' + (data.message || 'Setup mode held; auto-standalone paused.'), 'var(--cyan)');
+    }).catch(e => termPrint(' SETUP ERROR: ' + e.message, 'var(--red)'));
+}
+
+function factoryReset() {
+  if (!confirm('Factory reset erases saved Wi-Fi config and reboots into captive-portal setup mode. Continue?')) return;
+  const statusEl = document.getElementById('wifi-status');
+  if (statusEl) { statusEl.textContent = 'Factory resetting...'; statusEl.style.color = 'var(--red)'; }
+  fetch('/api/factory-reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'confirm=ERASE'
+  }).then(r => r.json()).then(data => {
+    termPrint(' FACTORY RESET: ' + (data.message || 'Rebooting...'), 'var(--yellow)');
+  }).catch(e => termPrint(' RESET ERROR: ' + e.message, 'var(--red)'));
+}
+
 // ─── 3D WIREFRAME ROTATING TESSERACT ───
 (function() {
   const canvas = document.getElementById('retro-canvas');
@@ -1409,8 +1440,8 @@ fetchStatus();
 setInterval(fetchStatus, 3000);
 oracleInterval = setInterval(updateOracle, 12000);
 
-// Focus terminal on load
-setTimeout(() => termInput.focus(), 100);
+// Focus terminal on load (desktop only — avoid popping the mobile keyboard)
+if (!IS_TOUCH) setTimeout(() => termInput.focus(), 100);
 
 </script>
 </body>

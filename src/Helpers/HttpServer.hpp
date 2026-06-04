@@ -54,6 +54,8 @@ private:
 	void sendApiWifiScan(int sock);
 	void sendApiWifiConnect(int sock, const std::string& body);
 	void sendApiWifiModeAp(int sock);
+	void sendApiConfiguring(int sock);
+	void sendApiFactoryReset(int sock, const std::string& body);
 	void send404(int sock);
 
 	// Returns true if the request has no Origin header (direct browser nav / curl)

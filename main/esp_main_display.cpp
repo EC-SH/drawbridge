@@ -12,6 +12,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_timer.h"
+#include "mdns.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
@@ -95,10 +96,11 @@ static int g_stationNum = 0;
 static bool g_setupComplete = false;
 
 // Captive-portal decay: if no one confirms config within this window, the device "decays"
-// into open Standalone AP mode so it's a usable PBX unattended. A web "I'm configuring"
-// confirmation sets g_decayHold to pause the countdown (see captive_decay_task).
+// into open Standalone AP mode so it's a usable PBX unattended. The web "I'm configuring"
+// confirm (HttpServer /api/configuring) sets g_decayHold to pause the countdown. The flag is
+// owned by HttpServer (shared with the dashboard) so it links cleanly in every transport.
 #define CAPTIVE_DECAY_SECONDS 300   // 5 minutes
-static volatile bool g_decayHold = false;
+extern volatile bool g_decayHold;
 
 // Task scheduler loop counters
 static int prevStations = -1;
@@ -656,7 +658,16 @@ extern "C" void app_main(void) {
         g_httpServer = new HttpServer(g_localIp, 80, nullptr);
         g_httpServer->start();
 
-        ESP_LOGI(TAG, "Captive onboarding active at http://192.168.4.1/ (decays to Standalone in %ds)", CAPTIVE_DECAY_SECONDS);
+        // mDNS so the portal also answers at http://pocketdial.local/ (station/standalone
+        // modes get mDNS from the SIP server; the captive portal has no SIP server, so do it
+        // here). Matches the SipServer hostname/service for consistency.
+        if (mdns_init() == ESP_OK) {
+            mdns_hostname_set("pocketdial");
+            mdns_instance_name_set("Pocket-Dial Setup");
+            mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+        }
+
+        ESP_LOGI(TAG, "Captive onboarding active at http://192.168.4.1/ or pocketdial.local (decays in %ds)", CAPTIVE_DECAY_SECONDS);
         xTaskCreatePinnedToCore(&captive_decay_task, "decay_task", 3072, NULL, 3, NULL, 0);
     }
 
