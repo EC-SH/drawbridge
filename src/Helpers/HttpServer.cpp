@@ -1,6 +1,7 @@
 // HttpServer.cpp: Issues #23 and #28 resolved.
 #include "HttpServer.hpp"
 #include "RequestsHandler.hpp"
+#include "AdminAuth.hpp"
 #include "index_html.h"
 #include "IPHelper.hpp"
 #include <cstring>
@@ -256,6 +257,11 @@ void HttpServer::handleClient(int clientSock)
 			sendResponse(clientSock, 403, "Forbidden", "application/json",
 			             "{\"error\":\"cross-origin request rejected\"}");
 		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
 		else
 		{
 			sendApiKill(clientSock, req.body);
@@ -272,6 +278,11 @@ void HttpServer::handleClient(int clientSock)
 			sendResponse(clientSock, 403, "Forbidden", "application/json",
 			             "{\"error\":\"cross-origin request rejected\"}");
 		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
 		else
 		{
 			sendApiWifiConnect(clientSock, req.body);
@@ -283,6 +294,11 @@ void HttpServer::handleClient(int clientSock)
 		{
 			sendResponse(clientSock, 403, "Forbidden", "application/json",
 			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
 		}
 		else
 		{
@@ -302,9 +318,55 @@ void HttpServer::handleClient(int clientSock)
 			sendResponse(clientSock, 403, "Forbidden", "application/json",
 			             "{\"error\":\"cross-origin request rejected\"}");
 		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
 		else
 		{
 			sendApiFactoryReset(clientSock, req.body);
+		}
+	}
+	else if (req.method == "GET" && req.path == "/api/admin/status")
+	{
+		// Read-only: tells the dashboard whether to show a set-PIN or login form.
+		sendApiAdminStatus(clientSock, req);
+	}
+	else if (req.method == "POST" && req.path == "/api/admin/set-pin")
+	{
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else
+		{
+			sendApiAdminSetPin(clientSock, req);
+		}
+	}
+	else if (req.method == "POST" && req.path == "/api/admin/login")
+	{
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else
+		{
+			sendApiAdminLogin(clientSock, req);
+		}
+	}
+	else if (req.method == "POST" && req.path == "/api/admin/logout")
+	{
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else
+		{
+			sendApiAdminLogout(clientSock, req);
 		}
 	}
 	else
@@ -354,13 +416,14 @@ HttpServer::HttpRequest HttpServer::parseRequest(const std::string& raw)
 				// Strip trailing whitespaces from name
 				while (!hName.empty() && std::isspace(static_cast<unsigned char>(hName.back()))) hName.pop_back();
 
-				if (hName == "origin" || hName == "host") {
+				if (hName == "origin" || hName == "host" || hName == "cookie") {
 					size_t valStart = colon + 1;
 					while (valStart < line.size() && std::isspace(static_cast<unsigned char>(line[valStart]))) valStart++;
 					std::string hVal = line.substr(valStart);
 					while (!hVal.empty() && std::isspace(static_cast<unsigned char>(hVal.back()))) hVal.pop_back();
 					if (hName == "origin") req.origin = hVal;
 					else if (hName == "host") req.host = hVal;
+					else if (hName == "cookie") req.cookie = hVal;
 				}
 			}
 			pos = lineEnd + 2;
@@ -377,8 +440,9 @@ HttpServer::HttpRequest HttpServer::parseRequest(const std::string& raw)
 	return req;
 }
 
-void HttpServer::sendResponse(int sock, int statusCode, const std::string& statusText,
-                              const std::string& contentType, const std::string& body)
+void HttpServer::sendResponseWithHeader(int sock, int statusCode, const std::string& statusText,
+                              const std::string& contentType, const std::string& body,
+                              const std::string& extraHeader)
 {
 	std::ostringstream resp;
 	resp << "HTTP/1.1 " << statusCode << " " << statusText << "\r\n";
@@ -386,6 +450,10 @@ void HttpServer::sendResponse(int sock, int statusCode, const std::string& statu
 	resp << "Content-Length: " << body.size() << "\r\n";
 	// No Access-Control-Allow-Origin header: wildcard CORS would allow any
 	// browser tab on the same AP to fire side-effecting POSTs without a preflight.
+	if (!extraHeader.empty())
+	{
+		resp << extraHeader << "\r\n";
+	}
 	resp << "Connection: close\r\n";
 	resp << "\r\n";
 	resp << body;
@@ -404,6 +472,12 @@ void HttpServer::sendResponse(int sock, int statusCode, const std::string& statu
 		ptr += sent;
 		remaining -= static_cast<size_t>(sent);
 	}
+}
+
+void HttpServer::sendResponse(int sock, int statusCode, const std::string& statusText,
+                              const std::string& contentType, const std::string& body)
+{
+	sendResponseWithHeader(sock, statusCode, statusText, contentType, body, "");
 }
 
 void HttpServer::sendHtml(int sock)
@@ -565,6 +639,42 @@ bool HttpServer::isSameOrigin(const HttpRequest& req) const
 	                  cleanHost == "127.0.0.1");
 
 	return hostValid && (cleanOrigin == cleanHost);
+}
+
+std::string HttpServer::cookieValue(const HttpRequest& req, const std::string& name)
+{
+	// Cookie header is "k1=v1; k2=v2; ...". Find name= as a token boundary.
+	const std::string& c = req.cookie;
+	if (c.empty()) return "";
+
+	size_t pos = 0;
+	while (pos < c.size())
+	{
+		// Skip leading spaces / separators.
+		while (pos < c.size() && (c[pos] == ' ' || c[pos] == ';')) ++pos;
+		size_t eq = c.find('=', pos);
+		if (eq == std::string::npos) break;
+		std::string k = c.substr(pos, eq - pos);
+		size_t valStart = eq + 1;
+		size_t valEnd = c.find(';', valStart);
+		std::string v = (valEnd == std::string::npos)
+			? c.substr(valStart)
+			: c.substr(valStart, valEnd - valStart);
+		// Trim surrounding whitespace from the value.
+		while (!v.empty() && (v.front() == ' ')) v.erase(v.begin());
+		while (!v.empty() && (v.back() == ' ' || v.back() == '\r' || v.back() == '\n')) v.pop_back();
+		if (k == name) return v;
+		if (valEnd == std::string::npos) break;
+		pos = valEnd + 1;
+	}
+	return "";
+}
+
+bool HttpServer::isAuthed(const HttpRequest& req) const
+{
+	std::string token = cookieValue(req, "pd_session");
+	if (token.empty()) return false;
+	return AdminAuth::validateSession(token);
 }
 
 void HttpServer::send404(int sock)
@@ -777,6 +887,9 @@ void HttpServer::sendApiFactoryReset(int sock, const std::string& body)
 		             "{\"error\":\"factory reset requires confirm=ERASE\"}");
 		return;
 	}
+	// Clear the admin credential + all sessions so the device returns to the
+	// unprovisioned/open state on both ESP (NVS) and host (in-memory).
+	AdminAuth::clearCredential();
 #if defined(POCKETDIAL_HAS_WIFI)
 	nvs_handle_t nvs_handle;
 	if (nvs_open("storage", NVS_READWRITE, &nvs_handle) == ESP_OK) {
@@ -797,6 +910,114 @@ void HttpServer::sendApiFactoryReset(int sock, const std::string& body)
 	sendResponse(sock, 501, "Not Implemented", "application/json",
 	             "{\"error\":\"factory reset not available on desktop\"}");
 #endif
+}
+
+void HttpServer::sendApiAdminStatus(int sock, const HttpRequest& req)
+{
+	bool provisioned = AdminAuth::isProvisioned();
+	bool authenticated = isAuthed(req);
+	std::ostringstream json;
+	json << "{\"provisioned\":" << (provisioned ? "true" : "false")
+	     << ",\"authenticated\":" << (authenticated ? "true" : "false") << "}";
+	sendResponse(sock, 200, "OK", "application/json", json.str());
+}
+
+void HttpServer::sendApiAdminSetPin(int sock, const HttpRequest& req)
+{
+	// First-run onboarding: setting a PIN is allowed only when the device is not
+	// yet provisioned, OR when the caller already holds a valid session (changing
+	// an existing PIN). This prevents an unauthenticated AP peer from overwriting
+	// a provisioned admin PIN.
+	if (AdminAuth::isProvisioned() && !isAuthed(req))
+	{
+		sendResponse(sock, 401, "Unauthorized", "application/json",
+		             "{\"error\":\"authentication required to change PIN\"}");
+		return;
+	}
+
+	std::string pin = getFormParam(req.body, "pin");
+	if (pin.size() < AdminAuth::kMinPinLength)
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"PIN must be at least 4 characters\"}");
+		return;
+	}
+
+	if (!AdminAuth::setPin(pin))
+	{
+		sendResponse(sock, 500, "Internal Server Error", "application/json",
+		             "{\"error\":\"failed to store PIN\"}");
+		return;
+	}
+
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"provisioned\":true}");
+}
+
+void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
+{
+	if (!AdminAuth::isProvisioned())
+	{
+		// Nothing to log in to yet — direct the client to set a PIN first.
+		sendResponse(sock, 409, "Conflict", "application/json",
+		             "{\"error\":\"no admin PIN set; call /api/admin/set-pin first\"}");
+		return;
+	}
+
+	// Reject while locked out before doing any hashing work.
+	if (AdminAuth::isLockedOut())
+	{
+		sendResponse(sock, 429, "Too Many Requests", "application/json",
+		             "{\"error\":\"too many failed attempts; try again later\"}");
+		return;
+	}
+
+	std::string pin = getFormParam(req.body, "pin");
+	if (!AdminAuth::verifyPin(pin))
+	{
+		// verifyPin may have just engaged the lockout on this attempt.
+		if (AdminAuth::isLockedOut())
+		{
+			sendResponse(sock, 429, "Too Many Requests", "application/json",
+			             "{\"error\":\"too many failed attempts; try again later\"}");
+		}
+		else
+		{
+			sendResponse(sock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"invalid PIN\"}");
+		}
+		return;
+	}
+
+	std::string token = AdminAuth::createSession();
+	if (token.empty())
+	{
+		sendResponse(sock, 500, "Internal Server Error", "application/json",
+		             "{\"error\":\"failed to create session\"}");
+		return;
+	}
+
+	// HttpOnly: not readable from JS (mitigates XSS token theft).
+	// SameSite=Strict: the browser won't attach it to cross-site requests
+	// (defense in depth alongside the same-origin check). No Secure flag: the
+	// dashboard is plain HTTP on a LAN appliance (see docs/THREAT_MODEL.md).
+	std::string cookie = "Set-Cookie: pd_session=" + token +
+	                     "; HttpOnly; Path=/; SameSite=Strict";
+	sendResponseWithHeader(sock, 200, "OK", "application/json",
+	                       "{\"status\":\"ok\",\"authenticated\":true}", cookie);
+}
+
+void HttpServer::sendApiAdminLogout(int sock, const HttpRequest& req)
+{
+	std::string token = cookieValue(req, "pd_session");
+	if (!token.empty())
+	{
+		AdminAuth::destroySession(token);
+	}
+	// Expire the cookie on the client side too (Max-Age=0).
+	std::string cookie = "Set-Cookie: pd_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0";
+	sendResponseWithHeader(sock, 200, "OK", "application/json",
+	                       "{\"status\":\"ok\"}", cookie);
 }
 
 void HttpServer::sendRedirect(int sock, const std::string& location)

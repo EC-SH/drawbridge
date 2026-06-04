@@ -41,12 +41,19 @@ private:
 		std::string body;
 		std::string origin;  // value of the Origin: header, if present
 		std::string host;    // value of the Host: header, if present
+		std::string cookie;  // value of the Cookie: header, if present
 	};
 	HttpRequest parseRequest(const std::string& raw);
 
 	// Response builders
 	void sendResponse(int sock, int statusCode, const std::string& statusText,
 	                   const std::string& contentType, const std::string& body);
+	// Same as sendResponse, but injects an extra raw header line (e.g.
+	// "Set-Cookie: pd_session=...; HttpOnly; Path=/; SameSite=Strict"). The
+	// extraHeader must NOT include the trailing CRLF.
+	void sendResponseWithHeader(int sock, int statusCode, const std::string& statusText,
+	                   const std::string& contentType, const std::string& body,
+	                   const std::string& extraHeader);
 	void sendRedirect(int sock, const std::string& location);
 	void sendHtml(int sock);
 	void sendApiStatus(int sock);
@@ -58,10 +65,24 @@ private:
 	void sendApiFactoryReset(int sock, const std::string& body);
 	void send404(int sock);
 
+	// --- Admin auth endpoints (PIN-gated session layer; see AdminAuth.hpp) ---
+	void sendApiAdminStatus(int sock, const HttpRequest& req);
+	void sendApiAdminSetPin(int sock, const HttpRequest& req);
+	void sendApiAdminLogin(int sock, const HttpRequest& req);
+	void sendApiAdminLogout(int sock, const HttpRequest& req);
+
 	// Returns true if the request has no Origin header (direct browser nav / curl)
 	// or if the Origin host matches the Host header (same-origin). Blocks CSRF from
 	// third-party pages on the same AP.
 	bool isSameOrigin(const HttpRequest& req) const;
+
+	// Extract the value of a named cookie (e.g. "pd_session") from the request's
+	// Cookie header, or "" if absent.
+	static std::string cookieValue(const HttpRequest& req, const std::string& name);
+
+	// True iff the request carries a valid (live) pd_session cookie. Used to gate
+	// the state-changing endpoints once a PIN has been provisioned.
+	bool isAuthed(const HttpRequest& req) const;
 
 	// Close a client socket portably
 	void closeSocket(int sock);

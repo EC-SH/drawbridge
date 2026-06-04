@@ -39,6 +39,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             ${ADDITIONAL_SRCS}
                             "../src/Helpers/UdpServer.cpp"
                             "../src/Helpers/HttpServer.cpp"
+                            "../src/Helpers/AdminAuth.cpp"
                             "../src/SIP/RequestsHandler.cpp"
                             "../src/SIP/Session.cpp"
                             "../src/SIP/SipClient.cpp"
