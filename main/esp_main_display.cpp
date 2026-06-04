@@ -262,11 +262,26 @@ static esp_lcd_touch_handle_t hardware_touch_init() {
 static void lvgl_task(void *pvParameters) {
     ESP_LOGI("LVTask", "Core 1 Graphics task running...");
     char log_buf[256];
+    TickType_t lastLogPaint = 0;
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(16));   // ~60Hz service cap; guarantees IDLE1 gets the core
         if (lvgl_lock(-1)) {
-            while (xQueueReceive(s_log_queue, log_buf, 0) == pdTRUE)
-                ui_add_log(log_buf);
+            // Coalesce + rate-limit on-screen logging. The panel runs in LVGL
+            // full_refresh mode, so EVERY ui_add_log() repaints the whole 320x480
+            // screen (~150ms of QSPI+DMA). Draining an unbounded log flood every
+            // 10ms therefore pins Core 1 on back-to-back full repaints, starving
+            // IDLE1 (task-WDT) and snowballing as the WDT backtraces log more.
+            // Instead: append at most a few lines, and only every ~150ms, so log
+            // volume can never drive more than ~6 full repaints/sec.
+            TickType_t now = xTaskGetTickCount();
+            if (now - lastLogPaint >= pdMS_TO_TICKS(150)) {
+                int drained = 0;
+                while (drained < 8 && xQueueReceive(s_log_queue, log_buf, 0) == pdTRUE) {
+                    ui_add_log(log_buf);
+                    drained++;
+                }
+                if (drained > 0) lastLogPaint = now;
+            }
             lv_timer_handler();
             lvgl_unlock();
         }

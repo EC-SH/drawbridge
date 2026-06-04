@@ -66,7 +66,15 @@ HttpServer::HttpServer(const std::string& ip, int port, RequestsHandler* handler
 
 	sockaddr_in addr{};
 	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = inet_addr(_ip.c_str());
+	// Bind to all interfaces (INADDR_ANY) rather than the one configured IP.
+	// Binding a listening socket to a specific, dynamically-assigned address is
+	// fragile on lwip: in Wi-Fi STATION mode the DHCP-assigned IP is bound here,
+	// and connections to it were accepted by lwip into the backlog but never
+	// serviced (dashboard unreachable on a LAN, while the SoftAP's static
+	// 192.168.4.1 worked). INADDR_ANY serves on every interface/IP and is robust
+	// across AP/STA mode switches and IP/lease changes. _ip is still used for
+	// display/logging and the captive-portal same-origin check.
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	addr.sin_port = htons(static_cast<uint16_t>(_port));
 
 	if (bind(_listenSock, reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr)) < 0)
