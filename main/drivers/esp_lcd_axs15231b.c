@@ -233,6 +233,7 @@ static const axs15231b_lcd_init_cmd_t vendor_specific_init_default[] = {
     {0xBB, (uint8_t[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, 8, 0},
     {0x13, (uint8_t[]){0x00}, 0, 0},
     {0x11, (uint8_t[]){0x00}, 0, 120},
+    {0x35, (uint8_t[]){0x00}, 1, 0},   // TEON: drive the Tearing-Effect line on V-blank
     {0x2C, (uint8_t[]){0x00, 0x00, 0x00, 0x00}, 4, 0},
     {0x2A, (uint8_t[]){0x00, 0x00, 0x01, 0x3f}, 4, 0},
     {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xdf}, 4, 0},
@@ -310,11 +311,11 @@ static esp_err_t panel_axs15231b_draw_bitmap(esp_lcd_panel_t *panel, int x_start
         (x_end - 1) & 0xFF,
     }, 4);
 
-    // QSPI path (matches the known-good NorthernMan54/Espressif AXS15231B driver): RASET is
-    // intentionally NOT sent per-flush. The init sequence sets the full 0..479 row window, and
-    // the frame is filled by a single RAMWR for the top band (y_start==0) followed by RAMWRC
-    // continuation for the bands below it. This requires a full-screen, top-to-bottom flush
-    // order (LVGL full_refresh mode) — see disp_drv.full_refresh in esp_main_display.cpp.
+    // QSPI: skip per-flush RASET. This panel's QSPI mode does not handle arbitrary windowed
+    // writes cleanly (they garble), so the frame is filled by RAMWR for the top band
+    // (y_start==0) + RAMWRC continuation for the bands below. This requires whole-screen,
+    // top-to-bottom flushes — the app drives LVGL in full_refresh mode so every refresh
+    // sweeps the entire frame in order.
     if (0 == axs15231b->flags.use_qspi_interface) {
         tx_param(axs15231b, io, LCD_CMD_RASET, (uint8_t[]) {
             (y_start >> 8) & 0xFF,

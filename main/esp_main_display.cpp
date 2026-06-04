@@ -43,6 +43,7 @@ static const char *TAG = "main_display";
 #define TFT_D2      40
 #define TFT_D3      39
 #define TFT_BL      1
+#define TFT_TE      38   // Tearing-Effect (vblank) output from the panel
 
 #define TOUCH_SDA   4
 #define TOUCH_SCL   8
@@ -70,9 +71,34 @@ static inline bool lvgl_lock(int timeout_ms) {
 }
 static inline void lvgl_unlock(void) { if (s_lvgl_mux) xSemaphoreGiveRecursive(s_lvgl_mux); }
 
+// Tearing-Effect (TE) vsync. The panel pulses TFT_TE (GPIO38) at the start of vertical
+// blanking once TEON (0x35) is enabled in the init sequence. The flush callback waits for
+// this pulse before writing each frame, so the whole-screen redraw lands during blanking
+// (tear-free: a full frame clocks out in ~15 ms, inside the ~16.7 ms 60 Hz scan period).
+static SemaphoreHandle_t s_te_sem = NULL;
+static void IRAM_ATTR te_isr_handler(void *arg) {
+    BaseType_t hp = pdFALSE;
+    if (s_te_sem) xSemaphoreGiveFromISR(s_te_sem, &hp);
+    if (hp) portYIELD_FROM_ISR();
+}
+
+// Whole-frame flush. full_refresh needs a SCREEN-SIZED render buffer (kept in PSRAM); the
+// SPI master can't DMA a ~300 KB transfer straight from PSRAM, so the flush copies the frame
+// out one band at a time into a small internal DMA-capable bounce buffer, clocking each band
+// to the panel and signalling LVGL only after the last band completes.
+#define FLUSH_BAND_ROWS 80
+static SemaphoreHandle_t s_flush_done_sem = NULL;  // given by the SPI transfer-done callback
+static lv_color_t       *s_band_buf       = NULL;  // internal DMA bounce (320 x FLUSH_BAND_ROWS)
+
 static std::string g_localIp = "192.168.4.1";
 static int g_stationNum = 0;
 static bool g_setupComplete = false;
+
+// Captive-portal decay: if no one confirms config within this window, the device "decays"
+// into open Standalone AP mode so it's a usable PBX unattended. A web "I'm configuring"
+// confirmation sets g_decayHold to pause the countdown (see captive_decay_task).
+#define CAPTIVE_DECAY_SECONDS 300   // 5 minutes
+static volatile bool g_decayHold = false;
 
 // Task scheduler loop counters
 static int prevStations = -1;
@@ -146,10 +172,12 @@ static void hardware_display_init(lv_disp_drv_t* disp_drv) {
     esp_lcd_panel_io_spi_config_t io_config = AXS15231B_PANEL_IO_QSPI_CONFIG(
         TFT_CS, 
         [](esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx) -> bool {
-            lv_disp_drv_t *drv = (lv_disp_drv_t *)user_ctx;
-            lv_disp_flush_ready(drv);
-            return false;
-        }, 
+            // Signals completion of ONE band's DMA. flush_cb waits on this per band and calls
+            // lv_disp_flush_ready() itself only after the final band.
+            BaseType_t hp = pdFALSE;
+            if (s_flush_done_sem) xSemaphoreGiveFromISR(s_flush_done_sem, &hp);
+            return hp == pdTRUE;
+        },
         disp_drv
     );
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_config, &io_handle));
@@ -174,6 +202,19 @@ static void hardware_display_init(lv_disp_drv_t* disp_drv) {
     // the panel (black screen) regardless of backlight/GRAM. The working reference also
     // calls this with false.
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, false));
+
+    // Tearing-Effect vsync input: the panel pulses TFT_TE at the start of vertical blanking
+    // (TEON 0x35 is sent in the init sequence). The flush_cb waits on s_te_sem so each
+    // whole-frame redraw is written during blanking -> tear-free.
+    s_te_sem = xSemaphoreCreateBinary();
+    s_flush_done_sem = xSemaphoreCreateBinary();
+    gpio_config_t te_cfg = {};
+    te_cfg.mode = GPIO_MODE_INPUT;
+    te_cfg.pin_bit_mask = 1ULL << TFT_TE;
+    te_cfg.intr_type = GPIO_INTR_POSEDGE;
+    gpio_config(&te_cfg);
+    gpio_install_isr_service(0);  // harmless if already installed
+    gpio_isr_handler_add((gpio_num_t)TFT_TE, te_isr_handler, NULL);
 
     disp_drv->user_data = panel_handle;
 }
@@ -273,9 +314,10 @@ static bool wifi_init_sta(const char* ssid, const char* pass) {
         return false;
     }
 
-    // Wait and check connection status up to 5 seconds
+    // Wait up to 15s for association + DHCP lease. (5s was too tight: on a real router
+    // the lease can land ~6-8s after start, causing a false "failed" -> captive portal.)
     int retries = 0;
-    while (retries < 5) {
+    while (retries < 15) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         esp_netif_ip_info_t ip_info;
         if (esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
@@ -378,6 +420,29 @@ static void system_status_task(void *pvParameters) {
 }
 
 // ─── Entry main function ───
+// ─── Captive-portal decay watchdog ───
+// Runs only while the captive portal is up. Counts CAPTIVE_DECAY_SECONDS of "no one is
+// configuring" (g_decayHold low); if it elapses, persist a one-shot "decayed" flag and
+// reboot into transient Standalone AP. The flag is consumed on the next boot, so decay
+// never becomes a permanent boot target.
+static void captive_decay_task(void *pvParameters) {
+    int elapsed = 0;
+    while (elapsed < CAPTIVE_DECAY_SECONDS) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (g_decayHold) { elapsed = 0; continue; } // held while a client is configuring
+        elapsed++;
+    }
+    ESP_LOGW(TAG, "Captive portal: no config confirmed in %ds -> decaying to Standalone AP", CAPTIVE_DECAY_SECONDS);
+    nvs_handle_t h;
+    if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "decayed", 1);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
+}
+
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "================================================");
     ESP_LOGI(TAG, " POCKET-DIAL ESP-IDF DISPLAY CONTROLLER");
@@ -420,28 +485,48 @@ extern "C" void app_main(void) {
     hardware_display_init(&disp_drv);
     // (panel handle is stored in disp_drv.user_data and retrieved inside flush_cb)
 
-    // Allocate frame buffers inside PSRAM (320 * 480 * 2 bytes = 307.2 KB each)
-    // LVGL partial draw buffers in INTERNAL DMA-capable RAM. The SPI master's DMA cannot
-    // reach this board's OPI PSRAM (esp_ptr_dma_capable() is false for PSRAM), so the
-    // previous full-screen PSRAM buffers made panel_io_spi_tx_color() fail on every flush.
-    // Two partial buffers (~1/6 screen) in internal RAM are DMA-safe; LVGL renders and
-    // flushes in horizontal bands, which is its recommended (and lower-RAM) mode.
-    size_t draw_buf_sz = 320 * 80;            // pixels (~1/6 screen) -> 51,200 bytes/buffer
-    size_t bytes_to_alloc = draw_buf_sz * sizeof(uint16_t);
-    lv_color_t *buf1 = (lv_color_t *)heap_caps_malloc(bytes_to_alloc, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    lv_color_t *buf2 = (lv_color_t *)heap_caps_malloc(bytes_to_alloc, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    // Screen-sized LVGL render buffer in PSRAM (full_refresh requires the buffer to be at
+    // least the full screen, or LVGL silently falls back to partial updates — which garble
+    // on this panel's QSPI mode). The flush copies it out band-by-band through s_band_buf,
+    // a small internal DMA-capable bounce buffer (the SPI master can't DMA from PSRAM).
+    size_t draw_buf_sz = 320 * 480;           // full screen
+    lv_color_t *buf1 = (lv_color_t *)heap_caps_malloc(draw_buf_sz * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_band_buf       = (lv_color_t *)heap_caps_malloc(320 * FLUSH_BAND_ROWS * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     assert(buf1 != NULL);
-    assert(buf2 != NULL);
+    assert(s_band_buf != NULL);
 
     static lv_disp_draw_buf_t disp_buf;
-    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, draw_buf_sz);
+    lv_disp_draw_buf_init(&disp_buf, buf1, NULL, draw_buf_sz);  // single screen-sized buffer
     disp_drv.hor_res = 320;
     disp_drv.ver_res = 480;
     disp_drv.flush_cb = [](lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
         esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
-        esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
+        const int x1 = area->x1, x2 = area->x2;
+        const int w  = x2 - x1 + 1;
+        // Wait for the panel's TE vblank, then clock the whole frame out during blanking so
+        // it doesn't tear (a full frame fits inside one ~16.7 ms scan period at 40 MHz QSPI).
+        if (s_te_sem) {
+            xSemaphoreTake(s_te_sem, 0);                  // drain any stale pulse
+            xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(100)); // wait for the next vblank
+        }
+        // Copy each band PSRAM -> internal DMA bounce, clock it out, wait for it to finish
+        // (s_band_buf is reused, so the bands must be sequential). The driver fills the frame
+        // with RAMWR (top band) + RAMWRC continuation, so bands must run top-to-bottom.
+        for (int y = area->y1; y <= area->y2; y += FLUSH_BAND_ROWS) {
+            int yb = y + FLUSH_BAND_ROWS - 1; if (yb > area->y2) yb = area->y2;
+            int rows = yb - y + 1;
+            memcpy(s_band_buf, color_map + (size_t)(y - area->y1) * w, (size_t)rows * w * sizeof(lv_color_t));
+            esp_lcd_panel_draw_bitmap(panel, x1, y, x2 + 1, yb + 1, s_band_buf);
+            xSemaphoreTake(s_flush_done_sem, pdMS_TO_TICKS(100)); // wait for this band's DMA
+        }
+        lv_disp_flush_ready(drv);
     };
     disp_drv.draw_buf = &disp_buf;
+    // full_refresh: redraw the ENTIRE screen into the PSRAM buffer on every change and hand
+    // the whole frame to flush_cb in one call. This panel's QSPI mode garbles on partial
+    // windowed writes, so we never let LVGL do partial flushes; flush_cb then bands the full
+    // frame out to the panel itself.
+    disp_drv.full_refresh = 1;
     lv_disp_drv_register(&disp_drv);
 
     // 2. Initialize touchscreen registers (SDA 4, SCL 8, INT 11, RST 12)
@@ -488,83 +573,91 @@ extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(&lvgl_task, "lvgl_task", 8192, NULL, 5, NULL, 1);
 
     // 4. Retrieve saved operational Wi-Fi configuration from NVS
-    uint8_t wifi_mode = 0; // 0 = unconfigured fallback, 1 = STATION, 2 = AP Standalone
+    uint8_t wifi_mode = 0;   // 0 = captive-portal default, 1 = STATION, 2 = explicit Standalone
+    uint8_t decayed   = 0;   // one-shot flag set by the captive-decay watchdog before reboot
     char saved_ssid[33] = {0};
     char saved_pass[64] = {0};
 
     nvs_handle_t nvs_handle;
     if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
-        if (nvs_get_u8(nvs_handle, "wifi_mode", &wifi_mode) != ESP_OK) {
-            wifi_mode = 0;
-        }
+        if (nvs_get_u8(nvs_handle, "wifi_mode", &wifi_mode) != ESP_OK) wifi_mode = 0;
+        if (nvs_get_u8(nvs_handle, "decayed", &decayed)     != ESP_OK) decayed   = 0;
         size_t size = sizeof(saved_ssid);
-        if (nvs_get_str(nvs_handle, "wifi_ssid", saved_ssid, &size) != ESP_OK) {
-            saved_ssid[0] = '\0';
-        }
+        if (nvs_get_str(nvs_handle, "wifi_ssid", saved_ssid, &size) != ESP_OK) saved_ssid[0] = '\0';
         size = sizeof(saved_pass);
-        if (nvs_get_str(nvs_handle, "wifi_pass", saved_pass, &size) != ESP_OK) {
-            saved_pass[0] = '\0';
-        }
+        if (nvs_get_str(nvs_handle, "wifi_pass", saved_pass, &size) != ESP_OK) saved_pass[0] = '\0';
         nvs_close(nvs_handle);
     } else {
-        wifi_mode = 0; // Default to onboarding setup AP on NVS failure
+        wifi_mode = 0;
     }
 
-    ESP_LOGI(TAG, "Persisted Network settings: Mode=%d, SSID=%s", wifi_mode, saved_ssid);
+    // Consume the one-shot decay flag. If last boot's captive portal timed out, come up in
+    // transient Standalone AP this once WITHOUT persisting it, so a later power cycle still
+    // returns to the captive portal (decay is never a saved boot target).
+    if (decayed) {
+        if (nvs_open("storage", NVS_READWRITE, &nvs_handle) == ESP_OK) {
+            nvs_erase_key(nvs_handle, "decayed");
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+        }
+        ESP_LOGW(TAG, "Captive portal timed out last boot -> transient Standalone AP.");
+    }
+
+    ESP_LOGI(TAG, "Persisted Network settings: Mode=%d, SSID=%s, decayed=%d", wifi_mode, saved_ssid, decayed);
 
     // Initialize base WiFi configuration
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    // Disable modem-sleep power save: it adds escalating latency (tens of ms, climbing
+    // between DTIM beacons) that made the web dashboard feel unreachable. Keep the radio
+    // hot so HTTP/SIP stay responsive.
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
-    if (wifi_mode == 1) { // ─── Wi-Fi Station Mode ───
-        ESP_LOGI(TAG, "Configured in STATION mode.");
-        bool sta_connected = wifi_init_sta(saved_ssid, saved_pass);
-        if (sta_connected) {
+    // Boot priority: explicit Standalone (or a transient decay) -> Standalone AP;
+    // else saved STATION creds -> try to join as client (fall back to captive portal);
+    // else -> captive portal onboarding with the decay watchdog.
+    bool go_standalone = decayed || (wifi_mode == 2);
+    bool go_captive    = false;
+
+    if (!go_standalone && saved_ssid[0] != '\0') { // ─── STATION: try the saved AP first ───
+        ESP_LOGI(TAG, "STATION mode: attempting to join '%s'...", saved_ssid);
+        if (wifi_init_sta(saved_ssid, saved_pass)) {
             if (lvgl_lock(-1)) { ui_set_onboarding_mode(false); lvgl_unlock(); }
-
-            // SIP on Core 0
-            xTaskCreatePinnedToCore(&sip_server_task, "sip_server_task", 8192, NULL, 5, NULL, 0);
-            
-            // HTTP dashboard on Core 0
+            xTaskCreatePinnedToCore(&sip_server_task,  "sip_server_task",  8192, NULL, 5, NULL, 0);
             xTaskCreatePinnedToCore(&http_server_task, "http_server_task", 8192, NULL, 4, NULL, 0);
-            
             g_setupComplete = true;
         } else {
-            ESP_LOGW(TAG, "WiFi station association failed! Falling back to Onboarding Mode...");
-            wifi_mode = 0; // trigger onboarding fallback
+            ESP_LOGW(TAG, "Station association failed -> captive portal.");
+            go_captive = true;
         }
-    } else if (wifi_mode == 2) { // ─── Wi-Fi Standalone AP Mode ───
-        ESP_LOGI(TAG, "Configured in Standalone AP Mode.");
+    } else if (!go_standalone) {
+        go_captive = true;
+    }
+
+    if (go_standalone) { // ─── Standalone AP (explicit radio choice, or decayed fallback) ───
+        ESP_LOGI(TAG, "Standalone AP Mode (open network, SIP up).");
         if (lvgl_lock(-1)) { ui_set_onboarding_mode(false); lvgl_unlock(); }
         g_localIp = "192.168.4.1";
-        
         wifi_init_softap("esp32-sipserver", "", true); // open network
-        
-        // SIP on Core 0
-        xTaskCreatePinnedToCore(&sip_server_task, "sip_server_task", 8192, NULL, 5, NULL, 0);
-        
-        // HTTP dashboard on Core 0
+        xTaskCreatePinnedToCore(&sip_server_task,  "sip_server_task",  8192, NULL, 5, NULL, 0);
         xTaskCreatePinnedToCore(&http_server_task, "http_server_task", 8192, NULL, 4, NULL, 0);
-        
         g_setupComplete = true;
     }
 
-    if (wifi_mode == 0) { // ─── Fallback Wi-Fi Onboarding Setup Mode ───
-        ESP_LOGI(TAG, "Initializing Fallback Captive portal Setup AP: SSID=%s, Password=%s", ONBOARDING_SSID, ONBOARDING_PASS);
+    if (go_captive) { // ─── Captive portal onboarding + decay watchdog ───
+        ESP_LOGI(TAG, "Captive portal Setup AP: SSID=%s", ONBOARDING_SSID);
         if (lvgl_lock(-1)) { ui_set_onboarding_mode(true, ONBOARDING_SSID, ONBOARDING_PASS); lvgl_unlock(); }
-
         wifi_init_softap(ONBOARDING_SSID, ONBOARDING_PASS, false); // secure onboarding AP
-        
-        // Start UDP DNS redirection server on Port 53 resolving to 192.168.4.1
+
+        // DNS redirect (port 53) + config web portal (port 80), both at 192.168.4.1
         g_dnsServer = new DnsServer();
         g_dnsServer->start("192.168.4.1");
-        
-        // Start configuration Web portal on Port 80
         g_localIp = "192.168.4.1";
-        g_httpServer = new HttpServer(g_localIp, 80, nullptr); // pass null since no sip server is active yet
+        g_httpServer = new HttpServer(g_localIp, 80, nullptr);
         g_httpServer->start();
-        
-        ESP_LOGI(TAG, "Captive onboarding interface active. Access http://192.168.4.1/");
+
+        ESP_LOGI(TAG, "Captive onboarding active at http://192.168.4.1/ (decays to Standalone in %ds)", CAPTIVE_DECAY_SECONDS);
+        xTaskCreatePinnedToCore(&captive_decay_task, "decay_task", 3072, NULL, 3, NULL, 0);
     }
 
     // 5. Spin up periodic status and battery updater task
