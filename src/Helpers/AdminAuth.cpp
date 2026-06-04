@@ -23,14 +23,12 @@
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	// On the device, credentials persist in NVS and randomness comes from the
-	// hardware RNG. POCKETDIAL_HAS_WIFI gates the actual NVS/RNG calls so that a
-	// non-WiFi ESP transport (which still defines ESP_PLATFORM) degrades to the
-	// same in-memory fallback as the host rather than failing to link.
-	#if defined(POCKETDIAL_HAS_WIFI)
-		#include "nvs_flash.h"
-		#include "nvs.h"
-		#include "esp_random.h"
-	#endif
+	// hardware RNG. nvs_flash/nvs/esp_random are core ESP-IDF components present
+	// on EVERY transport (wifi, eth, display) — they are not WiFi-specific, so
+	// they must be gated on ESP_PLATFORM, not POCKETDIAL_HAS_WIFI.
+	#include "nvs_flash.h"
+	#include "nvs.h"
+	#include "esp_random.h"
 #else
 	#include <random>
 #endif
@@ -244,22 +242,16 @@ namespace
 	// from std::random_device — adequate for the host simulator.
 	void fillRandom(uint8_t* buf, size_t len)
 	{
-#if defined(POCKETDIAL_HAS_WIFI)
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+		// Hardware CSPRNG, available on every ESP transport.
 		for (size_t i = 0; i < len; ++i)
 		{
 			buf[i] = static_cast<uint8_t>(esp_random() & 0xFF);
 		}
-#elif defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
-		// ESP target without the WiFi RNG include path: fall back to the std
-		// library. Still seeded per-call; documented as a non-WiFi edge case.
-		static std::mt19937_64 rng{std::random_device{}()};
-		for (size_t i = 0; i < len; ++i)
-		{
-			buf[i] = static_cast<uint8_t>(rng() & 0xFF);
-		}
 #else
-		// Seed mt19937_64 from random_device once, mixed with esp_random()'s
-		// host-side absence by also stirring in a steady-clock sample.
+		// Host simulator: seed mt19937_64 from random_device once, also stirring
+		// in a steady-clock sample. (Host is a developer/CI simulator, not the
+		// production trust boundary — documented in docs/THREAT_MODEL.md.)
 		static std::mt19937_64 rng = [] {
 			std::random_device rd;
 			uint64_t seed = (static_cast<uint64_t>(rd()) << 32) ^ rd();
@@ -356,7 +348,7 @@ namespace
 		}
 		s.loaded = true;
 
-#if defined(POCKETDIAL_HAS_WIFI)
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 		nvs_handle_t h;
 		if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
 		{
@@ -382,7 +374,7 @@ namespace
 	// Caller must hold state().mutex.
 	bool persistCredentialLocked(const AuthState& s)
 	{
-#if defined(POCKETDIAL_HAS_WIFI)
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 		nvs_handle_t h;
 		if (nvs_open("storage", NVS_READWRITE, &h) != ESP_OK)
 		{
@@ -403,7 +395,7 @@ namespace
 	// Caller must hold state().mutex.
 	void eraseCredentialLocked()
 	{
-#if defined(POCKETDIAL_HAS_WIFI)
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 		nvs_handle_t h;
 		if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
 		{
