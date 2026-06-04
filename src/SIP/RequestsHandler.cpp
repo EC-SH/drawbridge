@@ -8,6 +8,7 @@
 #include "SipSdpMessage.hpp"
 #include "IDGen.hpp"
 #include "IPHelper.hpp"
+#include "PoolConfig.hpp"
 
 std::vector<std::shared_ptr<SipMessage>> RequestsHandler::_messagePool;
 
@@ -30,18 +31,22 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	_serverPort(serverPort)
 {
 	initHandlers();
-	// Pre-allocate pools (Issue #53)
-	for (int i = 0; i < 32; ++i)
+	// Pre-allocate pools (Issue #53). Capacities are compile-time tunable via
+	// PoolConfig.hpp (-DPOCKETDIAL_MAX_* overrides); defaults preserve 32/8/32.
+	_clientPool.reserve(POCKETDIAL_MAX_CLIENTS);
+	for (int i = 0; i < POCKETDIAL_MAX_CLIENTS; ++i)
 	{
 		_clientPool.push_back(std::make_shared<SipClient>());
 	}
-	for (int i = 0; i < 8; ++i)
+	_sessionPool.reserve(POCKETDIAL_MAX_SESSIONS);
+	for (int i = 0; i < POCKETDIAL_MAX_SESSIONS; ++i)
 	{
 		_sessionPool.push_back(std::make_shared<Session>());
 	}
 	if (_messagePool.empty())
 	{
-		for (int i = 0; i < 32; ++i)
+		_messagePool.reserve(POCKETDIAL_MSG_POOL);
+		for (int i = 0; i < POCKETDIAL_MSG_POOL; ++i)
 		{
 			_messagePool.push_back(std::make_shared<SipSdpMessage>("", sockaddr_in{}));
 		}
