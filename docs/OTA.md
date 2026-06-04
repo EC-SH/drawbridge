@@ -200,28 +200,33 @@ is what `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` is built for.
    bootloader **automatically rolls back** to the previously valid slot on the
    subsequent reset. No bricking.
 
-### 4.1 Integration requirement (firmware `app_main`)
+### 4.1 Integration in firmware `app_main` (wired in)
 
-The application entry point (`esp_main*.cpp`, owned by another workstream — out
-of scope for this change) **must** call `OtaUpdater::markValid()` once it has
-reached a known-good state (e.g. network up + HTTP server listening). A good,
-conservative point is right after the HTTP dashboard starts accepting
-connections. Recommended sketch:
+The application confirms a healthy boot from each firmware entry point's
+`http_server_task` (`main/esp_main.cpp`, `esp_main_eth.cpp`, and
+`esp_main_display.cpp`). After the SIP engine and HTTP dashboard are up, the
+task waits a few seconds of stable operation, then confirms the image:
 
 ```cpp
 #include "OtaUpdater.hpp"
-// ... after the dashboard / SIP engine are up and healthy:
+// ... in the dashboard task's steady-state loop, after the servers are up:
 if (OtaUpdater::isPendingVerify()) {
     OtaUpdater::markValid();   // confirm this image; cancel the pending rollback
 }
 ```
 
-> **NOTE:** this hook is **not yet wired in** by this change set (it would
-> require editing `main/esp_main*.cpp`, which is out of the allowed file scope).
-> Until it is added, the first reset after an OTA will roll back to the previous
-> slot. **Action item for the firmware-entry workstream:** add the `markValid()`
-> call. `OtaUpdater::isPendingVerify()` is provided so the call is cheap and
-> idempotent.
+The "few seconds of healthy operation" gate means a freshly OTA'd image that
+crashes or boot-loops during startup never reaches `markValid()`, so the
+bootloader rolls it back to the previous slot on the next reset. The check is
+cheap and idempotent (`isPendingVerify()` is `false` on a normal boot), so it is
+a no-op except immediately after an OTA.
+
+> **Health-gate scope:** the confirmation runs in the normal operating path
+> (the path a configured device follows after an OTA reboot). The display
+> build's first-run *captive-onboarding* path does not confirm — that path is
+> not reachable as a post-OTA boot of a configured device. A stricter health
+> signal (e.g. confirm only after the first successful SIP REGISTER) is a
+> possible future refinement.
 
 ### 4.2 Other failure modes
 
@@ -230,7 +235,7 @@ if (OtaUpdater::isPendingVerify()) {
 | Upload truncated (Wi-Fi drop mid-stream) | `esp_ota_write` stream ends short → handler `abort()`s the session, returns `400`. The boot partition is unchanged; the device keeps running the current image. |
 | Corrupt image | `esp_ota_end()` returns `ESP_ERR_OTA_VALIDATE_FAILED` → `422`. Slot not activated. |
 | Power loss during write | The slot is partially written but never activated; `otadata` still points at the running slot. Next boot is the old image. Re-upload to retry. |
-| New image boot-loops | Anti-rollback restores the previous slot (see above), provided `markValid()` is wired in (§4.1). |
+| New image boot-loops | Anti-rollback restores the previous slot — the image is only confirmed after a healthy boot reaches `markValid()` (§4.1). |
 
 ---
 

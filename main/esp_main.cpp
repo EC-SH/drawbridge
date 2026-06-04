@@ -11,6 +11,7 @@
 
 #include "SipServer.hpp"
 #include "HttpServer.hpp"
+#include "OtaUpdater.hpp"
 #include "host_compat.h"
 
 #define EXAMPLE_ESP_WIFI_SSID      "esp32-sipserver"
@@ -102,8 +103,22 @@ void http_server_task(void *pvParameters)
     HttpServer http(ip, HTTP_DASHBOARD_PORT, &g_sipServer->getHandler());
     http.start();
     ESP_LOGI("HttpTask", "CGA CRT Dashboard is RUNNING at http://%s:%d/", ip.c_str(), HTTP_DASHBOARD_PORT);
+    // OTA rollback confirmation: the dashboard + SIP engine are up. After a few
+    // seconds of healthy operation, mark this firmware image valid so the
+    // bootloader keeps it (rollback is armed by
+    // CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE; a crash/boot-loop before this point
+    // rolls back to the previous slot). No-op unless the image is pending verify.
+    int otaSettleSec = 0;
+    bool otaConfirmed = false;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!otaConfirmed && ++otaSettleSec >= 5) {
+            otaConfirmed = true;
+            if (OtaUpdater::isPendingVerify()) {
+                OtaUpdater::markValid();
+                ESP_LOGI("HttpTask", "OTA: new image confirmed valid after healthy boot");
+            }
+        }
     }
 
     vTaskDelete(NULL);

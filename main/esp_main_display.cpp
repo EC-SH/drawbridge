@@ -30,6 +30,7 @@
 // SIP & Servers
 #include "SipServer.hpp"
 #include "HttpServer.hpp"
+#include "OtaUpdater.hpp"
 #include "DnsServer.hpp"
 #include "IPHelper.hpp"
 #include "host_compat.h"
@@ -372,9 +373,21 @@ static void http_server_task(void *pvParameters) {
     g_httpServer = new HttpServer(g_localIp, 80, &g_sipServer->getHandler());
     g_httpServer->start();
     ESP_LOGI("HttpTask", "CGA Web UI Running successfully!");
-    
+
+    // OTA rollback confirmation (see docs/OTA.md): after a few seconds of healthy
+    // operation, confirm this image so the bootloader won't roll it back on the
+    // next reset. No-op unless the running image is pending verify.
+    int otaSettleSec = 0;
+    bool otaConfirmed = false;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!otaConfirmed && ++otaSettleSec >= 5) {
+            otaConfirmed = true;
+            if (OtaUpdater::isPendingVerify()) {
+                OtaUpdater::markValid();
+                ESP_LOGI("HttpTask", "OTA: new image confirmed valid after healthy boot");
+            }
+        }
     }
     vTaskDelete(NULL);
 }

@@ -49,6 +49,7 @@
 
 #include "SipServer.hpp"
 #include "HttpServer.hpp"
+#include "OtaUpdater.hpp"
 
 // ── Tag for ESP_LOG ────────────────────────────────────────────────────────
 static const char* TAG = "SipServerETH";
@@ -222,9 +223,23 @@ static void http_server_task(void* pvParameters)
     ESP_LOGI(TAG, "CGA CRT Dashboard RUNNING at http://%s:%d/",
              s_ip_addr.c_str(), HTTP_DASHBOARD_PORT);
 
+    // OTA rollback confirmation (see docs/OTA.md): after a few seconds of healthy
+    // operation, confirm this image so the bootloader won't roll it back on the
+    // next reset. No-op unless the running image is pending verify.
+    int otaSettleSec = 0;
+    bool otaConfirmed = false;
     while (true)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!otaConfirmed && ++otaSettleSec >= 5)
+        {
+            otaConfirmed = true;
+            if (OtaUpdater::isPendingVerify())
+            {
+                OtaUpdater::markValid();
+                ESP_LOGI(TAG, "OTA: new image confirmed valid after healthy boot");
+            }
+        }
     }
 
     vTaskDelete(nullptr);
