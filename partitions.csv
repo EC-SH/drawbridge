@@ -1,5 +1,22 @@
-# ESP32-S3 16MB flash. Large app partition for the LVGL display firmware (binary ~1.5MB
-# and growing with the UI). Name,   Type, SubType,  Offset,   Size
-nvs,      data, nvs,      0x9000,   0x6000
-phy_init, data, phy,      0xf000,   0x1000
-factory,  app,  factory,  0x10000,  0x400000
+# ESP32-S3 16MB flash — dual-OTA layout for over-the-air firmware updates.
+#
+# Rationale (see docs/OTA.md for the full write-up):
+#   * nvs is kept BYTE-IDENTICAL to the previous single-`factory` layout
+#     (offset 0x9000, size 0x6000) so existing WiFi creds + the admin PIN are
+#     layout-compatible across the migration. Do NOT move or resize it.
+#   * otadata (0x2000 = two 4KB sectors, the required size) records which OTA
+#     slot is active and the rollback/validation state.
+#   * Two equal app slots (ota_0 / ota_1) enable A/B updates with rollback.
+#     6MB each is 4x the current ~1.5MB display image — generous headroom for
+#     UI growth while leaving ~3.8MB of flash free at the top (ends at 0xC20000,
+#     well within the 16MB / 0x1000000 device).
+#   * App slots are 64KB-aligned (a hard requirement for app partitions on the
+#     ESP32-S3 because of the MMU flash-mapping granularity); otadata/phy are
+#     4KB-aligned (the flash sector size).
+#
+# Name,     Type, SubType,  Offset,    Size
+nvs,        data, nvs,      0x9000,    0x6000
+otadata,    data, ota,      0xf000,    0x2000
+phy_init,   data, phy,      0x11000,   0x1000
+ota_0,      app,  ota_0,    0x20000,   0x600000
+ota_1,      app,  ota_1,    0x620000,  0x600000
