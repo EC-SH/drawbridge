@@ -8,14 +8,8 @@ CONFIG_SPIRAM_TYPE_AUTO=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_BOOT_INIT=y
-# CAPS_ALLOC (not USE_MALLOC): keep PSRAM OUT of the general malloc heap so FreeRTOS
-# task stacks/TCBs stay in INTERNAL RAM. Under USE_MALLOC, IDF 5.3 auto-enabled
-# ALLOW_STACK_EXTERNAL_MEMORY and let task stacks land in octal PSRAM, corrupting the
-# scheduler ready list (0xa5a5a5a5 stack-fill) before app_main -> bootloop. The LVGL
-# canvas still gets PSRAM via explicit heap_caps_malloc(MALLOC_CAP_SPIRAM). Matches the
-# known-working JC3248W535EN config (AyQWERTY/esp32-odospace).
-CONFIG_SPIRAM_USE_CAPS_ALLOC=y
-CONFIG_SPIRAM_ECC_ENABLE=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 CONFIG_SPIRAM_MEMTEST=n
 
 # Flash Settings (16MB QIO)
@@ -32,6 +26,9 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_LV_CONF_SKIP=y
 CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_COLOR_DEPTH=16
+# AXS15231B QSPI expects byte-swapped RGB565 (the working reference sets swap_bytes=1).
+# Without this, bright colors come out near-black because the two bytes are reversed.
+CONFIG_LV_COLOR_16_SWAP=y
 CONFIG_LV_MEM_SIZE_KILOBYTES=64
 CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_TICK_CUSTOM=y
@@ -42,5 +39,6 @@ CONFIG_LV_TICK_CUSTOM_SYS_TIME_EXPR="esp_timer_get_time() / 1000"
 CONFIG_COMPILER_CXX_EXCEPTIONS=y
 CONFIG_ETH_USE_SPI_ETHERNET=y
 CONFIG_ETH_SPI_ETHERNET_W5500=y
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 

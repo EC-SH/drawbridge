@@ -3,16 +3,19 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
+#include "driver/ledc.h"
 
 // standard Espressif esp_lcd panel/touch drivers
 #include "esp_lcd_axs15231b.h"
@@ -31,6 +34,9 @@
 #include "host_compat.h"
 
 static const char *TAG = "main_display";
+
+// Set to 1 to bypass the app and cycle solid R/G/B/W test colors on the panel (bring-up).
+#define DISPLAY_BRINGUP_TEST 0
 
 // Board Pin mappings (Guition cheap black display JC3248W535)
 #define TFT_CS      45
@@ -55,6 +61,17 @@ static SipServer* g_sipServer = nullptr;
 static HttpServer* g_httpServer = nullptr;
 static DnsServer* g_dnsServer = nullptr;
 static QueueHandle_t s_log_queue = NULL;
+
+// Recursive mutex guarding ALL LVGL access. LVGL is single-threaded, but the renderer
+// (lvgl_task on core 1), system_status_task, and the main task all mutate the object
+// tree. Every lv_*/ui_* call from outside lvgl_task must hold this, or a concurrent
+// lv_timer_handler() layout walk faults (LoadProhibited in get_prop_core).
+static SemaphoreHandle_t s_lvgl_mux = NULL;
+static inline bool lvgl_lock(int timeout_ms) {
+    return s_lvgl_mux && xSemaphoreTakeRecursive(s_lvgl_mux,
+               timeout_ms < 0 ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+static inline void lvgl_unlock(void) { if (s_lvgl_mux) xSemaphoreGiveRecursive(s_lvgl_mux); }
 
 static std::string g_localIp = "192.168.4.1";
 static int g_stationNum = 0;
@@ -94,12 +111,25 @@ extern "C" {
 
 // ─── Low Level Hardware Panel & Touch init ───
 static void hardware_display_init(lv_disp_drv_t* disp_drv) {
-    ESP_LOGI(TAG, "Initializing AXS15231B Backlight...");
-    gpio_config_t bk_gpio_config = {};
-    bk_gpio_config.mode = GPIO_MODE_OUTPUT;
-    bk_gpio_config.pin_bit_mask = 1ULL << TFT_BL;
-    gpio_config(&bk_gpio_config);
-    gpio_set_level((gpio_num_t)TFT_BL, 1); // Backlight HIGH
+    ESP_LOGI(TAG, "Initializing AXS15231B Backlight (LEDC PWM)...");
+    // The JC3248W535 backlight is PWM-driven, not a plain on/off GPIO. Driving it with a
+    // bare GPIO-high leaves it dim/under-driven; LEDC at full duty gives real brightness.
+    ledc_timer_config_t bl_timer = {};
+    bl_timer.speed_mode      = LEDC_LOW_SPEED_MODE;
+    bl_timer.duty_resolution = LEDC_TIMER_10_BIT;
+    bl_timer.timer_num       = LEDC_TIMER_1;
+    bl_timer.freq_hz         = 5000;
+    bl_timer.clk_cfg         = LEDC_AUTO_CLK;
+    ESP_ERROR_CHECK(ledc_timer_config(&bl_timer));
+    ledc_channel_config_t bl_chan = {};
+    bl_chan.gpio_num   = TFT_BL;
+    bl_chan.speed_mode = LEDC_LOW_SPEED_MODE;
+    bl_chan.channel    = LEDC_CHANNEL_0;
+    bl_chan.timer_sel  = LEDC_TIMER_1;
+    bl_chan.intr_type  = LEDC_INTR_DISABLE;
+    bl_chan.duty       = 1023;  // 100% on a 10-bit resolution
+    bl_chan.hpoint     = 0;
+    ESP_ERROR_CHECK(ledc_channel_config(&bl_chan));
 
     ESP_LOGI(TAG, "Initializing LCD QSPI Panel Bus...");
     // Field assignment rather than AXS15231B_PANEL_BUS_QSPI_CONFIG: that macro lists
@@ -141,7 +171,12 @@ static void hardware_display_init(lv_disp_drv_t* disp_drv) {
     ESP_ERROR_CHECK(esp_lcd_new_panel_axs15231b(io_handle, &panel_dev_config, &panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+    // NOTE: this driver's disp_on_off handler has INVERTED semantics — its bool parameter
+    // means "off" (true => DISPOFF, false => DISPON), not the usual esp_lcd "on" meaning.
+    // So `false` turns the display ON. Passing `true` here was sending DISPOFF and blanking
+    // the panel (black screen) regardless of backlight/GRAM. The working reference also
+    // calls this with false.
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, false));
 
     disp_drv->user_data = panel_handle;
 }
@@ -162,6 +197,9 @@ static esp_lcd_touch_handle_t hardware_touch_init() {
 
     esp_lcd_panel_io_handle_t touch_io = NULL;
     esp_lcd_panel_io_i2c_config_t touch_io_config = ESP_LCD_TOUCH_IO_I2C_AXS15231B_CONFIG();
+    // The AXS15231B config macro predates the i2c_master driver and leaves scl_speed_hz
+    // at 0, which i2c_master_bus_add_device rejects ("invalid scl frequency"). Set it.
+    touch_io_config.scl_speed_hz = 400000;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(i2c_bus, &touch_io_config, &touch_io));
 
     ESP_LOGI(TAG, "Creating axs15231b touch driver...");
@@ -185,9 +223,12 @@ static void lvgl_task(void *pvParameters) {
     char log_buf[256];
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10));
-        while (xQueueReceive(s_log_queue, log_buf, 0) == pdTRUE)
-            ui_add_log(log_buf);
-        lv_timer_handler();
+        if (lvgl_lock(-1)) {
+            while (xQueueReceive(s_log_queue, log_buf, 0) == pdTRUE)
+                ui_add_log(log_buf);
+            lv_timer_handler();
+            lvgl_unlock();
+        }
     }
 }
 
@@ -311,7 +352,10 @@ static void system_status_task(void *pvParameters) {
             int clientCount = g_sipServer ? g_sipServer->getHandler().getClientCount() : 0;
             int sessionCount = g_sipServer ? g_sipServer->getHandler().getSessionCount() : 0;
 
-            ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount);
+            if (lvgl_lock(100)) {
+                ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount);
+                lvgl_unlock();
+            }
 
             // Log changes to UI
             if (g_stationNum != prevStations) {
@@ -361,24 +405,39 @@ extern "C" void app_main(void) {
                                                         NULL));
 
     // 1. Start LCD display graphics engine registers
+    // lv_init() MUST run before any other LVGL call: it performs _lv_timer_core_init()
+    // and the _lv_ll_init() calls that set the node sizes of LVGL's global timer and
+    // display linked lists. Without it, _lv_timer_ll.n_size was uninitialized, so
+    // lv_disp_drv_register() -> lv_timer_create() -> _lv_ll_ins_head() requested a
+    // garbage-sized allocation and tripped the heap allocator (block_locate_free,
+    // assert block_size >= size in tlsf.c). The heap was never corrupt; LVGL was simply
+    // never initialized.
+    s_lvgl_mux = xSemaphoreCreateRecursiveMutex();
+    lv_init();
+    ESP_LOGI(TAG, "LVGL core initialized (lv_init)");
+
     static lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
-    
+
     // Low level Panel configuration CS=45, Backlight=1, QSPI lines
     hardware_display_init(&disp_drv);
-    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)disp_drv.user_data;
+    // (panel handle is stored in disp_drv.user_data and retrieved inside flush_cb)
 
     // Allocate frame buffers inside PSRAM (320 * 480 * 2 bytes = 307.2 KB each)
-    size_t draw_buf_sz = 320 * 480;
+    // LVGL partial draw buffers in INTERNAL DMA-capable RAM. The SPI master's DMA cannot
+    // reach this board's OPI PSRAM (esp_ptr_dma_capable() is false for PSRAM), so the
+    // previous full-screen PSRAM buffers made panel_io_spi_tx_color() fail on every flush.
+    // Two partial buffers (~1/6 screen) in internal RAM are DMA-safe; LVGL renders and
+    // flushes in horizontal bands, which is its recommended (and lower-RAM) mode.
+    size_t draw_buf_sz = 320 * 80;            // pixels (~1/6 screen) -> 51,200 bytes/buffer
     size_t bytes_to_alloc = draw_buf_sz * sizeof(uint16_t);
-    lv_color_t *buf1 = (lv_color_t *)heap_caps_malloc(bytes_to_alloc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    lv_color_t *buf2 = (lv_color_t *)heap_caps_malloc(bytes_to_alloc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    lv_color_t *buf1 = (lv_color_t *)heap_caps_malloc(bytes_to_alloc, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    lv_color_t *buf2 = (lv_color_t *)heap_caps_malloc(bytes_to_alloc, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     assert(buf1 != NULL);
     assert(buf2 != NULL);
 
     static lv_disp_draw_buf_t disp_buf;
     lv_disp_draw_buf_init(&disp_buf, buf1, buf2, draw_buf_sz);
-    
     disp_drv.hor_res = 320;
     disp_drv.ver_res = 480;
     disp_drv.flush_cb = [](lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
@@ -387,6 +446,32 @@ extern "C" void app_main(void) {
     };
     disp_drv.draw_buf = &disp_buf;
     lv_disp_drv_register(&disp_drv);
+
+#if DISPLAY_BRINGUP_TEST
+    // ── DIRECT PANEL TEST ── fill the screen solid R/G/B/W via esp_lcd_panel_draw_bitmap,
+    // with NO LVGL at all. This isolates the panel + driver + backlight from the LVGL
+    // integration. Colors are byte-swapped to RGB565 big-endian (the panel's expected order).
+    // If these cycle full-screen, the panel path is proven good and the bug is LVGL wiring;
+    // if it stays black, the panel/driver/init path itself is still wrong.
+    {
+        uint16_t *fb = (uint16_t *)heap_caps_malloc(320 * 480 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        assert(fb != NULL);
+        const uint16_t cols[4] = { 0xF800, 0x07E0, 0x001F, 0xFFFF }; // R, G, B, W (RGB565)
+        const char *names[4]   = { "RED", "GREEN", "BLUE", "WHITE" };
+        int i = 0;
+        while (true) {
+            uint16_t c  = cols[i];
+            uint16_t cs = (uint16_t)((c >> 8) | (c << 8)); // big-endian byte order for the panel
+            for (int p = 0; p < 320 * 480; p++) fb[p] = cs;
+            // draw top-to-bottom in bands (driver does RAMWR on the first, RAMWRC after)
+            for (int y = 0; y < 480; y += 80)
+                esp_lcd_panel_draw_bitmap(panel_handle, 0, y, 320, y + 80, &fb[y * 320]);
+            ESP_LOGI(TAG, "DIRECT TEST: screen = %s (0x%04X swapped 0x%04X)", names[i], c, cs);
+            i = (i + 1) % 4;
+            vTaskDelay(pdMS_TO_TICKS(1500));
+        }
+    }
+#endif
 
     // 2. Initialize touchscreen registers (SDA 4, SCL 8, INT 11, RST 12)
     esp_lcd_touch_handle_t touch_handle = hardware_touch_init();
@@ -415,15 +500,21 @@ extern "C" void app_main(void) {
     };
     lv_indev_drv_register(&indev_drv);
 
-    // 3. Start Core 1 graphics loop
-    xTaskCreatePinnedToCore(&lvgl_task, "lvgl_task", 8192, NULL, 5, NULL, 1);
-    
-    // Draw initial empty frame
+    // 3. Build the logging queue and the HMI BEFORE starting the graphics task.
+    // Ordering is load-bearing: lvgl_task drains s_log_queue and calls lv_timer_handler,
+    // so (a) the queue must exist or xQueueReceive asserts on a NULL handle, and (b) the
+    // UI must be fully built first — LVGL is single-threaded, so the core-1 render task
+    // must not run concurrently with ui_init()'s object creation on the main task.
+    s_log_queue = xQueueCreate(8, 256);
+
+    // Draw initial empty frame / build the HMI switchboard
     ui_init();
 
-    // Intercept ESP_LOGI and route logs to console log textarea
-    s_log_queue = xQueueCreate(8, 256);
+    // Intercept ESP_LOGI and route logs to the on-screen console textarea
     original_log_vprintf = esp_log_set_vprintf(screen_log_vprintf);
+
+    // Start Core 1 graphics loop last: it drives all LVGL rendering from here on.
+    xTaskCreatePinnedToCore(&lvgl_task, "lvgl_task", 8192, NULL, 5, NULL, 1);
 
     // 4. Retrieve saved operational Wi-Fi configuration from NVS
     uint8_t wifi_mode = 0; // 0 = unconfigured fallback, 1 = STATION, 2 = AP Standalone
@@ -458,8 +549,8 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "Configured in STATION mode.");
         bool sta_connected = wifi_init_sta(saved_ssid, saved_pass);
         if (sta_connected) {
-            ui_set_onboarding_mode(false);
-            
+            if (lvgl_lock(-1)) { ui_set_onboarding_mode(false); lvgl_unlock(); }
+
             // SIP on Core 0
             xTaskCreatePinnedToCore(&sip_server_task, "sip_server_task", 8192, NULL, 5, NULL, 0);
             
@@ -473,7 +564,7 @@ extern "C" void app_main(void) {
         }
     } else if (wifi_mode == 2) { // ─── Wi-Fi Standalone AP Mode ───
         ESP_LOGI(TAG, "Configured in Standalone AP Mode.");
-        ui_set_onboarding_mode(false);
+        if (lvgl_lock(-1)) { ui_set_onboarding_mode(false); lvgl_unlock(); }
         g_localIp = "192.168.4.1";
         
         wifi_init_softap("esp32-sipserver", "", true); // open network
@@ -489,8 +580,8 @@ extern "C" void app_main(void) {
 
     if (wifi_mode == 0) { // ─── Fallback Wi-Fi Onboarding Setup Mode ───
         ESP_LOGI(TAG, "Initializing Fallback Captive portal Setup AP: SSID=%s, Password=%s", ONBOARDING_SSID, ONBOARDING_PASS);
-        ui_set_onboarding_mode(true, ONBOARDING_SSID, ONBOARDING_PASS);
-        
+        if (lvgl_lock(-1)) { ui_set_onboarding_mode(true, ONBOARDING_SSID, ONBOARDING_PASS); lvgl_unlock(); }
+
         wifi_init_softap(ONBOARDING_SSID, ONBOARDING_PASS, false); // secure onboarding AP
         
         // Start UDP DNS redirection server on Port 53 resolving to 192.168.4.1
