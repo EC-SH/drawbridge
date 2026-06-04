@@ -1,0 +1,165 @@
+name: ESP32 Pocket-Dial Release Artifacts
+
+# Publish downloadable firmware + host binary on a version tag.
+#
+# TAGS ONLY: this workflow runs exclusively on pushes of a tag matching "v*"
+# (e.g. v1.0.0). It does NOT run on normal branch pushes or pull requests, so a
+# Release is only ever cut from an explicit, intentional tag.
+#
+# It builds the host desktop binary AND the ESP-IDF firmware for the primary
+# targets, collects every flashable .bin plus partitions.csv, computes a
+# SHA256SUMS manifest, and attaches everything to a GitHub Release using the
+# built-in GITHUB_TOKEN (no third-party deploy/cloud credentials — see the
+# deployment-audit guardrail in ci.yml).
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Required so the release job can create a GitHub Release and upload assets via
+# the built-in GITHUB_TOKEN.
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the host desktop binary and stage it as a release artifact.
+  # ---------------------------------------------------------------------------
+  build-host:
+    name: Build Host Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Configure & Build (Release)
+        run: |
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      - name: Stage Host Binary
+        run: |
+          mkdir -p artifacts
+          cp build/SipServer "artifacts/SipServer-host-linux-x86_64"
+
+      - name: Upload Host Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-binary
+          path: artifacts/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Build ESP-IDF firmware for the primary targets. esp32s3 x {wifi, eth} is the
+  # minimum required set. (The "display" transport is esp32s3-only and pulls
+  # heavy managed components; it is left as a documented stub here exactly as in
+  # ci.yml — uncomment the include entry once it is verified to build.)
+  # ---------------------------------------------------------------------------
+  build-firmware:
+    name: Build Firmware (${{ matrix.target-chip }} / ${{ matrix.sip-transport }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target-chip: [ 'esp32s3' ]
+        sip-transport: [ 'wifi', 'eth' ]
+        # include:
+        #   - target-chip: 'esp32s3'
+        #     sip-transport: 'display'
+
+    container:
+      image: espressif/idf:v5.2.1
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build Firmware Image
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py set-target ${{ matrix.target-chip }}
+          idf.py -D SIP_TRANSPORT=${{ matrix.sip-transport }} build
+          echo "Built ${{ matrix.target-chip }} (transport: ${{ matrix.sip-transport }})"
+
+      - name: Stage Firmware Artifacts
+        run: |
+          TAG="${{ matrix.target-chip }}-${{ matrix.sip-transport }}"
+          DEST="artifacts/${TAG}"
+          mkdir -p "${DEST}"
+          # Application image + the two boot-critical images needed to flash a
+          # blank device. Name them per target/transport to avoid collisions when
+          # several variants are gathered into one release.
+          cp build/SipServer.bin                          "${DEST}/SipServer-${TAG}.bin"
+          cp build/bootloader/bootloader.bin              "${DEST}/bootloader-${TAG}.bin"
+          cp build/partition_table/partition-table.bin    "${DEST}/partition-table-${TAG}.bin"
+          # The flasher args file documents the offsets for each image.
+          if [ -f build/flasher_args.json ]; then
+            cp build/flasher_args.json "${DEST}/flasher_args-${TAG}.json"
+          fi
+          ls -l "${DEST}"
+
+      - name: Upload Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.target-chip }}-${{ matrix.sip-transport }}
+          path: artifacts/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Gather all artifacts, add partitions.csv, compute SHA256SUMS, and publish the
+  # GitHub Release. Runs only after the builds succeed.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [ build-host, build-firmware ]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+
+      - name: Assemble Release Bundle
+        run: |
+          mkdir -p release
+          # Flatten every uploaded artifact (host binary + per-variant firmware)
+          # into a single release directory.
+          find downloaded -type f \( -name '*.bin' -o -name '*.json' -o -name 'SipServer-host-*' \) \
+            -exec cp {} release/ \;
+          # Include the partition table as part of the published distribution so
+          # consumers can verify / re-flash the layout.
+          cp partitions.csv release/partitions.csv
+          echo "Release bundle contents:"
+          ls -l release/
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release
+          # Deterministic, sorted checksum manifest over every published file.
+          sha256sum $(ls | sort) > SHA256SUMS
+          echo "===== SHA256SUMS ====="
+          cat SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Tag-triggered: github.ref_name is the pushed tag (e.g. v1.0.0).
+          name: "Pocket-Dial ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*
+        env:
+          # Built-in token; no external/cloud deploy credentials are used.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -36,110 +36,156 @@ jobs:
 
       - name: Configure CMake (Host Build)
         run: |
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          # Export the compile DB so the clang-tidy step below can analyze the
+          # project's own sources with the exact host compile flags.
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build Host Binary
         run: |
           cmake --build build --config Release
 
-      - name: Execute Simulation & Smoke Tests
+      - name: Static Analysis (clang-tidy over src/**)
+        # NON-BLOCKING by design. clang-tidy runs as a real check over the
+        # project's own first-party sources (src/**) using the CMake compile DB,
+        # but the EXISTING Phase-1 source tree carries ~59 pre-existing
+        # performance/bugprone findings (e.g. pass-by-value params, endl flushes,
+        # an intentional widening multiply in the OTA size clamp). This task is
+        # not allowed to modify those files, and the brief is explicit: clang-tidy
+        # must not block the pipeline on pre-existing issues. So this step is
+        # `continue-on-error` and prints a diagnostic count — it surfaces NEW
+        # regressions in the logs/annotations without failing CI. Tighten or drop
+        # `continue-on-error` once the baseline is cleaned up in a follow-up.
+        continue-on-error: true
         run: |
-          echo "Starting simulated SIP & HTTP Server..."
-          # Start the server on host ports (5060 for SIP, 8080 for HTTP CGA Dashboard)
-          ./build/SipServer --ip 127.0.0.1 --port 5060 --web 8080 &
+          echo "Running clang-tidy over first-party sources (src/**)..."
+          CHECKS="-*,bugprone-*,performance-*,clang-analyzer-*,-bugprone-easily-swappable-parameters,-bugprone-narrowing-conversions"
+          : > clang-tidy.log
+          # Only our own translation units; header-filter keeps third-party /
+          # system headers out of the report.
+          while IFS= read -r f; do
+            echo "--- $f ---"
+            clang-tidy -p build --quiet \
+                       --header-filter='.*/src/.*' \
+                       --checks="$CHECKS" \
+                       "$f" 2>&1 | tee -a clang-tidy.log || true
+          done < <(find src -name '*.cpp' | sort)
+          COUNT=$(grep -cE "warning:|error:" clang-tidy.log || true)
+          echo "================================================================"
+          echo "clang-tidy total diagnostics: ${COUNT} (pre-existing baseline ~59)"
+          echo "Diagnostics by check:"
+          grep -oE "\[[a-z0-9-]+(,[a-z0-9-]+)*\]$" clang-tidy.log | sort | uniq -c | sort -rn || true
+          echo "================================================================"
+
+      - name: Run Unit Test Suite (GoogleTest via CTest)
+        run: |
+          # The sip_parser_tests target is registered with CTest in
+          # tests/CMakeLists.txt. Because the root CMakeLists.txt enables testing
+          # only inside the tests/ subdirectory, the CTest test set lives at
+          # build/tests (not the build root) — so we point ctest there. ctest
+          # returns non-zero on any test failure, which FAILS this step (the gate).
+          ctest --test-dir build/tests --output-on-failure
+
+      - name: Verify Partition Table (dual-OTA layout guard)
+        run: |
+          # Lightweight guard: assert partitions.csv keeps the dual-OTA layout
+          # (ota_0 + ota_1 + otadata), has NOT regressed to a single `factory`
+          # app slot, and that every partition fits inside 16 MB flash. Fails CI
+          # if the OTA layout regresses.
+          python3 - <<'PYEOF'
+          import re, sys
+          PATH = "partitions.csv"
+          FLASH = 16 * 1024 * 1024  # ESP32-S3 16 MB
+
+          def parse_num(s):
+              s = s.strip()
+              m = re.fullmatch(r'(0[xX][0-9a-fA-F]+|\d+)([KkMm]?)', s)
+              if not m:
+                  raise ValueError("cannot parse number %r" % s)
+              base = int(m.group(1), 0)
+              suf = m.group(2).lower()
+              if suf == 'k': base *= 1024
+              elif suf == 'm': base *= 1024 * 1024
+              return base
+
+          rows = []
+          with open(PATH) as f:
+              for line in f:
+                  line = line.strip()
+                  if not line or line.startswith('#'):
+                      continue
+                  parts = [p.strip() for p in line.split(',')]
+                  if len(parts) < 5:
+                      continue
+                  name, ptype, subtype, off, size = parts[:5]
+                  rows.append((name, ptype, subtype, parse_num(off), parse_num(size)))
+
+          names = {r[0] for r in rows}
+          errors = []
+          for required in ("ota_0", "ota_1", "otadata"):
+              if required not in names:
+                  errors.append("missing required partition '%s'" % required)
+          if "factory" in names:
+              errors.append("partition 'factory' present — layout regressed to single-slot (OTA disabled)")
+          for name, ptype, subtype, off, size in rows:
+              if off + size > FLASH:
+                  errors.append("partition '%s' ends at 0x%x, exceeds 16MB (0x%x)" % (name, off + size, FLASH))
+          slots = {r[0]: r for r in rows if r[0] in ("ota_0", "ota_1")}
+          if "ota_0" in slots and "ota_1" in slots:
+              if slots["ota_0"][4] != slots["ota_1"][4]:
+                  errors.append("ota_0 size (0x%x) != ota_1 size (0x%x)" % (slots["ota_0"][4], slots["ota_1"][4]))
+              for s in ("ota_0", "ota_1"):
+                  if slots[s][1] != "app":
+                      errors.append("%s is type '%s', expected 'app'" % (s, slots[s][1]))
+
+          if errors:
+              print("PARTITION GUARD: FAIL")
+              for e in errors:
+                  print("  - " + e)
+              sys.exit(1)
+          print("PARTITION GUARD: PASS (dual-OTA layout intact)")
+          for name, ptype, subtype, off, size in rows:
+              print("  %-10s type=%-5s sub=%-8s off=0x%x size=0x%x end=0x%x" % (name, ptype, subtype, off, size, off + size))
+          PYEOF
+
+      - name: Execute HTTP API Smoke Suite (host)
+        run: |
+          # Single source of truth: tests/http/test_api.sh is the ONE HTTP smoke
+          # suite, used both here (host build) and on real hardware. It runs, in
+          # this order: happy-path -> CSRF -> input-validation (16 KB cap) ->
+          # 404 -> OTA (while UNPROVISIONED) -> admin-auth (LAST, sets a PIN).
+          echo "Starting simulated SIP & HTTP Server (5060 SIP / 8080 dashboard)..."
+          ./build/SipServer --ip 127.0.0.1 --port 5060 --web 8080 </dev/null &
           SERVER_PID=$!
-          
-          # Wait 3 seconds for sockets to bind and initialize
-          sleep 3
-          
-          # Test 1: Verify the server is running by querying the active ports
-          if ! ps -p $SERVER_PID > /dev/null; then
+          export SERVER_PID
+
+          # Wait for the HTTP port to accept connections (bounded).
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ || echo 000)
+            [ "$code" = "200" ] && break
+            sleep 0.5
+          done
+
+          if ! kill -0 "$SERVER_PID" 2>/dev/null; then
             echo "Error: SipServer failed to start or crashed on boot."
             exit 1
           fi
-          
-          echo "Simulated Server is active (PID: $SERVER_PID). Starting API tests..."
-          
-          # Test 2: Query HTTP CGA Dashboard homepage (HTML check)
-          echo "Fetching CGA Dashboard Homepage..."
-          HTML_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/)
-          if [ "$HTML_RESPONSE" != "200" ]; then
-            echo "Error: Homepage returned status $HTML_RESPONSE instead of 200 OK"
-            kill $SERVER_PID
-            exit 1
-          fi
-          echo "CGA Dashboard Home: 200 OK"
-          
-          # Test 3: Query status endpoint and validate JSON structure using jq
-          echo "Querying /api/status..."
-          STATUS_JSON=$(curl -s -f http://127.0.0.1:8080/api/status)
-          echo "Response: $STATUS_JSON"
-          
-          # Use jq to validate fields
-          IP_VAL=$(echo "$STATUS_JSON" | jq -r '.ip')
-          SIP_PORT=$(echo "$STATUS_JSON" | jq -r '.port')
-          HTTP_PORT=$(echo "$STATUS_JSON" | jq -r '.httpPort')
-          UPTIME=$(echo "$STATUS_JSON" | jq -r '.uptime')
-          PROCESSED=$(echo "$STATUS_JSON" | jq -r '.packetsProcessed')
-          DROPPED=$(echo "$STATUS_JSON" | jq -r '.packetsDropped')
-          
-          if [ "$IP_VAL" != "127.0.0.1" ]; then
-            echo "Error: Expected IP '127.0.0.1', got '$IP_VAL'"
-            kill $SERVER_PID
-            exit 1
-          fi
-          
-          if [ "$SIP_PORT" != "5060" ] || [ "$HTTP_PORT" != "8080" ]; then
-            echo "Error: Ports mismatch in status JSON (SIP: $SIP_PORT, HTTP: $HTTP_PORT)"
-            kill $SERVER_PID
-            exit 1
-          fi
-          
-          if [ "$UPTIME" = "null" ] || [ "$PROCESSED" = "null" ] || [ "$DROPPED" = "null" ]; then
-            echo "Error: Missing core metrics in status response."
-            kill $SERVER_PID
-            exit 1
-          fi
-          
-          echo "API Status Validation Passed successfully!"
-          
-          # Test 4: Verify Cross-Origin Resource Sharing (CORS) Protection
-          # Side-effecting POST requests with foreign Origin headers must be rejected with 403 Forbidden.
-          echo "Testing CSRF / CORS protection on /api/kill..."
-          CSRF_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "Origin: http://malicious-site.com" \
-            -H "Host: 127.0.0.1:8080" \
-            -d "extension=100" \
-            http://127.0.0.1:8080/api/kill)
-            
-          if [ "$CSRF_CODE" != "403" ]; then
-            echo "Security Vulnerability: API allowed cross-origin request without preflight verification! (Code: $CSRF_CODE)"
-            kill $SERVER_PID
-            exit 1
-          fi
-          echo "CORS / Same-Origin Check: 403 Forbidden (Successfully Blocked)"
-          
-          # Test 5: Verify valid same-origin request works on /api/kill
-          echo "Testing same-origin request to /api/kill..."
-          KILL_RESP=$(curl -s -f -X POST \
-            -H "Origin: http://127.0.0.1:8080" \
-            -H "Host: 127.0.0.1:8080" \
-            -d "extension=999" \
-            http://127.0.0.1:8080/api/kill)
-          echo "Response: $KILL_RESP"
-          
-          DISCONNECT_EXT=$(echo "$KILL_RESP" | jq -r '.disconnected')
-          if [ "$DISCONNECT_EXT" != "999" ]; then
-            echo "Error: Failed to register extension disconnect in kill API. Got '$DISCONNECT_EXT'"
-            kill $SERVER_PID
-            exit 1
-          fi
-          echo "Same-Origin Disconnect: Success"
-          
-          # Clean Teardown
+          echo "Simulated Server is active (PID: $SERVER_PID). Running test_api.sh..."
+
+          # The script exports SERVER_PID-awareness: the OTA-reboot test asserts the
+          # process is STILL ALIVE afterwards (the desktop reboot must be a no-op).
+          set +e
+          bash tests/http/test_api.sh 127.0.0.1:8080
+          RC=$?
+          set -e
+
           echo "Shutting down Simulated Server..."
-          kill -9 $SERVER_PID
-          echo "Simulation Testing complete. All tests PASSED!"
+          kill -9 "$SERVER_PID" 2>/dev/null || true
+
+          if [ "$RC" -ne 0 ]; then
+            echo "HTTP API smoke suite FAILED (exit $RC)."
+            exit "$RC"
+          fi
+          echo "HTTP API smoke suite PASSED."
 
   # Job 2: Build firmware for target ESP32 and ESP32-S3 boards using official Espressif Docker Images.
   # This establishes compiler verification across multiple ESP-IDF versions and target architectures.
@@ -152,6 +198,19 @@ jobs:
         idf-version: [ 'v5.1.2', 'v5.2.1' ]
         target-chip: [ 'esp32', 'esp32s3' ]
         sip-transport: [ 'wifi', 'eth' ]
+        # The "display" transport is intentionally NOT in the base matrix. It
+        # only makes sense on esp32s3 and pulls heavy managed components
+        # (lvgl ^8.3.11, esp_lcd_touch, the AXS15231B driver — see
+        # main/idf_component.yml) which need a component-manager fetch and often
+        # an `idf.py reconfigure` after `set-target`. It could not be verified in
+        # the host CI sandbox (no idf.py), so rather than risk breaking the whole
+        # matrix it is left as a documented stub. To enable, uncomment the
+        # `include:` block below (esp32s3 + display only) and confirm it builds.
+        #
+        # include:
+        #   - idf-version: 'v5.2.1'
+        #     target-chip: 'esp32s3'
+        #     sip-transport: 'display'
 
     container:
       image: espressif/idf:${{ matrix.idf-version }}
