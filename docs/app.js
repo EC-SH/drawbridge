@@ -138,28 +138,34 @@ WiFi.softAP(ssid);`
 // ==========================================================================
 // docs/app.js: Issues #21 and #27 resolved.
 const QUICKSTART_OS = {
-    'win': `> ONE-LINE INSTALLER PIPELINE (Recommended)
-Paste this in your Command Prompt, PowerShell, or Run dialog:
+    'win': `> [1] FLASH PREBUILT FIRMWARE TO AN ESP32-S3  (Recommended — no toolchain)
+Grab your board's .bin set from the latest GitHub Release, then:
 -----------------------------------------------------------------
-# For Latest Stable Release:
+# install esptool once:   pip install esptool
+# variant = display | eth | wifi   (replace COM3 with your port)
+esptool --chip esp32s3 -p COM3 -b 460800 write_flash 0x0 bootloader-esp32s3-display.bin 0x8000 partition-table-esp32s3-display.bin 0x20000 SipServer-esp32s3-display.bin
+
+> [2] RUN ON A PC / RASPBERRY PI  (No ESP32 needed)
+Paste this in Command Prompt or PowerShell:
+-----------------------------------------------------------------
 powershell -c "irm https://raw.githubusercontent.com/GlomarGadaffi/pocket-dial/main/install.ps1 | iex"
 
-# For Bleeding Edge (Most Recent Unreleased):
-powershell -c "$env:POCKET_DIAL_BRANCH='main'; irm https://raw.githubusercontent.com/GlomarGadaffi/pocket-dial/main/install.ps1 | iex"
-
-> LOCAL DEVELOPMENT ACTIONS (If cloned):
+> [3] LOCAL DEVELOPMENT (if cloned):
 -----------------------------------------------------------------
 C:\\pocket-dial> quickstart.bat`,
-    'nix': `> ONE-LINE INSTALLER PIPELINE (Recommended)
+    'nix': `> [1] FLASH PREBUILT FIRMWARE TO AN ESP32-S3  (Recommended — no toolchain)
+Grab your board's .bin set from the latest GitHub Release, then:
+-----------------------------------------------------------------
+# install esptool once:   pip install esptool
+# variant = display | eth | wifi   (replace /dev/ttyUSB0 with your port)
+esptool --chip esp32s3 -p /dev/ttyUSB0 -b 460800 write_flash 0x0 bootloader-esp32s3-display.bin 0x8000 partition-table-esp32s3-display.bin 0x20000 SipServer-esp32s3-display.bin
+
+> [2] RUN ON A PC / RASPBERRY PI  (No ESP32 needed)
 Paste this in your Linux / macOS Terminal (Bash):
 -----------------------------------------------------------------
-# For Latest Stable Release:
 curl -fsSL https://raw.githubusercontent.com/GlomarGadaffi/pocket-dial/main/install.sh | sh
 
-# For Bleeding Edge (Most Recent Unreleased):
-curl -fsSL https://raw.githubusercontent.com/GlomarGadaffi/pocket-dial/main/install.sh | sh -s main
-
-> LOCAL DEVELOPMENT ACTIONS (If cloned):
+> [3] LOCAL DEVELOPMENT (if cloned):
 -----------------------------------------------------------------
 $ chmod +x quickstart.sh && ./quickstart.sh`
 };
@@ -271,7 +277,7 @@ function initQuickstartOSTabs() {
         codeBox.innerHTML = `
             <div class="config-code-block">
                 <div class="code-header">
-                    <span>${osKey === 'win' ? 'QUICKSTART.BAT' : 'QUICKSTART.SH'}</span>
+                    <span>${osKey === 'win' ? 'INSTALL — WINDOWS' : 'INSTALL — LINUX / macOS'}</span>
                     <button class="copy-btn" id="copy-os-btn">COPY SCRIPT</button>
                 </div>
                 <pre class="code-pre"><code id="os-code-content">${QUICKSTART_OS[osKey]}</code></pre>
