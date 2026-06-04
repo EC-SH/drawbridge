@@ -35,9 +35,6 @@
 
 static const char *TAG = "main_display";
 
-// Set to 1 to bypass the app and cycle solid R/G/B/W test colors on the panel (bring-up).
-#define DISPLAY_BRINGUP_TEST 0
-
 // Board Pin mappings (Guition cheap black display JC3248W535)
 #define TFT_CS      45
 #define TFT_SCK     47
@@ -446,32 +443,6 @@ extern "C" void app_main(void) {
     };
     disp_drv.draw_buf = &disp_buf;
     lv_disp_drv_register(&disp_drv);
-
-#if DISPLAY_BRINGUP_TEST
-    // ── DIRECT PANEL TEST ── fill the screen solid R/G/B/W via esp_lcd_panel_draw_bitmap,
-    // with NO LVGL at all. This isolates the panel + driver + backlight from the LVGL
-    // integration. Colors are byte-swapped to RGB565 big-endian (the panel's expected order).
-    // If these cycle full-screen, the panel path is proven good and the bug is LVGL wiring;
-    // if it stays black, the panel/driver/init path itself is still wrong.
-    {
-        uint16_t *fb = (uint16_t *)heap_caps_malloc(320 * 480 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        assert(fb != NULL);
-        const uint16_t cols[4] = { 0xF800, 0x07E0, 0x001F, 0xFFFF }; // R, G, B, W (RGB565)
-        const char *names[4]   = { "RED", "GREEN", "BLUE", "WHITE" };
-        int i = 0;
-        while (true) {
-            uint16_t c  = cols[i];
-            uint16_t cs = (uint16_t)((c >> 8) | (c << 8)); // big-endian byte order for the panel
-            for (int p = 0; p < 320 * 480; p++) fb[p] = cs;
-            // draw top-to-bottom in bands (driver does RAMWR on the first, RAMWRC after)
-            for (int y = 0; y < 480; y += 80)
-                esp_lcd_panel_draw_bitmap(panel_handle, 0, y, 320, y + 80, &fb[y * 320]);
-            ESP_LOGI(TAG, "DIRECT TEST: screen = %s (0x%04X swapped 0x%04X)", names[i], c, cs);
-            i = (i + 1) % 4;
-            vTaskDelay(pdMS_TO_TICKS(1500));
-        }
-    }
-#endif
 
     // 2. Initialize touchscreen registers (SDA 4, SCL 8, INT 11, RST 12)
     esp_lcd_touch_handle_t touch_handle = hardware_touch_init();
