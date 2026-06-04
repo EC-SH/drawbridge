@@ -75,3 +75,26 @@ python tests/load/sip_stress.py --host <device-ip> --register-only --pace 0.1
 ```
 `--pace` (seconds between launches) keeps you under the rate limiter / mailbox.
 The tool samples `GET /api/status` for server-side packet & pool counters.
+
+---
+
+## Update — findings #3 & #4 FIXED (verified on hardware)
+
+Both STA-mode issues are resolved (commit `b04ecac`):
+- **Core-1 lvgl watchdog** → fixed by coalescing/rate-limiting the on-screen log
+  in `lvgl_task` (≤8 lines / 150 ms). Zero `task_wdt` lines on boot; servers up at
+  ~6 s (was ~11 s).
+- **HTTP accept-then-RST** → root cause was the accept loop's **3 KB pthread stack**
+  (`std::thread`); `sendApiStatus` overflowed it on-device. Fixed with
+  `CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192` + bind `INADDR_ANY`.
+
+### Real numbers (paced ~10/s, single source, post-fix)
+| Operation | Success | p50 | p95 | max |
+|-----------|---------|-----|-----|-----|
+| REGISTER  | 20/20 (100%) | 8.6 ms | 25.8 ms | 121 ms |
+| Echo call (777) | 5/5 (100%) | 13.3 ms | 19.9 ms | 21 ms |
+
+`/api/status`: 150 ms; `/api/cdr`: 17 ms; full dashboard `/`: ~6 s (84 KB, one-time).
+Server counters: 21 clients registered, packetsDropped ~2. Still recommend raising
+`CONFIG_LWIP_UDP_RECVMBOX_SIZE` for higher single-source burst tolerance, and testing
+from multiple IPs to find the true concurrency ceiling.
