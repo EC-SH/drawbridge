@@ -58,6 +58,10 @@ private:
 	void sendHtml(int sock);
 	void sendApiStatus(int sock);
 	void sendApiKill(int sock, const std::string& body);
+	// Phase 2: read-only Call Detail Records (newest first). Ungated like /api/status.
+	void sendApiCdr(int sock);
+	// Phase 2: set per-extension Do Not Disturb. Mutating (same-origin + auth gated).
+	void sendApiDnd(int sock, const std::string& body);
 	void sendApiWifiScan(int sock);
 	void sendApiWifiConnect(int sock, const std::string& body);
 	void sendApiWifiModeAp(int sock);

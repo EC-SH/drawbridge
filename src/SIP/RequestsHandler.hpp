@@ -21,9 +21,11 @@
 #include <cstdint>
 #include <atomic>
 #include <chrono>
+#include <array>
 #include "SipMessage.hpp"
 #include "SipClient.hpp"
 #include "Session.hpp"
+#include "CallDetailRecord.hpp"
 
 class RequestsHandler
 {
@@ -50,6 +52,17 @@ public:
 	size_t getClientCount();
 	size_t getSessionCount();
 
+	// Call Detail Records (CDR): a thread-safe snapshot of the recent-call ring,
+	// newest first. Copied out under _snapshotMutex like the client/session views.
+	std::vector<CallDetailRecord> getCallDetailRecords();
+
+	// Do Not Disturb (DND): set/query a per-extension flag. setDnd is the mutating
+	// path behind POST /api/dnd (thread-safe; takes _mutex). getDndExtensions
+	// returns the set of extensions currently in DND from the dashboard snapshot
+	// (thread-safe; takes _snapshotMutex). Both are safe to call off the SIP thread.
+	void setDnd(const std::string& extension, bool on);
+	std::vector<std::string> getDndExtensions();
+
 private:
 	void initHandlers();
 
@@ -69,6 +82,18 @@ private:
 
 	bool setCallState(std::string_view callID, Session::State state);
 	void endCall(std::string_view callID, std::string_view srcNumber, std::string_view destNumber, std::string_view reason = "");
+
+	// CDR: write one record into the ring as a call ends. Caller must hold _mutex.
+	// `session` (may be null) supplies the start time / final state used to derive
+	// duration and result; src/dest provide the parties when the session lookup
+	// can't (e.g. the virtual 777/999 extensions reuse a shared dummy client).
+	void recordCdr(const std::shared_ptr<Session>& session,
+		std::string_view srcNumber, std::string_view destNumber);
+	uint64_t nowEpochMs() const;
+
+	// Internal DND lookup used by onInvite(). Caller MUST already hold _mutex
+	// (std::mutex is non-recursive); does a bounded map lookup, no locking.
+	bool isDndEnabled(const std::string& extension);
 
 	bool registerClient(std::shared_ptr<SipClient> client);
 	void unregisterClient(std::string_view number);
@@ -124,11 +149,27 @@ private:
 	{
 		std::vector<std::pair<std::string, std::string>> clients;
 		std::vector<std::tuple<std::string, std::string, std::string, int>> sessions;
+		std::vector<CallDetailRecord> cdr;   // newest first
+		std::vector<std::string> dnd;        // extensions currently in DND
 		uint64_t packetsProcessed = 0;
 		uint64_t packetsDropped = 0;
 	};
 	RegistrarSnapshot _snapshot;
 	std::mutex _snapshotMutex;
+
+	// CDR ring buffer (Phase 2). Fixed capacity, no heap growth: writes wrap and
+	// overwrite the oldest slot. All access is under _mutex. _cdrHead is the index
+	// of the NEXT slot to write; _cdrCount caps at POCKETDIAL_CDR_RECORDS.
+	std::array<CallDetailRecord, POCKETDIAL_CDR_RECORDS> _cdrRing;
+	size_t _cdrHead = 0;
+	size_t _cdrCount = 0;
+
+	// DND state, keyed by extension. Bounded by the client-pool depth: an entry is
+	// only created when DND is turned ON, and turning it OFF erases the entry, so
+	// the map can never hold more than POCKETDIAL_MAX_CLIENTS live extensions.
+	// Guarded by _mutex. (A std::shared_ptr<SipClient> flag would be lost across
+	// re-REGISTER / pool eviction; keying by extension keeps DND sticky.)
+	std::unordered_map<std::string, bool> _dnd;
 
 	// Pre-allocated static memory pools (Issue #53)
 	std::vector<std::shared_ptr<SipClient>> _clientPool;

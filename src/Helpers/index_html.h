@@ -666,6 +666,56 @@ input[type="file"].adm-input {
     max-height: 90vh;
   }
 }
+
+/* ─── PHOSPHOR THEME PALETTES ─── */
+/* Default (no class) keeps the classic CGA blue defined in :root above.
+   Each theme just remaps the few colour variables; the layout is untouched. */
+body.theme-green {
+  --bg:#001500; --bg-dark:#000a00; --panel-bg:rgba(0,40,0,0.55);
+  --fg:#33FF66; --cyan:#33FF99; --yellow:#9CFF6A; --green:#33FF66;
+  --magenta:#7CFF8A; --dk-cyan:#0a8040; --gray:#5fae6f; --dk-gray:#205028;
+  --glow-cyan:0 0 8px rgba(51,255,153,0.6),0 0 2px rgba(51,255,153,0.3);
+  --glow-white:0 0 8px rgba(51,255,102,0.5),0 0 2px rgba(51,255,102,0.2);
+}
+body.theme-amber {
+  --bg:#1a0f00; --bg-dark:#0d0700; --panel-bg:rgba(60,35,0,0.55);
+  --fg:#FFB000; --cyan:#FFC850; --yellow:#FFD773; --green:#FFB000;
+  --magenta:#FF9C3A; --dk-cyan:#a86a00; --gray:#b98a40; --dk-gray:#5a3a00;
+  --glow-cyan:0 0 8px rgba(255,200,80,0.6),0 0 2px rgba(255,200,80,0.3);
+  --glow-white:0 0 8px rgba(255,176,0,0.5),0 0 2px rgba(255,176,0,0.2);
+}
+body.theme-cga {
+  /* High-contrast CGA palette 1: cyan / magenta / white on black */
+  --bg:#000000; --bg-dark:#0a000a; --panel-bg:rgba(40,0,40,0.5);
+  --fg:#FFFFFF; --cyan:#55FFFF; --yellow:#FF55FF; --green:#55FFFF;
+  --magenta:#FF55FF; --dk-cyan:#00AAAA; --gray:#AAAAAA; --dk-gray:#555555;
+  --glow-cyan:0 0 8px rgba(85,255,255,0.6),0 0 2px rgba(85,255,255,0.3);
+  --glow-white:0 0 8px rgba(255,255,255,0.5),0 0 2px rgba(255,255,255,0.2);
+}
+body.theme-white {
+  /* Monochrome white phosphor */
+  --bg:#0a0a0a; --bg-dark:#000000; --panel-bg:rgba(40,40,40,0.5);
+  --fg:#E8E8E8; --cyan:#FFFFFF; --yellow:#FFFFFF; --green:#D8D8D8;
+  --magenta:#C8C8C8; --dk-cyan:#888888; --gray:#AAAAAA; --dk-gray:#555555;
+  --glow-cyan:0 0 8px rgba(255,255,255,0.55),0 0 2px rgba(255,255,255,0.3);
+  --glow-white:0 0 8px rgba(255,255,255,0.5),0 0 2px rgba(255,255,255,0.2);
+}
+/* The CRT flicker overlay tints toward the active background for cohesion */
+body.theme-green  #crt-monitor::after { background:rgba(0,40,0,0.04); }
+body.theme-amber  #crt-monitor::after { background:rgba(60,35,0,0.04); }
+body.theme-cga    #crt-monitor::after { background:rgba(40,0,40,0.04); }
+body.theme-white  #crt-monitor::after { background:rgba(60,60,60,0.04); }
+
+/* ─── ASCII OPERATOR / ABOUT BOX ─── */
+.ascii-operator {
+  color: var(--cyan);
+  text-shadow: var(--glow-cyan);
+  font-size: 13px;
+  line-height: 1.05;
+  white-space: pre;
+  margin: 0 0 8px 0;
+  text-align: center;
+}
 </style>
 </head>
 <body>
@@ -681,6 +731,8 @@ input[type="file"].adm-input {
         <button class="menu-btn" onclick="refreshNow()" title="Refresh">[F5 Refresh]</button>
         <button class="menu-btn" onclick="oracleSpeak()" title="Query Oracle">[F7 Oracle]</button>
         <button class="menu-btn" onclick="showWifi()" title="WiFi">[F9 WiFi]</button>
+        <button class="menu-btn" id="theme-btn" onclick="cyclePhosphor()" title="Cycle phosphor palette">[Phosphor]</button>
+        <button class="menu-btn" id="sound-btn" onclick="toggleSound()" title="Toggle UI sounds (off by default)">[Sound: OFF]</button>
       </div>
     </div>
 
@@ -870,6 +922,15 @@ input[type="file"].adm-input {
     <button class="btn-retro" onclick="closeHelp()">✕ Close</button>
   </div>
   <div id="help-modal-body">
+    <div class="ascii-operator">    .-"""""-.
+   /  _   _  \    ~ SWITCHBOARD OPERATOR ~
+   |  o   o  |    "Number, please?"
+   |    ^    |    .--.__.--.
+    \  '-'  /    (  patch  )
+     '-...-'      '--.  .--'
+    __|___|__        ||
+   [_O_____O_]   ====[]====
+   /  PBX-1  \   |  |  |  |</div>
     <span style="color:var(--yellow);">═══ CGA CRT SIP Switchboard v5.03 ═══</span><br><br>
     <span style="color:var(--cyan);">KEYBOARD SHORTCUTS:</span><br>
     <span style="color:var(--green);">  F1</span>  — This help screen<br>
@@ -888,7 +949,12 @@ input[type="file"].adm-input {
     <span style="color:var(--green);">  kill &lt;ext&gt;</span> — Terminate an extension<br>
     <span style="color:var(--green);">  clear</span>      — Clear terminal output<br>
     <span style="color:var(--green);">  ver</span>        — Show version info<br>
-    <span style="color:var(--green);">  ascii</span>      — Display classic bell ASCII art<br><br>
+    <span style="color:var(--green);">  ascii</span>      — Display classic bell ASCII art<br>
+    <span style="color:var(--green);">  about</span>      — Meet the switchboard operator<br>
+    <span style="color:var(--green);">  operator</span>   — Ring the operator for assistance<br>
+    <span style="color:var(--green);">  theme</span>      — Cycle phosphor palette<br>
+    <span style="color:var(--green);">  sound</span>      — Toggle UI sounds (off by default)<br>
+    <span style="color:var(--green);">  matrix</span>     — Follow the white rabbit<br><br>
     <span style="color:var(--dk-gray);">  "CGA CRT Console: 640x480 resolution, 16 vibrant colors, and pure low-latency SIP."</span><br>
   </div>
 )rawhtml"
@@ -951,6 +1017,15 @@ let selectedSSID = '';
 // Admin auth state: drives gating of dangerous controls + OTA.
 let adminState = { provisioned: false, authenticated: false };
 let otaUploading = false;
+// Whimsy state (pure client-side, persisted in localStorage).
+const PHOSPHOR_THEMES = ['cga', 'green', 'amber', 'cga2', 'white'];
+// Map the cycle key to the body class (cga2 = high-contrast cyan/magenta CGA).
+const PHOSPHOR_CLASS = { cga:'', green:'theme-green', amber:'theme-amber', cga2:'theme-cga', white:'theme-white' };
+const PHOSPHOR_LABEL = { cga:'CGA Blue', green:'Green', amber:'Amber', cga2:'Cyan/Mag', white:'White' };
+let phosphorIdx = 0;
+let soundEnabled = false;   // OPT-IN: never autoplay; defaults OFF.
+let audioCtx = null;        // lazily created on first user gesture.
+let matrixTimer = null;
 )rawhtml"
 R"rawhtml(
 // ─── SYSTEM ORACLE WORD GENERATOR ───
@@ -1046,10 +1121,33 @@ function bootSequence() {
     { t: 'System Oracle ....... ACTIVE', c: 'var(--green)' },
     { t: 'RNG seed generated .. 0x' + Math.floor(Math.random()*0xFFFFFFFF).toString(16).toUpperCase(), c: 'var(--magenta)' },
     { t: '' },
+    { t: '>>> SWITCHBOARD ONLINE — operator standing by <<<', c: 'var(--magenta)' },
     { t: 'System ready. Type "help" for commands.', c: 'var(--fg)' },
     { t: '' },
   ];
   bootLines.forEach(l => termPrint(l.t, l.c));
+}
+
+// A brief, skippable typewriter flourish shown ONCE on first load.
+// It never blocks usability: the dashboard is already interactive underneath.
+function bootFlourish() {
+  const msg = '☼  CGA CRT SWITCHBOARD ONLINE — patching you through  ☼';
+  const line = document.createElement('div');
+  line.style.color = 'var(--cyan)';
+  line.style.textShadow = 'var(--glow-cyan)';
+  termOutput.insertBefore(line, termOutput.firstChild);
+  let i = 0;
+  const skip = () => { line.textContent = msg; cleanup(); };
+  function cleanup() {
+    document.removeEventListener('keydown', skip, true);
+    termOutput.removeEventListener('click', skip, true);
+  }
+  document.addEventListener('keydown', skip, true);
+  termOutput.addEventListener('click', skip, true);
+  const timer = setInterval(() => {
+    if (i >= msg.length) { clearInterval(timer); cleanup(); return; }
+    line.textContent = msg.slice(0, ++i);
+  }, 18);   // ~0.7s total; fast and non-blocking
 }
 
 function processCommand(cmd) {
@@ -1077,6 +1175,11 @@ function processCommand(cmd) {
       termPrint('  clear       Clear terminal output', 'var(--cyan)');
       termPrint('  ver         Show version info', 'var(--cyan)');
       termPrint('  ascii       Display classic bell ASCII art', 'var(--cyan)');
+      termPrint('  about       Meet the switchboard operator', 'var(--cyan)');
+      termPrint('  operator    Ring the operator for assistance', 'var(--cyan)');
+      termPrint('  theme       Cycle phosphor palette', 'var(--cyan)');
+      termPrint('  sound       Toggle UI sounds (off by default)', 'var(--cyan)');
+      termPrint('  matrix      Follow the white rabbit', 'var(--cyan)');
       termPrint('');
       break;
 
@@ -1213,6 +1316,37 @@ function processCommand(cmd) {
       break;
 )rawhtml"
 R"rawhtml(
+    case 'about':
+      termPrint('');
+      printOperator();
+      termPrint('');
+      termPrint(' CGA CRT SipServer — a retro-console SIP switchboard.', 'var(--yellow)');
+      termPrint(' Hand-soldered phosphor, vacuum-tube vibes, zero spoons.', 'var(--gray)');
+      termPrint('');
+      break;
+
+    case 'operator':
+      termPrint('');
+      printOperator();
+      termPrint('');
+      termPrint(' OPERATOR: "Switchboard online. One moment, connecting you now..."', 'var(--magenta)');
+      ringPreview();
+      termPrint('');
+      break;
+
+    case 'theme':
+      cyclePhosphor();
+      break;
+
+    case 'sound':
+      toggleSound();
+      break;
+
+    case 'matrix':
+      termPrint('');
+      matrixRain();
+      break;
+
     default:
       termPrint(' Unknown command: "' + escapeHtml(command) + '". Type "help" for commands.', 'var(--red)');
       break;
@@ -1793,6 +1927,138 @@ function otaReboot(skipConfirm) {
     });
 }
 
+// ═══════════════════════════════════════════════════════════════
+//   WHIMSY — phosphor themes, opt-in audio, terminal easter eggs
+//   (all pure client-side; no backend calls, no external assets)
+// ═══════════════════════════════════════════════════════════════
+
+// ─── PHOSPHOR THEME SWITCHER (persisted) ───
+function applyPhosphor(idx) {
+  phosphorIdx = ((idx % PHOSPHOR_THEMES.length) + PHOSPHOR_THEMES.length) % PHOSPHOR_THEMES.length;
+  const key = PHOSPHOR_THEMES[phosphorIdx];
+  // Remove every theme class, then add the active one (blank = default CGA blue).
+  Object.values(PHOSPHOR_CLASS).forEach(c => { if (c) document.body.classList.remove(c); });
+  if (PHOSPHOR_CLASS[key]) document.body.classList.add(PHOSPHOR_CLASS[key]);
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = '[' + PHOSPHOR_LABEL[key] + ']';
+  try { localStorage.setItem('cga.phosphor', key); } catch (e) {}
+}
+function cyclePhosphor() {
+  blip(660);
+  applyPhosphor(phosphorIdx + 1);
+  termPrint(' Phosphor palette: ' + PHOSPHOR_LABEL[PHOSPHOR_THEMES[phosphorIdx]], 'var(--cyan)');
+}
+function restorePhosphor() {
+  let key = 'cga';
+  try { key = localStorage.getItem('cga.phosphor') || 'cga'; } catch (e) {}
+  const i = PHOSPHOR_THEMES.indexOf(key);
+  applyPhosphor(i >= 0 ? i : 0);
+}
+
+// ─── OPT-IN AUDIO (WebAudio, no files, OFF by default, no autoplay) ───
+function ensureAudio() {
+  if (!soundEnabled) return null;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (!audioCtx) { try { audioCtx = new AC(); } catch (e) { return null; } }
+  if (audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}); }
+  return audioCtx;
+}
+// A tiny percussive blip — used for clicks (cheap: one oscillator, ~60ms).
+function blip(freq) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(freq || 880, t);
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(0.06, t + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.start(t); osc.stop(t + 0.07);
+}
+// A soft two-tone ring preview (classic 440/480Hz cadence, single short burst).
+function ringPreview() {
+  const ctx = ensureAudio();
+  if (!ctx) { termPrint(' (enable [Sound] to hear the ring preview)', 'var(--dk-gray)'); return; }
+  const t = ctx.currentTime;
+  [440, 480].forEach(f => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(f, t);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.05, t + 0.02);
+    gain.gain.setValueAtTime(0.05, t + 0.55);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(t); osc.stop(t + 0.72);
+  });
+}
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  const btn = document.getElementById('sound-btn');
+  if (btn) btn.textContent = '[Sound: ' + (soundEnabled ? 'ON' : 'OFF') + ']';
+  try { localStorage.setItem('cga.sound', soundEnabled ? '1' : '0'); } catch (e) {}
+  if (soundEnabled) {
+    ensureAudio();   // create within this user gesture so it's allowed to play
+    blip(880);
+    termPrint(' Audio enabled. Try the "operator" command for a ring preview.', 'var(--green)');
+  } else {
+    termPrint(' Audio muted.', 'var(--gray)');
+  }
+}
+function restoreSound() {
+  let on = false;
+  try { on = localStorage.getItem('cga.sound') === '1'; } catch (e) {}
+  soundEnabled = on;
+  const btn = document.getElementById('sound-btn');
+  if (btn) btn.textContent = '[Sound: ' + (on ? 'ON' : 'OFF') + ']';
+  // NOTE: do NOT create/resume AudioContext here — that would be autoplay.
+}
+
+// ─── MATRIX RAIN (terminal easter egg; auto-stops, key/click to abort) ───
+function matrixRain() {
+  if (matrixTimer) return;
+  termPrint(' Wake up... following the white rabbit. (press any key to stop)', 'var(--green)');
+  const glyphs = '01<>{}[]#$%&*+=ｦｱｳｴｵｶｷｸｹｺﾅﾆﾇﾉ';
+  let frames = 0;
+  function stop() {
+    if (!matrixTimer) return;
+    clearInterval(matrixTimer); matrixTimer = null;
+    document.removeEventListener('keydown', stop, true);
+    termOutput.removeEventListener('click', stop, true);
+    termPrint(' ...there is no spoon.', 'var(--dk-gray)');
+  }
+  matrixTimer = setInterval(() => {
+    let row = '';
+    const n = 44;
+    for (let i = 0; i < n; i++) row += glyphs[Math.floor(Math.random() * glyphs.length)];
+    termPrint(row, 'var(--green)');
+    if (++frames >= 24) stop();
+  }, 70);
+  document.addEventListener('keydown', stop, true);
+  termOutput.addEventListener('click', stop, true);
+}
+
+// ─── ASCII OPERATOR (about box, rendered into the terminal) ───
+function printOperator() {
+  const art = [
+    "    .-\"\"\"\"\"-.",
+    "   /  _   _  \\     ~ SWITCHBOARD OPERATOR ~",
+    "   |  o   o  |     \"Number, please?\"",
+    "   |    ^    |      .--.__.--.",
+    "    \\  '-'  /      (  patch   )",
+    "     '-...-'        '--.  .--'",
+    "    __|___|__          ||",
+    "   [_O_____O_]     ====[]====",
+    "   /  PBX-1  \\     |  |  |  |",
+  ];
+  art.forEach(l => termPrint(l, 'var(--cyan)'));
+}
+
 // ─── 3D WIREFRAME ROTATING TESSERACT ───
 (function() {
   const canvas = document.getElementById('retro-canvas');
@@ -1922,7 +2188,14 @@ function otaReboot(skipConfirm) {
 })();
 
 // ─── INIT ───
+restorePhosphor();          // apply persisted palette before first paint settles
+restoreSound();             // restore the toggle label (does NOT start audio)
 bootSequence();
+bootFlourish();             // one quick, skippable typewriter line on top
+// Subtle click blip on any button press (only audible once Sound is enabled).
+document.addEventListener('click', function(e) {
+  if (e.target && e.target.closest && e.target.closest('button')) blip(720);
+}, true);
 fetchStatus();
 fetchAdminStatus();
 fetchOtaStatus();
