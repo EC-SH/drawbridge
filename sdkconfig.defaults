@@ -8,11 +8,15 @@ CONFIG_SPIRAM_TYPE_AUTO=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_BOOT_INIT=y
-CONFIG_SPIRAM_USE_MALLOC=y
+# CAPS_ALLOC (not USE_MALLOC): keep PSRAM OUT of the general malloc heap so FreeRTOS
+# task stacks/TCBs stay in INTERNAL RAM. Under USE_MALLOC, IDF 5.3 auto-enabled
+# ALLOW_STACK_EXTERNAL_MEMORY and let task stacks land in octal PSRAM, corrupting the
+# scheduler ready list (0xa5a5a5a5 stack-fill) before app_main -> bootloop. The LVGL
+# canvas still gets PSRAM via explicit heap_caps_malloc(MALLOC_CAP_SPIRAM). Matches the
+# known-working JC3248W535EN config (AyQWERTY/esp32-odospace).
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_SPIRAM_ECC_ENABLE=y
 CONFIG_SPIRAM_MEMTEST=n
-CONFIG_SPIRAM_MALLOC_ALIGN=4
-CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
-CONFIG_SPIRAM_TRY_ALLOCATE_ONLY_FROM_SPIRAM=n
 
 # Flash Settings (16MB QIO)
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y

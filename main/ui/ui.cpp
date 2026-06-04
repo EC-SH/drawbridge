@@ -372,7 +372,7 @@ void ui_init(void) {
     lv_obj_align(log_textarea, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_border_width(log_textarea, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(log_textarea, 6, LV_PART_MAIN);
-    lv_textarea_set_read_only(log_textarea, true);
+    lv_obj_clear_flag(log_textarea, LV_OBJ_FLAG_CLICKABLE);  // read-only log view (lv_textarea_set_read_only absent in this LVGL)
     lv_textarea_set_max_length(log_textarea, 2048);
 
     // 5. Build Wi-Fi Quick Join Modal Overlay

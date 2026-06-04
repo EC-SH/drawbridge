@@ -7,7 +7,7 @@ endif()
 set(ADDITIONAL_SRCS "")
 
 if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
-    set(IDF_V6_DRIVERS esp_driver_gpio esp_driver_spi)
+    set(IDF_V6_DRIVERS esp_driver_gpio esp_driver_spi esp_driver_i2c)
 else()
     set(IDF_V6_DRIVERS driver)
 endif()
@@ -22,8 +22,8 @@ if(SIP_TRANSPORT STREQUAL "eth")
     message(STATUS "SipServer transport: W5500 Ethernet (PoE)")
 elseif(SIP_TRANSPORT STREQUAL "display")
     set(MAIN_SRC "esp_main_display.cpp")
-    set(EXTRA_REQUIRES esp_lcd lvgl__lvgl ${IDF_V6_DRIVERS})
-    set(ADDITIONAL_SRCS "drivers/esp_lcd_axs15231b.c" "ui/ui.cpp" "wifi/DnsServer.cpp")
+    set(EXTRA_REQUIRES esp_lcd espressif__esp_lcd_touch lvgl__lvgl ${IDF_V6_DRIVERS})
+    set(ADDITIONAL_SRCS "drivers/esp_lcd_axs15231b.c" "ui/ui.cpp" "ui/qrcode.c" "wifi/DnsServer.cpp")
     message(STATUS "SipServer transport: Guition AXS15231B Touch Display (LVGL)")
 else()
     set(MAIN_SRC "esp_main.cpp")
@@ -48,8 +48,8 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipServer.cpp"
                             "../src/SIP/SipStatus.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
-                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns
-                    PRIV_REQUIRES esp_wifi ${EXTRA_REQUIRES})
+                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns ${EXTRA_REQUIRES}
+                    PRIV_REQUIRES esp_wifi)
 
 # Issue #49: the display transport reserves Core 1 for the LVGL graphics task and
 # runs the SIP engine on Core 0, so the UDP receiver (which carries SIP signaling)
@@ -61,4 +61,7 @@ endif()
 
 if(SIP_TRANSPORT STREQUAL "display")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_UDP_RX_CORE=0)
+    # qrcode.c (ricmoo QRCode) uses #pragma mark (an Xcode-ism); GCC treats it as an
+    # unknown pragma, which -Werror=all turns into an error. Demote to a warning here.
+    set_source_files_properties("ui/qrcode.c" PROPERTIES COMPILE_FLAGS "-Wno-error=unknown-pragmas")
 endif()

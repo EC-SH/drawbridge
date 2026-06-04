@@ -10,7 +10,8 @@
 #include "nvs.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
+#include "driver/spi_master.h"
 
 // standard Espressif esp_lcd panel/touch drivers
 #include "esp_lcd_axs15231b.h"
@@ -103,11 +104,17 @@ static void hardware_display_init(lv_disp_drv_t* disp_drv) {
     gpio_set_level((gpio_num_t)TFT_BL, 1); // Backlight HIGH
 
     ESP_LOGI(TAG, "Initializing LCD QSPI Panel Bus...");
-    esp_lcd_panel_bus_handle_t qspi_bus = NULL;
-    esp_lcd_spi_bus_config_t bus_config = AXS15231B_PANEL_BUS_QSPI_CONFIG(
-        TFT_SCK, TFT_D0, TFT_D1, TFT_D2, TFT_D3, 320 * 480 * sizeof(uint16_t)
-    );
-    ESP_ERROR_CHECK(esp_lcd_new_spi_bus((spi_host_device_t)SPI2_HOST, &bus_config, &qspi_bus));
+    // Field assignment rather than AXS15231B_PANEL_BUS_QSPI_CONFIG: that macro lists
+    // spi_bus_config_t's anonymous-union fields out of declaration order, which is a
+    // hard error in C++ (this is a .cpp). Equivalent result, order-independent.
+    spi_bus_config_t bus_config = {};
+    bus_config.sclk_io_num     = TFT_SCK;
+    bus_config.data0_io_num    = TFT_D0;
+    bus_config.data1_io_num    = TFT_D1;
+    bus_config.data2_io_num    = TFT_D2;
+    bus_config.data3_io_num    = TFT_D3;
+    bus_config.max_transfer_sz = 320 * 480 * sizeof(uint16_t);
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus_config, SPI_DMA_CH_AUTO));
 
     ESP_LOGI(TAG, "Initializing Panel IO handle...");
     esp_lcd_panel_io_handle_t io_handle = NULL;
@@ -120,7 +127,7 @@ static void hardware_display_init(lv_disp_drv_t* disp_drv) {
         }, 
         disp_drv
     );
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(qspi_bus, &io_config, &io_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_config, &io_handle));
 
     ESP_LOGI(TAG, "Instantiating axs15231b panel driver...");
     esp_lcd_panel_handle_t panel_handle = NULL;
@@ -143,19 +150,21 @@ static void hardware_display_init(lv_disp_drv_t* disp_drv) {
 
 static esp_lcd_touch_handle_t hardware_touch_init() {
     ESP_LOGI(TAG, "Initializing Touch I2C Bus...");
-    i2c_config_t i2c_conf = {};
-    i2c_conf.mode = I2C_MODE_MASTER;
-    i2c_conf.sda_io_num = (gpio_num_t)TOUCH_SDA;
-    i2c_conf.scl_io_num = (gpio_num_t)TOUCH_SCL;
-    i2c_conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    i2c_conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    i2c_conf.master.clk_speed = 400000;
-    ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &i2c_conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
+    // New i2c_master driver (present since 5.2, mandatory on 6.0 where the legacy
+    // driver/i2c.h was removed). Field assignment keeps it C++ designated-init safe.
+    i2c_master_bus_config_t i2c_bus_conf = {};
+    i2c_bus_conf.i2c_port = I2C_NUM_0;
+    i2c_bus_conf.sda_io_num = (gpio_num_t)TOUCH_SDA;
+    i2c_bus_conf.scl_io_num = (gpio_num_t)TOUCH_SCL;
+    i2c_bus_conf.clk_source = I2C_CLK_SRC_DEFAULT;
+    i2c_bus_conf.glitch_ignore_cnt = 7;
+    i2c_bus_conf.flags.enable_internal_pullup = true;
+    i2c_master_bus_handle_t i2c_bus = NULL;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_conf, &i2c_bus));
 
     esp_lcd_panel_io_handle_t touch_io = NULL;
     esp_lcd_panel_io_i2c_config_t touch_io_config = ESP_LCD_TOUCH_IO_I2C_AXS15231B_CONFIG();
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(I2C_NUM_0, &touch_io_config, &touch_io));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(i2c_bus, &touch_io_config, &touch_io));
 
     ESP_LOGI(TAG, "Creating axs15231b touch driver...");
     esp_lcd_touch_handle_t touch_handle = NULL;
