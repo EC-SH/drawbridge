@@ -43,6 +43,12 @@ public:
 	void enforceG711();
 	void clearBody();
 
+	// Recompute the Content-Length header from the actual body byte count and
+	// rewrite it in place (preserving the full/compact header-name form). Call
+	// after any edit that changes the body length; an out-of-sync Content-Length
+	// causes UDP peers to discard the message as truncated/malformed.
+	void syncContentLength();
+
 
 	std::string_view getType() const;
 	std::string_view getHeader() const;

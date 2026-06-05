@@ -19,3 +19,41 @@ TEST(SipMessage, BasicParse) {
     ASSERT_TRUE(m.isValidMessage());
     ASSERT_EQ(std::string(m.getType()), "REGISTER");
 }
+
+// Regression: enforceG711() rewrites the SDP m= codec list, which changes the
+// body size. It must resync Content-Length, otherwise the 777 echo / 999 page
+// answer is dropped by the peer as truncated and the caller sits on ringback.
+TEST(SipMessage, EnforceG711ResyncsContentLength) {
+    sockaddr_in s; s.sin_addr.s_addr = inet_addr("127.0.0.1");
+    std::string body =
+        "v=0\r\n"
+        "o=- 0 0 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "c=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\n"
+        "m=audio 5004 RTP/AVP 0 8 9 18 101\r\n"
+        "a=rtpmap:0 PCMU/8000\r\n";
+    std::string head =
+        "INVITE sip:777@server SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=1\r\n"
+        "From: <sip:100@server>\r\n"
+        "To: <sip:777@server>\r\n"
+        "Call-ID: id\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+    SipMessage m(head + body, s);
+
+    m.enforceG711();
+
+    // Codec list collapsed to PCMU/PCMA + telephone-event.
+    ASSERT_NE(m.toString().find("m=audio 5004 RTP/AVP 0 8 101\r\n"), std::string::npos);
+
+    // Content-Length must equal the actual body byte count after the rewrite.
+    const std::string out = m.toString();
+    size_t sep = out.find("\r\n\r\n");
+    ASSERT_NE(sep, std::string::npos);
+    size_t actualBody = out.size() - (sep + 4);
+    ASSERT_EQ(std::string(m.getContentLength()),
+              "Content-Length: " + std::to_string(actualBody));
+}

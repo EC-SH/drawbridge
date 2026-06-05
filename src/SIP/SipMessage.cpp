@@ -2,7 +2,6 @@
 #include "SipMessageTypes.h"
 #include <cstring>
 #include <cctype>
-#include <algorithm>
 
 SipMessage::SipMessage(std::string message, sockaddr_in src) : _messageStr(std::move(message)), _src(src)
 {
@@ -105,7 +104,9 @@ void SipMessage::parse()
 	}
 	_statusInfo = PocketDial::parseSipStatusLine(_header);
 
-	// Helper to match headers case-insensitively and handle compact names
+	// Helper to match headers case-insensitively and handle compact names.
+	// Zero-allocation: compares characters in-place via tolower rather than
+	// constructing std::string temporaries for the name and each candidate.
 	auto matchHeader = [](std::string_view line, std::string_view fullHdr, std::string_view compactHdr = "") -> bool {
 		size_t colonPos = line.find(':');
 		if (colonPos == std::string::npos)
@@ -117,17 +118,18 @@ void SipMessage::parse()
 		while (nameEnd > 0 && std::isspace(static_cast<unsigned char>(line[nameEnd - 1]))) --nameEnd;
 		size_t nameStart = 0;
 		while (nameStart < nameEnd && std::isspace(static_cast<unsigned char>(line[nameStart]))) ++nameStart;
-		std::string name(line.substr(nameStart, nameEnd - nameStart));
-		// Lowercase name
-		std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-		std::string full(fullHdr);
-		std::transform(full.begin(), full.end(), full.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-		if (name == full) return true;
-		if (!compactHdr.empty()) {
-			std::string compact(compactHdr);
-			std::transform(compact.begin(), compact.end(), compact.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-			if (name == compact) return true;
-		}
+		std::string_view name = line.substr(nameStart, nameEnd - nameStart);
+
+		auto iequal = [](std::string_view a, std::string_view b) -> bool {
+			if (a.size() != b.size()) return false;
+			for (size_t i = 0; i < a.size(); ++i)
+				if (std::tolower(static_cast<unsigned char>(a[i])) !=
+					std::tolower(static_cast<unsigned char>(b[i]))) return false;
+			return true;
+		};
+
+		if (iequal(name, fullHdr)) return true;
+		if (!compactHdr.empty() && iequal(name, compactHdr)) return true;
 		return false;
 	};
 
@@ -404,7 +406,45 @@ void SipMessage::enforceG711()
 			}
 		}
 	}
+	// Rewriting the codec list changed the SDP body size. Refresh the cached
+	// header views (the replace() above may have reallocated _messageStr), then
+	// resync Content-Length so the answer isn't dropped as malformed on UDP.
 	reparse();
+	syncContentLength();
+}
+
+void SipMessage::syncContentLength()
+{
+	size_t bodyStart = _messageStr.find("\r\n\r\n");
+	if (bodyStart != std::string::npos)
+	{
+		bodyStart += 4;
+	}
+	else if ((bodyStart = _messageStr.find("\n\n")) != std::string::npos)
+	{
+		bodyStart += 2;
+	}
+	else
+	{
+		return; // no header/body separator → nothing to size
+	}
+
+	size_t bodyLen = (bodyStart <= _messageStr.size()) ? _messageStr.size() - bodyStart : 0;
+
+	if (_contentLength.empty())
+	{
+		return; // no Content-Length header present to update
+	}
+
+	// Preserve whichever header-name form the message already uses.
+	if (_contentLength.find("Content-Length") != std::string_view::npos)
+	{
+		setContentLength("Content-Length: " + std::to_string(bodyLen));
+	}
+	else
+	{
+		setContentLength("l: " + std::to_string(bodyLen));
+	}
 }
 
 void SipMessage::clearBody()
