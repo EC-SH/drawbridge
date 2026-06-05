@@ -14,9 +14,23 @@
 #     ESP32-S3 because of the MMU flash-mapping granularity); otadata/phy are
 #     4KB-aligned (the flash sector size).
 #
+#   * prompts (added for the media beachhead): a raw data partition carved out of
+#     the previously-unpartitioned top-of-flash. ota_1 ends at 0xC20000; the 16MB
+#     (0x1000000) device leaves 0x3E0000 (~3.87MB) free above it. Reserved now —
+#     while OTA slots are still byte-identical — for FUTURE stored prompts / voicemail
+#     (recorded G.711 µ-law clips). The synthesized-tone beachhead does NOT use it.
+#     Subtype 0x40 = an undefined/raw data partition: we store fixed-layout raw µ-law
+#     frames addressed by esp_partition_read/write rather than a filesystem. Rationale
+#     (see docs/OTA.md): raw avoids the SPIFFS/LittleFS RAM + code overhead and wear-
+#     leveling indirection on a constrained node, and prompt/voicemail audio is
+#     append-mostly with a known frame size, so a filesystem buys little. If random-
+#     access named-file management is later needed, reformat this same region as SPIFFS
+#     (subtype 0x82) WITHOUT moving the app slots — the OTA layout stays compatible.
+#
 # Name,     Type, SubType,  Offset,    Size
 nvs,        data, nvs,      0x9000,    0x6000
 otadata,    data, ota,      0xf000,    0x2000
 phy_init,   data, phy,      0x11000,   0x1000
 ota_0,      app,  ota_0,    0x20000,   0x600000
 ota_1,      app,  ota_1,    0x620000,  0x600000
+prompts,    data, 0x40,     0xC20000,  0x3E0000

@@ -315,6 +315,14 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	if (destNumber == "440")
+	{
+		// CANCEL of the media call: stop the stream (if it owns this Call-ID) and end.
+		_rtpSender.stop(std::string(data->getCallID()));
+		endCall(data->getCallID(), data->getFromNumber(), "440");
+		return;
+	}
+
 	if (destNumber == "999")
 	{
 		auto session = getSession(data->getCallID());
@@ -446,6 +454,13 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		}
 
 		startBroadcastFork(data, caller.value(), std::move(targets), /*intercom=*/true);
+		return;
+	}
+
+	if (destNumber == "440")
+	{
+		// Media beachhead: the server answers and sources a one-way RTP tone stream.
+		onMediaInvite(data, caller.value());
 		return;
 	}
 
@@ -612,6 +627,174 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 	endHandle(data->getToNumber(), response);
 }
 
+std::string RequestsHandler::buildMediaSdp(const std::string& serverIp, int rtpPort)
+{
+	// The server's OWN SDP offer/answer for the 440 tone stream. PCMU (PT 0) only —
+	// matches enforceG711()/the codec the rest of the PBX speaks. Sendonly: the
+	// server streams to the caller and ignores any media the caller sends back.
+	// CRLF line endings throughout so Content-Length (computed by the caller via
+	// syncContentLength()) matches the wire bytes exactly.
+	std::string s;
+	s += "v=0\r\n";
+	s += "o=- 0 0 IN IP4 " + serverIp + "\r\n";
+	s += "s=pocketdial-media\r\n";
+	s += "c=IN IP4 " + serverIp + "\r\n";
+	s += "t=0 0\r\n";
+	s += "m=audio " + std::to_string(rtpPort) + " RTP/AVP 0\r\n";
+	s += "a=rtpmap:0 PCMU/8000\r\n";
+	s += "a=sendonly\r\n";
+	return s;
+}
+
+bool RequestsHandler::parseCallerRtp(const std::shared_ptr<SipMessage>& invite,
+	std::string& outIp, uint16_t& outPort)
+{
+	// Port: the m=audio port from the caller's offered SDP (0 if absent/invalid).
+	int port = 0;
+	if (invite && invite->hasSdp())
+	{
+		auto* sdp = static_cast<SipSdpMessage*>(invite.get());
+		port = sdp->getRtpPort();
+	}
+	if (port <= 0 || port > 65535)
+	{
+		return false;
+	}
+	outPort = static_cast<uint16_t>(port);
+
+	// IP: prefer the SDP c= line ("c=IN IP4 <addr>"); fall back to the INVITE source
+	// IP (handles phones that put 0.0.0.0 or a private/NAT addr in c=).
+	outIp.clear();
+	if (invite && invite->hasSdp())
+	{
+		auto* sdp = static_cast<SipSdpMessage*>(invite.get());
+		std::string_view c = sdp->getConnectionInformation();   // "c=IN IP4 1.2.3.4"
+		size_t ip4 = c.find("IP4 ");
+		if (ip4 != std::string_view::npos)
+		{
+			size_t start = ip4 + 4;
+			while (start < c.size() && std::isspace(static_cast<unsigned char>(c[start]))) ++start;
+			size_t end = start;
+			while (end < c.size() && (std::isdigit(static_cast<unsigned char>(c[end])) || c[end] == '.')) ++end;
+			std::string candidate(c.substr(start, end - start));
+			if (!candidate.empty() && candidate != "0.0.0.0")
+			{
+				outIp = candidate;
+			}
+		}
+	}
+	if (outIp.empty() && invite)
+	{
+		char ipBuf[INET_ADDRSTRLEN]{};
+		sockaddr_in src = invite->getSource();
+		inet_ntop(AF_INET, &src.sin_addr, ipBuf, sizeof(ipBuf));
+		outIp = ipBuf;
+	}
+	return !outIp.empty();
+}
+
+void RequestsHandler::onMediaInvite(std::shared_ptr<SipMessage> data,
+	const std::shared_ptr<SipClient>& caller)
+{
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+
+	// Single-stream cap: a 2nd dial of 440 while a stream is live is rejected so the
+	// one media slot/socket/task is never double-booked (degrade gracefully).
+	if (_rtpSender.isActive())
+	{
+		auto busy = getMessageFromPool(data->toString(), data->getSource());
+		busy->setHeader("SIP/2.0 486 Busy Here");
+		busy->clearBody();
+		busy->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		busy->setContact(buildContact("440"));
+		_outbox.emplace_back(data->getSource(), std::move(busy));
+		queueLog("440 media: busy (one stream max), rejected " + std::string(data->getFromNumber()));
+		return;
+	}
+
+	// Resolve where to stream: caller's RTP addr:port (c= line + m= port, src fallback).
+	std::string destIp;
+	uint16_t destPort = 0;
+	if (!parseCallerRtp(data, destIp, destPort))
+	{
+		auto bad = getMessageFromPool(data->toString(), data->getSource());
+		bad->setHeader(SipMessageTypes::BAD_REQUEST);
+		bad->clearBody();
+		bad->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		bad->setContact(buildContact("440"));
+		_outbox.emplace_back(data->getSource(), std::move(bad));
+		queueLog("440 media: no usable RTP destination in INVITE from "
+			+ std::string(data->getFromNumber()), true);
+		return;
+	}
+
+	// Build the 200 OK carrying the SERVER's own SDP. We rebuild the message body
+	// directly (there is no generic body setter): take the INVITE clone, strip its
+	// body, then append our SDP and the SDP Content-Type, and resync Content-Length
+	// via enforceG711()/syncContentLength() so the answer isn't dropped on UDP (the
+	// 777-bug class — see tests/SipMessage_test.cpp).
+	std::string toTag = IDGen::GenerateID(9);
+	std::string sdpBody = buildMediaSdp(activeIp, _rtpSender.serverRtpPort());
+
+	// Assemble the OK from the INVITE's headers + our body. clearBody() leaves the
+	// header/blank-line boundary intact; we then append Content-Type + the SDP and
+	// let syncContentLength() (invoked by enforceG711) fix the length.
+	auto ok = getMessageFromPool(data->toString(), data->getSource());
+	ok->setHeader(SipMessageTypes::OK);
+	ok->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+	ok->setTo(std::string(data->getTo()) + ";tag=" + toTag);
+	ok->setContact(buildContact("440"));
+	ok->clearBody();
+	// Append our SDP body after the header/body separator. We rebuild the raw string
+	// because clearBody() emptied the body and zeroed length. The cloned INVITE
+	// already carries "Content-Type: application/sdp" (which clearBody() does NOT
+	// strip), so only add the header if it is somehow absent — never duplicate it.
+	{
+		std::string raw = ok->toString();
+		size_t sep = raw.find("\r\n\r\n");
+		if (sep != std::string::npos)
+		{
+			std::string_view headerView(raw.data(), sep);
+			if (headerView.find("application/sdp") == std::string_view::npos)
+			{
+				// No SDP Content-Type yet: splice one in just before the blank line.
+				raw.insert(sep, "\r\nContent-Type: application/sdp");
+				sep = raw.find("\r\n\r\n");   // separator moved by the inserted bytes
+			}
+			raw.erase(sep + 4);          // drop anything stale after the separator
+			raw += sdpBody;              // append our SDP body
+		}
+		ok->reset(std::move(raw), data->getSource());
+	}
+	ok->enforceG711();                   // collapse codec list (no-op here) + sync length
+	ok->syncContentLength();             // belt-and-suspenders: length == body bytes
+	_outbox.emplace_back(data->getSource(), std::move(ok));
+
+	// Track a Session so the dashboard shows the call and CDR is recorded on teardown.
+	_dummyClient->reset("440", data->getSource(), 3600);
+	auto newSession = allocateSession(std::string(data->getCallID()), caller);
+	if (newSession)
+	{
+		newSession->setDest(_dummyClient);
+		_sessions.emplace(data->getCallID(), newSession);
+		newSession->setState(Session::State::Connected);
+	}
+
+	// Start the RTP tone stream to the caller. If it fails to start (socket/task),
+	// we have already sent 200 OK; the caller's later BYE/CANCEL tears the session
+	// down. Log it so the failure is visible.
+	if (_rtpSender.start(destIp, destPort, std::string(data->getCallID())))
+	{
+		queueLog("440 media: streaming tone to " + destIp + ":" + std::to_string(destPort)
+			+ " (callID=" + std::string(data->getCallID()) + ")");
+	}
+	else
+	{
+		queueLog("440 media: RTP stream failed to start to " + destIp + ":"
+			+ std::to_string(destPort), true);
+	}
+}
+
 void RequestsHandler::onTrying(std::shared_ptr<SipMessage> data)
 {
 	auto session = getSession(data->getCallID());
@@ -723,6 +906,20 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 	std::string destNumber(data->getToNumber());
 	if (destNumber == "777")
 	{
+		auto response = getMessageFromPool(data->toString(), data->getSource());
+		response->setHeader(SipMessageTypes::OK);
+		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		_outbox.emplace_back(data->getSource(), std::move(response));
+		endCall(data->getCallID(), data->getFromNumber(), destNumber);
+		return;
+	}
+
+	if (destNumber == "440")
+	{
+		// Media beachhead teardown: stop the RTP tone stream (only if it owns this
+		// Call-ID), 200 OK the BYE, and end the session. Stream stop is idempotent.
+		_rtpSender.stop(std::string(data->getCallID()));
 		auto response = getMessageFromPool(data->toString(), data->getSource());
 		response->setHeader(SipMessageTypes::OK);
 		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
@@ -1374,6 +1571,13 @@ void RequestsHandler::endCall(std::string_view callID, std::string_view srcNumbe
 			break;
 		}
 	}
+
+	// Media beachhead safety net: if the dialog being torn down owns the live RTP
+	// tone stream (BYE/CANCEL paths already call stop(); this also covers lease
+	// expiry / force-disconnect / hunt cleanup that route through endCall()), stop
+	// it so the socket + 20 ms task never leak past the call. Idempotent no-op when
+	// the stream is idle or owned by a different Call-ID.
+	_rtpSender.stop(std::string(callID));
 }
 
 uint64_t RequestsHandler::nowEpochMs() const
@@ -1558,6 +1762,10 @@ void RequestsHandler::sweepExpired()
 				if (involved)
 				{
 					std::string callID = sit->first;
+					// Media beachhead: if this dialog owned the live RTP tone stream,
+					// stop it so a caller whose lease expires mid-stream doesn't leak
+					// the socket/task. Idempotent no-op otherwise.
+					_rtpSender.stop(callID);
 					sit = _sessions.erase(sit);
 					for (auto& session : _sessionPool)
 					{
@@ -1677,6 +1885,7 @@ void RequestsHandler::forceDisconnect(const std::string& extension)
 			if (involved)
 			{
 				std::string callID = it->first;
+				_rtpSender.stop(callID);   // media beachhead: stop any owned RTP stream
 				it = _sessions.erase(it);
 				for (auto& session : _sessionPool)
 				{

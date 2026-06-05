@@ -58,6 +58,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipSdpMessage.cpp"
                             "../src/SIP/SipServer.cpp"
                             "../src/SIP/SipStatus.cpp"
+                            "../src/SIP/RtpSender.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
                     REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update esp_driver_ledc ${EXTRA_REQUIRES}
                     PRIV_REQUIRES esp_wifi)

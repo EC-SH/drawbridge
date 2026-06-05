@@ -19,8 +19,18 @@ add_executable(sip_parser_tests
     SipMessage_header_test.cpp
     SipStatus_test.cpp
     Pbx_test.cpp
+    Rtp_test.cpp
     ../src/SIP/SipMessage.cpp
     ../src/SIP/SipStatus.cpp
+    # Media beachhead (RTP sender + 440 media extension). RtpSender.cpp compiles to
+    # host stubs (no sockets/FreeRTOS) under !ESP_PLATFORM; RequestsHandler.cpp +
+    # SipSdpMessage/SipClient/Session are pulled in so the 440 SDP-answer and the
+    # single-stream cap are unit-testable on the desktop build.
+    ../src/SIP/RtpSender.cpp
+    ../src/SIP/RequestsHandler.cpp
+    ../src/SIP/SipSdpMessage.cpp
+    ../src/SIP/SipClient.cpp
+    ../src/SIP/Session.cpp
 )
 
 target_link_libraries(sip_parser_tests PRIVATE gtest gtest_main)

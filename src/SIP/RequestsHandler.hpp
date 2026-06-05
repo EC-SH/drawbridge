@@ -27,6 +27,7 @@
 #include "Session.hpp"
 #include "CallDetailRecord.hpp"
 #include "PbxConfig.hpp"
+#include "RtpSender.hpp"
 
 class RequestsHandler
 {
@@ -38,6 +39,18 @@ public:
 		OnHandledEvent onHandledEvent);
 
 	static std::shared_ptr<SipMessage> getMessageFromPool(std::string message, sockaddr_in src);
+
+	// ── Media beachhead static helpers (pure; host-unit-tested) ──────────────────
+	// Build the server's own SDP body for the 440 answer (server media: PCMU on the
+	// server's RTP port). Pure formatter — exposed so tests can assert its body and
+	// the resulting Content-Length correctness (the 777-bug class).
+	static std::string buildMediaSdp(const std::string& serverIp, int rtpPort);
+
+	// Parse the caller's RTP destination from an INVITE: the SDP c= line IP (falling
+	// back to the INVITE source IP) + the m=audio port via getRtpPort(). Returns false
+	// if no usable port is found. Pure/host-testable.
+	static bool parseCallerRtp(const std::shared_ptr<SipMessage>& invite,
+		std::string& outIp, uint16_t& outPort);
 
 	void handle(std::shared_ptr<SipMessage> request);
 	void tick();
@@ -191,6 +204,13 @@ private:
 		const std::string& sipfrag,
 		bool terminated);
 
+	// ── Media beachhead: virtual extension 440 (server-sourced RTP tone) ─────────
+	// onInvite() routes a dial of 440 here. The server answers 200 OK advertising its
+	// OWN media (server IP:port, m=audio <svrport> RTP/AVP 0, PCMU) and starts the
+	// one-way RTP tone stream to the caller's RTP address. ONE concurrent stream: a
+	// 2nd dial while busy is rejected 486 Busy Here. Caller holds _mutex.
+	void onMediaInvite(std::shared_ptr<SipMessage> data, const std::shared_ptr<SipClient>& caller);
+
 	bool registerClient(std::shared_ptr<SipClient> client);
 	void unregisterClient(std::string_view number);
 
@@ -225,6 +245,10 @@ private:
 	std::shared_ptr<SipClient> allocateClient(std::string number, sockaddr_in address, int expiresSeconds);
 	std::shared_ptr<Session> allocateSession(std::string callID, std::shared_ptr<SipClient> src);
 	std::shared_ptr<SipClient> _dummyClient;
+
+	// Server-side RTP media source (the 440 tone stream). One concurrent stream; the
+	// ESP-only UDP socket + 20 ms pacing task live inside it, guarded for host builds.
+	RtpSender _rtpSender;
 
 	// RequestsHandler.hpp: Issues #24 and #28 resolved.
 	std::unordered_map<std::string, std::function<void(std::shared_ptr<SipMessage> request)>> _handlers;

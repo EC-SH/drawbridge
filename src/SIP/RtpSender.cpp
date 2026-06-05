@@ -1,0 +1,342 @@
+#include "RtpSender.hpp"
+
+#include <cmath>
+#include <cstring>
+
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#include <unistd.h>
+#include <sys/socket.h>
+#include "esp_log.h"
+#include "esp_random.h"
+#else
+#include <cstdlib>   // std::rand on host (only for SSRC/seq seeding in stubbed start)
+#endif
+
+namespace
+{
+	// Dedicated server media port. Distinct from SIP (5060) and the register-beep /
+	// HTTP planes. Fixed (not negotiated) — the single-stream cap means one port is
+	// enough, and a fixed port keeps the SDP answer trivial and firewall-predictable.
+	constexpr int SERVER_RTP_PORT = 5062;
+
+	// 2π as a double (M_PI is not guaranteed on MSVC without _USE_MATH_DEFINES).
+	constexpr double TWO_PI = 6.283185307179586476925286766559;
+
+	// Cross-platform 32-bit random (RTP SSRC / initial seq+timestamp). On ESP we use
+	// the hardware RNG; on host std::rand is fine (these are test-only there).
+	uint32_t rand32()
+	{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+		return esp_random();
+#else
+		return (static_cast<uint32_t>(std::rand()) << 16) ^ static_cast<uint32_t>(std::rand());
+#endif
+	}
+}
+
+// ── ITU-T G.711 µ-law encode ────────────────────────────────────────────────
+// Reference companding: clamp, fold sign, add bias 0x84, find the exponent
+// (segment) of the magnitude, take the 4 mantissa bits, then INVERT the byte.
+uint8_t RtpSender::linearToUlaw(int16_t pcm)
+{
+	constexpr int BIAS = 0x84;         // 132
+	constexpr int CLIP = 32635;        // 0x7FFF - BIAS
+
+	// Capture and fold the sign; µ-law uses sign-magnitude with the sign in bit 7.
+	// Magnitude is computed in `int` (NOT int16_t): negating INT16_MIN (-32768) in a
+	// 16-bit type is signed overflow / UB and wraps back to -32768, which silently
+	// mis-encodes full-scale negative samples. Widen first, then negate.
+	int sign = (pcm >> 8) & 0x80;      // 0x80 for negative samples
+	int mag = pcm;
+	if (sign != 0)
+	{
+		mag = -mag;                    // safe: `mag` is a 32-bit int here
+	}
+	if (mag > CLIP)
+	{
+		mag = CLIP;
+	}
+	mag += BIAS;
+
+	// Exponent: position of the highest set bit above bit 7 (segments 0..7).
+	int exponent = 7;
+	for (int expMask = 0x4000; (mag & expMask) == 0 && exponent > 0; expMask >>= 1)
+	{
+		--exponent;
+	}
+
+	int mantissa = (mag >> (exponent + 3)) & 0x0F;
+	uint8_t ulaw = static_cast<uint8_t>(~(sign | (exponent << 4) | mantissa));
+	return ulaw;
+}
+
+// ── Continuous sine-tone synthesis → µ-law ──────────────────────────────────
+void RtpSender::synthTone(uint8_t* out, int count, double freqHz,
+	double& phase, double amplitude)
+{
+	if (out == nullptr || count <= 0)
+	{
+		return;
+	}
+	if (amplitude < 0.0) amplitude = 0.0;
+	if (amplitude > 1.0) amplitude = 1.0;
+
+	const double phaseInc = TWO_PI * freqHz / static_cast<double>(SAMPLE_RATE_HZ);
+	for (int i = 0; i < count; ++i)
+	{
+		double s = std::sin(phase) * amplitude * 32767.0;
+		int v = static_cast<int>(s);
+		if (v > 32767)  v = 32767;
+		if (v < -32768) v = -32768;
+		out[i] = linearToUlaw(static_cast<int16_t>(v));
+
+		phase += phaseInc;
+		if (phase >= TWO_PI)
+		{
+			phase -= TWO_PI;   // keep phase bounded → no float drift over a long call
+		}
+	}
+}
+
+// ── RTP header (RFC 3550 §5.1), all multi-byte fields network (big-endian) ──
+void RtpSender::buildRtpHeader(uint8_t* out, bool marker, uint8_t pt,
+	uint16_t seq, uint32_t timestamp, uint32_t ssrc)
+{
+	// Byte 0: V(2)=2 P(1)=0 X(1)=0 CC(4)=0  → 0x80
+	out[0] = 0x80;
+	// Byte 1: M(1) PT(7)
+	out[1] = static_cast<uint8_t>((marker ? 0x80 : 0x00) | (pt & 0x7F));
+	// Bytes 2-3: sequence number (big-endian)
+	out[2] = static_cast<uint8_t>((seq >> 8) & 0xFF);
+	out[3] = static_cast<uint8_t>(seq & 0xFF);
+	// Bytes 4-7: timestamp (big-endian)
+	out[4] = static_cast<uint8_t>((timestamp >> 24) & 0xFF);
+	out[5] = static_cast<uint8_t>((timestamp >> 16) & 0xFF);
+	out[6] = static_cast<uint8_t>((timestamp >> 8) & 0xFF);
+	out[7] = static_cast<uint8_t>(timestamp & 0xFF);
+	// Bytes 8-11: SSRC (big-endian)
+	out[8]  = static_cast<uint8_t>((ssrc >> 24) & 0xFF);
+	out[9]  = static_cast<uint8_t>((ssrc >> 16) & 0xFF);
+	out[10] = static_cast<uint8_t>((ssrc >> 8) & 0xFF);
+	out[11] = static_cast<uint8_t>(ssrc & 0xFF);
+}
+
+RtpSender::RtpSender() : _serverRtpPort(SERVER_RTP_PORT)
+{
+}
+
+RtpSender::~RtpSender()
+{
+	stop("");   // tear down any live stream + task before destruction
+}
+
+std::string RtpSender::activeCallId() const
+{
+	std::lock_guard<std::mutex> lock(_slotMutex);
+	return _callID;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ESP-only: real UDP socket + 20 ms FreeRTOS pacing task
+// ─────────────────────────────────────────────────────────────────────────────
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+
+bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::string& callID)
+{
+	std::lock_guard<std::mutex> lock(_slotMutex);
+
+	// Single-stream cap: refuse a second concurrent stream. The registrar also gates
+	// on isActive() before calling, but re-check here under the lock to close the race.
+	if (_active.load(std::memory_order_acquire))
+	{
+		return false;
+	}
+
+	sockaddr_in dest{};
+	dest.sin_family = AF_INET;
+	dest.sin_port   = htons(destPort);
+	if (inet_pton(AF_INET, destIp.c_str(), &dest.sin_addr) != 1)
+	{
+		ESP_LOGE("RtpSender", "Bad destination IP '%s'", destIp.c_str());
+		return false;
+	}
+
+	int sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0)
+	{
+		ESP_LOGE("RtpSender", "socket() failed");
+		return false;
+	}
+
+	// Bind the dedicated server media port so the source port is deterministic and
+	// matches the SDP we advertised (some UAs symmetric-RTP latch the source port).
+	sockaddr_in local{};
+	local.sin_family      = AF_INET;
+	local.sin_addr.s_addr = htonl(INADDR_ANY);
+	local.sin_port        = htons(static_cast<uint16_t>(_serverRtpPort));
+	if (bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) < 0)
+	{
+		// Non-fatal: an ephemeral source port still delivers media to the caller.
+		ESP_LOGW("RtpSender", "bind(%d) failed; using ephemeral source port", _serverRtpPort);
+	}
+
+	if (_taskExited == nullptr)
+	{
+		_taskExited = xSemaphoreCreateBinary();
+	}
+
+	_sock          = sock;
+	_dest          = dest;
+	_callID        = callID;
+	_stopRequested = false;
+	_active.store(true, std::memory_order_release);
+
+	// Issue #49 sibling: the display build reserves Core 1 for LVGL and runs SIP on
+	// Core 0; the media task joins SIP on Core 0 so the heavy LVGL full_refresh blits
+	// on Core 1 never steal cycles from the 20 ms RTP cadence. Priority 6 (one above
+	// the udp_receiver/SIP task at 5) so pacing is not starved by signaling bursts.
+	BaseType_t ok = xTaskCreatePinnedToCore(
+		&RtpSender::taskTrampoline,
+		"rtp_media_tx",
+		4096,
+		this,
+		6,
+		&_taskHandle,
+		0 /* Core 0 */);
+
+	if (ok != pdPASS)
+	{
+		ESP_LOGE("RtpSender", "xTaskCreatePinnedToCore failed");
+		close(_sock);
+		_sock = -1;
+		_callID.clear();
+		_active.store(false, std::memory_order_release);
+		return false;
+	}
+
+	ESP_LOGI("RtpSender", "Media stream started -> %s:%u (callID=%s) on port %d",
+		destIp.c_str(), static_cast<unsigned>(destPort), callID.c_str(), _serverRtpPort);
+	return true;
+}
+
+bool RtpSender::stop(const std::string& callID)
+{
+	TaskHandle_t handleToJoin = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(_slotMutex);
+		if (!_active.load(std::memory_order_acquire))
+		{
+			return false;
+		}
+		// Only stop the matching dialog (ignore a stale BYE for a prior call). An
+		// empty callID is the unconditional teardown used by the destructor.
+		if (!callID.empty() && callID != _callID)
+		{
+			return false;
+		}
+		_stopRequested = true;
+		handleToJoin   = _taskHandle;
+	}
+
+	// Wait (off the lock) for the task to observe _stopRequested, flush, and exit so
+	// the socket isn't closed under a sending task. Bounded wait as a backstop.
+	if (handleToJoin != nullptr && _taskExited != nullptr)
+	{
+		xSemaphoreTake(_taskExited, pdMS_TO_TICKS(500));
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(_slotMutex);
+		if (_sock >= 0)
+		{
+			close(_sock);
+			_sock = -1;
+		}
+		_taskHandle = nullptr;
+		_callID.clear();
+		_active.store(false, std::memory_order_release);
+	}
+	ESP_LOGI("RtpSender", "Media stream stopped");
+	return true;
+}
+
+void RtpSender::taskTrampoline(void* arg)
+{
+	auto* self = static_cast<RtpSender*>(arg);
+	self->runLoop();
+	if (self->_taskExited != nullptr)
+	{
+		xSemaphoreGive(self->_taskExited);
+	}
+	vTaskDelete(nullptr);
+}
+
+void RtpSender::runLoop()
+{
+	// Per-stream RTP state. Random start seq/timestamp/SSRC per RFC 3550 §5.1.
+	uint16_t seq       = static_cast<uint16_t>(rand32());
+	uint32_t timestamp = rand32();
+	const uint32_t ssrc = rand32();
+	double   phase     = 0.0;
+	bool     firstPkt  = true;
+
+	// One fixed packet buffer reused every 20 ms — no per-packet heap.
+	uint8_t packet[RtpSender::PACKET_BYTES];
+
+	const TickType_t period = pdMS_TO_TICKS(RtpSender::PTIME_MS);
+	TickType_t lastWake = xTaskGetTickCount();
+
+	while (!_stopRequested)
+	{
+		buildRtpHeader(packet, /*marker=*/firstPkt, RtpSender::PAYLOAD_TYPE_PCMU,
+			seq, timestamp, ssrc);
+		synthTone(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT,
+			static_cast<double>(RtpSender::DEFAULT_TONE_HZ), phase);
+
+		if (_sock >= 0)
+		{
+			sendto(_sock, packet, sizeof(packet), 0,
+				reinterpret_cast<sockaddr*>(&_dest), sizeof(_dest));
+		}
+
+		firstPkt   = false;
+		++seq;
+		timestamp += RtpSender::SAMPLES_PER_PKT;   // 160 per 20 ms frame
+
+		// Pace at exactly 20 ms; vTaskDelayUntil compensates for send jitter so the
+		// stream does not drift relative to the receiver's playout clock.
+		vTaskDelayUntil(&lastWake, period);
+	}
+}
+
+#else   // ── Host stubs: keep the SDP-answer / cap logic testable, no real I/O ──
+
+bool RtpSender::start(const std::string& /*destIp*/, uint16_t /*destPort*/, const std::string& callID)
+{
+	std::lock_guard<std::mutex> lock(_slotMutex);
+	if (_active.load(std::memory_order_acquire))
+	{
+		return false;   // single-stream cap still enforced on host (for tests)
+	}
+	_callID = callID;
+	_active.store(true, std::memory_order_release);
+	return true;
+}
+
+bool RtpSender::stop(const std::string& callID)
+{
+	std::lock_guard<std::mutex> lock(_slotMutex);
+	if (!_active.load(std::memory_order_acquire))
+	{
+		return false;
+	}
+	if (!callID.empty() && callID != _callID)
+	{
+		return false;
+	}
+	_callID.clear();
+	_active.store(false, std::memory_order_release);
+	return true;
+}
+
+#endif
