@@ -1,0 +1,20 @@
+# Classic ESP32 4MB flash — dual-OTA layout for resource-constrained boards
+# (e.g. ESP32-WROOM-32, 4MB flash, 520KB SRAM, no PSRAM).
+#
+# Mirrors the 16MB partitions.csv structure so the same OTA/rollback workflow and
+# NVS layout carry over — only the app-slot SIZES shrink to fit 4MB:
+#   * nvs kept BYTE-IDENTICAL to the 16MB layout (offset 0x9000, size 0x6000) so
+#     WiFi creds + admin PIN are layout-compatible across boards. Do NOT move it.
+#   * otadata (0x2000) + phy_init (0x1000) unchanged.
+#   * Two equal app slots, 0x1E0000 (~1.875MB) each — comfortably fits the ~1.0MB
+#     eth/lan8720/wifi image with ~0.9MB headroom, and still fits the 1.6MB display
+#     image if ever needed. 64KB-aligned (MMU requirement). ~128KB left free at top.
+#
+# Select via sdkconfig.defaults.esp32_constrained (CONFIG_PARTITION_TABLE_CUSTOM_FILENAME).
+#
+# Name,     Type, SubType,  Offset,    Size
+nvs,        data, nvs,      0x9000,    0x6000
+otadata,    data, ota,      0xf000,    0x2000
+phy_init,   data, phy,      0x11000,   0x1000
+ota_0,      app,  ota_0,    0x20000,   0x1E0000
+ota_1,      app,  ota_1,    0x200000,  0x1E0000

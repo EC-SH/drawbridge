@@ -1,3 +1,10 @@
+# Target SoC. Pinned so a stray sdkconfig regeneration can't silently fall back
+# to IDF's default 'esp32' target (which breaks the esp32s3 build: PSRAM, the
+# AXS15231B display, and the 16MB layout all assume esp32s3). Without this, an
+# `idf.py build` that has to regenerate sdkconfig produces an esp32 config that
+# mismatches the CMake cache and aborts.
+CONFIG_IDF_TARGET="esp32s3"
+
 # ESP32-S3 CPU & Frequency settings
 CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
 CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240

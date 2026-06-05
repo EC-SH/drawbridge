@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Resource-constrained classic ESP32 profile (e.g. ESP32-WROOM-32: 4MB flash,
+# 520KB SRAM, NO PSRAM). Layered ON TOP of sdkconfig.defaults — later files win,
+# so this overrides the S3/PSRAM/16MB settings the base file enables.
+#
+# Build (target MUST be classic esp32):
+#   idf.py -B build_constrained -D SIP_TRANSPORT=lan8720 -D SIP_CONSTRAINED=1 \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32_constrained" \
+#          set-target esp32 build
+#
+# Transport-agnostic: works with lan8720 / wifi / eth. NOT for the display build
+# (that targets the 16MB S3). Pair with SIP_CONSTRAINED=1 to shrink the SIP pools.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── No PSRAM ────────────────────────────────────────────────────────────────
+# The base file turns on S3 OPI PSRAM. WROOM-class modules have none — leaving
+# SPIRAM on makes the PSRAM init fail/hang at boot. Hard off.
+CONFIG_SPIRAM=n
+
+# ── Flash: 4MB, DIO ─────────────────────────────────────────────────────────
+# WROOM is DIO (not QIO/OPI). 40MHz is the most compatible default for unknown
+# cheap boards; bump to 80M if yours is stable.
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# ── 4MB dual-OTA partition table ────────────────────────────────────────────
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_4mb.csv"
+
+# ── RAM trims (520KB SRAM, no PSRAM — every KB of internal heap matters) ─────
+# Fewer lwIP sockets: SIP needs a couple of UDP flows + one HTTP listener, not 16.
+CONFIG_LWIP_MAX_SOCKETS=8
+# Smaller TCP buffers for the HTTP dashboard (lower throughput, less heap). The
+# dashboard payload is small; 2*MSS is plenty.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+# Trim the UDP receive mailbox depth (SIP packets are processed promptly).
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=6
+
+# ── Log level: cut the built-in INFO log strings out of flash + RAM ─────────
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL=2
+
+# NOTE: PTHREAD_TASK_STACK_SIZE_DEFAULT (8192, set in base) is deliberately kept —
+# the HTTP dashboard's std::thread overflows a smaller stack. Do not shrink it.
