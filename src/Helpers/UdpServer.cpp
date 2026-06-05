@@ -75,7 +75,12 @@ void UdpServer::startReceive()
 			vTaskDelete(NULL);
 		},
 		"udp_receiver_task",
-		8192, // 8KB stack size to prevent C++ SIP parser overflows
+		// RequestsHandler::handle() runs inline on this task, so its stack must cover the
+		// deepest SIP call chain. The C++ string-heavy message building, the register-beep
+		// UAC (INVITE + ACK/BYE construction), and the media (440) SDP path together blew
+		// the old 8KB (stack-overflow panic in udp_receiver_task). 16KB gives real headroom
+		// (internal RAM is plentiful; ~250KB free heap at boot).
+		16384,
 		this,
 		5,    // Priority
 		&_receiverTaskHandle,

@@ -198,7 +198,7 @@ bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::s
 	BaseType_t ok = xTaskCreatePinnedToCore(
 		&RtpSender::taskTrampoline,
 		"rtp_media_tx",
-		4096,
+		6144,   // headroom for lwIP sendto() + tone synth (4KB was marginal)
 		this,
 		6,
 		&_taskHandle,
