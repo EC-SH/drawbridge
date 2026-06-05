@@ -31,7 +31,10 @@ else()
     if (WIN32)
         target_link_libraries(SipServer wsock32 ws2_32)
     elseif (UNIX)
-        target_link_libraries(SipServer -pthread)
+        # 64-bit std::atomic counters (RequestsHandler packet stats) lower to libatomic
+        # calls on ARMv7 (no native 8-byte atomic instruction) — link it. Harmless on
+        # x86-64 where the atomics are inlined. Required for the Orbic cross-build (#82).
+        target_link_libraries(SipServer -pthread atomic)
     else()
         message(FATAL_ERROR "Unsupported platform.")
     endif()
@@ -43,6 +46,12 @@ else()
 
     source_group("Helpers"  FILES ${HELPERS_SRC_FILES})
     source_group("SIP"      FILES ${SIP_SRC_FILES})
-    
-    add_subdirectory(tests)
+
+    # Tests pull googletest in via FetchContent — skip for cross-compiles (the ARMv7
+    # musl Orbic build, issue #82) where we only want the SipServer binary:
+    #   cmake ... -DCMAKE_TOOLCHAIN_FILE=cmake/armv7-linux-musleabihf.cmake -DBUILD_TESTING=OFF
+    option(BUILD_TESTING "Build the host unit tests" ON)
+    if(BUILD_TESTING)
+        add_subdirectory(tests)
+    endif()
 endif()
