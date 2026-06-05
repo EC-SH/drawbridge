@@ -28,6 +28,11 @@
 #include "ui.h"
 
 // SIP & Servers
+#include <string>
+#include <vector>
+#include <tuple>
+#include <utility>
+#include <unordered_set>
 #include "SipServer.hpp"
 #include "HttpServer.hpp"
 #include "OtaUpdater.hpp"
@@ -84,10 +89,11 @@ static void IRAM_ATTR te_isr_handler(void *arg) {
     if (hp) portYIELD_FROM_ISR();
 }
 
-// Whole-frame flush. full_refresh needs a SCREEN-SIZED render buffer (kept in PSRAM); the
-// SPI master can't DMA a ~300 KB transfer straight from PSRAM, so the flush copies the frame
-// out one band at a time into a small internal DMA-capable bounce buffer, clocking each band
-// to the panel and signalling LVGL only after the last band completes.
+// Banded flush. LVGL runs in FULL_REFRESH mode — this AXS15231B panel garbles on partial
+// windowed writes, so the whole 320x480 frame is repainted each refresh (do NOT switch to
+// partial; it looks fine in code and corrupts on the glass). The SPI master can't DMA straight
+// from PSRAM, so flush_cb copies the frame out one band at a time into a small internal
+// DMA-capable bounce buffer, clocking each band to the panel and signalling LVGL after the last.
 #define FLUSH_BAND_ROWS 80
 static SemaphoreHandle_t s_flush_done_sem = NULL;  // given by the SPI transfer-done callback
 static lv_color_t       *s_band_buf       = NULL;  // internal DMA bounce (320 x FLUSH_BAND_ROWS)
@@ -266,13 +272,11 @@ static void lvgl_task(void *pvParameters) {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(16));   // ~60Hz service cap; guarantees IDLE1 gets the core
         if (lvgl_lock(-1)) {
-            // Coalesce + rate-limit on-screen logging. The panel runs in LVGL
-            // full_refresh mode, so EVERY ui_add_log() repaints the whole 320x480
-            // screen (~150ms of QSPI+DMA). Draining an unbounded log flood every
-            // 10ms therefore pins Core 1 on back-to-back full repaints, starving
-            // IDLE1 (task-WDT) and snowballing as the WDT backtraces log more.
-            // Instead: append at most a few lines, and only every ~150ms, so log
-            // volume can never drive more than ~6 full repaints/sec.
+            // Coalesce + rate-limit on-screen logging. The panel now runs in LVGL PARTIAL
+            // refresh mode, so a log append only repaints the ticker's own bounding box (not
+            // the whole 320x480 screen). The rate limit is kept as cheap insurance against a
+            // log flood thrashing the ticker — but it can no longer snowball into full-screen
+            // repaints that starve IDLE1 (task-WDT). Append a few lines at most every ~150ms.
             TickType_t now = xTaskGetTickCount();
             if (now - lastLogPaint >= pdMS_TO_TICKS(150)) {
                 int drained = 0;
@@ -416,13 +420,68 @@ static void system_status_task(void *pvParameters) {
 
         if (g_setupComplete) {
             uint32_t uptime = esp_timer_get_time() / 1000000;
-            
+
             // Query extensions and active VoIP call counts
             int clientCount = g_sipServer ? g_sipServer->getHandler().getClientCount() : 0;
             int sessionCount = g_sipServer ? g_sipServer->getHandler().getSessionCount() : 0;
 
+            // ── Build the switchboard jack/patch snapshot from the registrar dashboard API ──
+            // All getters snapshot-copy under RequestsHandler's own _snapshotMutex; we never
+            // block the SIP core here. Everything is bounded by the registrar pools.
+            UiBoardSnapshot board{};
+            board.jackCount = 0;
+            board.patchCount = 0;
+            if (g_sipServer) {
+                RequestsHandler& h = g_sipServer->getHandler();
+                auto clients  = h.getActiveClients();   // {ext, ip:port}
+                auto sessions = h.getActiveSessions();   // {a, b, stateStr, durationSec}
+                auto dndList  = h.getDndExtensions();    // {ext...}
+
+                // Fast-membership sets for in-call / DND derivation. Bounded by the pools.
+                std::unordered_set<std::string> inCall;
+                for (const auto& s : sessions) {
+                    const std::string& a = std::get<0>(s);
+                    const std::string& b = std::get<1>(s);
+                    const std::string& st = std::get<2>(s);
+                    // Only "live" sessions light a lamp in-call; teardown states don't.
+                    if (st == "Connected" || st == "Invited") {
+                        if (!a.empty() && a != "?") inCall.insert(a);
+                        if (!b.empty() && b != "?") inCall.insert(b);
+                    }
+                }
+                std::unordered_set<std::string> dnd(dndList.begin(), dndList.end());
+
+                // One jack per registered client (bounded to UI_MAX_JACKS).
+                for (const auto& c : clients) {
+                    if (board.jackCount >= UI_MAX_JACKS) break;
+                    UiJack& j = board.jacks[board.jackCount];
+                    strncpy(j.ext, c.first.c_str(), sizeof(j.ext) - 1);
+                    j.ext[sizeof(j.ext) - 1] = '\0';
+                    if (inCall.count(c.first))     j.state = UI_JACK_INCALL;
+                    else if (dnd.count(c.first))   j.state = UI_JACK_DND;
+                    else                           j.state = UI_JACK_IDLE;
+                    board.jackCount++;
+                }
+
+                // Patch cords from live sessions (bounded to UI_MAX_PATCHES).
+                for (const auto& s : sessions) {
+                    if (board.patchCount >= UI_MAX_PATCHES) break;
+                    const std::string& st = std::get<2>(s);
+                    if (st != "Connected" && st != "Invited") continue;
+                    UiPatch& p = board.patches[board.patchCount];
+                    strncpy(p.a, std::get<0>(s).c_str(), sizeof(p.a) - 1);
+                    p.a[sizeof(p.a) - 1] = '\0';
+                    strncpy(p.b, std::get<1>(s).c_str(), sizeof(p.b) - 1);
+                    p.b[sizeof(p.b) - 1] = '\0';
+                    strncpy(p.state, st.c_str(), sizeof(p.state) - 1);
+                    p.state[sizeof(p.state) - 1] = '\0';
+                    board.patchCount++;
+                }
+            }
+
             if (lvgl_lock(100)) {
                 ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount);
+                ui_update_board(board);
                 lvgl_unlock();
             }
 
@@ -515,29 +574,33 @@ extern "C" void app_main(void) {
     hardware_display_init(&disp_drv);
     // (panel handle is stored in disp_drv.user_data and retrieved inside flush_cb)
 
-    // Screen-sized LVGL render buffer in PSRAM (full_refresh requires the buffer to be at
-    // least the full screen, or LVGL silently falls back to partial updates — which garble
-    // on this panel's QSPI mode). The flush copies it out band-by-band through s_band_buf,
-    // a small internal DMA-capable bounce buffer (the SPI master can't DMA from PSRAM).
-    size_t draw_buf_sz = 320 * 480;           // full screen
+    // FULL-screen refresh draw buffer in PSRAM. This panel (AXS15231B QSPI) GARBLES on partial
+    // windowed writes — that is a hardware fact established the hard way, see TFT_TE notes — so
+    // LVGL must run in full_refresh mode and repaint the whole 320x480 frame each time. One
+    // screen-sized PSRAM buffer; the flush still bands it out through s_band_buf, a small internal
+    // DMA-capable bounce, because the SPI master can't DMA directly from PSRAM. Do NOT switch this
+    // back to partial/double-buffered windowed flushing — it looks correct in code and corrupts
+    // on the glass.
+    size_t draw_buf_sz = 320 * 480;   // full screen
     lv_color_t *buf1 = (lv_color_t *)heap_caps_malloc(draw_buf_sz * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_band_buf       = (lv_color_t *)heap_caps_malloc(320 * FLUSH_BAND_ROWS * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     assert(buf1 != NULL);
     assert(s_band_buf != NULL);
 
     static lv_disp_draw_buf_t disp_buf;
-    lv_disp_draw_buf_init(&disp_buf, buf1, NULL, draw_buf_sz);  // single screen-sized buffer
+    lv_disp_draw_buf_init(&disp_buf, buf1, NULL, draw_buf_sz);  // single full-screen buffer
     disp_drv.hor_res = 320;
     disp_drv.ver_res = 480;
     disp_drv.flush_cb = [](lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
         esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
         const int x1 = area->x1, x2 = area->x2;
         const int w  = x2 - x1 + 1;
-        // Wait for the panel's TE vblank, then clock the whole frame out during blanking so
-        // it doesn't tear (a full frame fits inside one ~16.7 ms scan period at 40 MHz QSPI).
+        // full_refresh hands us the whole screen as a single area, so there is exactly one flush
+        // per frame: block for the next TE (vblank) pulse before writing so the frame lands in
+        // blanking and doesn't tear. Drain any stale pulse first.
         if (s_te_sem) {
-            xSemaphoreTake(s_te_sem, 0);                  // drain any stale pulse
-            xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(100)); // wait for the next vblank
+            xSemaphoreTake(s_te_sem, 0);                   // drain any stale pulse
+            xSemaphoreTake(s_te_sem, pdMS_TO_TICKS(100));  // wait for the next vblank
         }
         // Copy each band PSRAM -> internal DMA bounce, clock it out, wait for it to finish
         // (s_band_buf is reused, so the bands must be sequential). The driver fills the frame
@@ -552,10 +615,9 @@ extern "C" void app_main(void) {
         lv_disp_flush_ready(drv);
     };
     disp_drv.draw_buf = &disp_buf;
-    // full_refresh: redraw the ENTIRE screen into the PSRAM buffer on every change and hand
-    // the whole frame to flush_cb in one call. This panel's QSPI mode garbles on partial
-    // windowed writes, so we never let LVGL do partial flushes; flush_cb then bands the full
-    // frame out to the panel itself.
+    // FULL refresh: every update repaints all 320x480. Slightly more QSPI traffic, but it is the
+    // only mode that renders cleanly on this panel. Keep UI animations discrete (see ui.cpp) so we
+    // are not repainting the whole screen continuously.
     disp_drv.full_refresh = 1;
     lv_disp_drv_register(&disp_drv);
 

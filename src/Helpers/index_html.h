@@ -1,2216 +1,873 @@
 #ifndef INDEX_HTML_H
 #define INDEX_HTML_H
 
-static const char CGA_INDEX_HTML[] = R"rawhtml(
-<!DOCTYPE html>
+static const char CGA_INDEX_HTML[] =
+R"html0(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CGA CRT SipServer v5.03</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<title>Pocket-Dial Switchboard</title>
 <style>
-/* ═══════════════════════════════════════════════════════════════
-   CGA CRT STYLES — Premium Retro Console Stylesheet
-   ═══════════════════════════════════════════════════════════════ */
+:root{
+  --field:#0d0b09; --field2:#141009; --panel:#1a140d; --panel2:#221a10;
+  --brass:#c69a4e; --brass-lo:#8a6a32; --brass-hi:#e8c987; --brass-dim:#6e5526;
+  --ink:#e8dcc3; --ink-dim:#9a8a6a; --line:#3a2c19; --line-hi:#5a4527;
+  --amber:#ffb000; --amber-glow:#ff9c1a; --lamp-off:#2a2117;
+  --green:#7bd66a; --red:#e8654a; --bake:#191512; --bake2:#221c16;
+  --shadow:0 2px 4px rgba(0,0,0,.5);
+  --mono:ui-monospace,"Cascadia Code","Cascadia Mono","Consolas","SF Mono",Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:var(--field);color:var(--ink);font-family:var(--sans);font-size:15px;-webkit-text-size-adjust:100%}
+body{
+  min-height:100vh;
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(198,154,78,.10), transparent 55%),
+    radial-gradient(ellipse at 50% 120%, rgba(0,0,0,.6), transparent 60%),
+    var(--field);
+}
+a{color:var(--brass)}
+button{font-family:inherit}
 
-:root {
-  --bg:        #0000AA;
-  --bg-dark:   #000088;
-  --fg:        #FFFFFF;
-  --cyan:      #55FFFF;
-  --yellow:    #FFFF55;
-  --red:       #FF5555;
-  --green:     #55FF55;
-  --magenta:   #FF55FF;
-  --dk-cyan:   #00AAAA;
-  --dk-yellow: #AA8800;
-  --dk-green:  #00AA00;
-  --dk-red:    #AA0000;
-  --dk-mag:    #AA00AA;
-  --gray:      #AAAAAA;
-  --dk-gray:   #555555;
-  --black:     #000000;
-  --panel-bg:  rgba(0, 0, 100, 0.6);
-  --glow-cyan: 0 0 8px rgba(85,255,255,0.6), 0 0 2px rgba(85,255,255,0.3);
-  --glow-white:0 0 8px rgba(255,255,255,0.5), 0 0 2px rgba(255,255,255,0.2);
+/* ── OPERATOR RAIL ── */
+#rail{
+  position:sticky;top:0;z-index:40;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:8px 14px;
+  background:linear-gradient(180deg,#2a2013,#1a140c);
+  border-bottom:2px solid var(--brass-lo);
+  box-shadow:0 2px 8px rgba(0,0,0,.6);
 }
+.wordmark{display:flex;align-items:baseline;gap:8px}
+.wordmark b{
+  font-family:var(--mono);font-size:18px;letter-spacing:1px;font-weight:700;
+  color:var(--brass-hi);text-shadow:0 1px 0 #000;
+}
+.wordmark .sub{font-size:11px;color:var(--brass);letter-spacing:3px;text-transform:uppercase}
+.rail-stats{display:flex;gap:14px;flex-wrap:wrap;margin-left:auto;align-items:center}
+.stat{display:flex;flex-direction:column;line-height:1.1}
+.stat .k{font-size:9px;letter-spacing:1px;color:var(--brass-lo);text-transform:uppercase}
+.stat .v{font-family:var(--mono);font-size:14px;color:var(--ink)}
+#dot{width:10px;height:10px;border-radius:50%;background:var(--lamp-off);box-shadow:0 0 0 2px #000 inset;flex-shrink:0}
+#dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+#dot.warn{background:var(--amber);box-shadow:0 0 8px var(--amber-glow)}
+.online-wrap{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-dim)}
+.rail-btns{display:flex;gap:6px;flex-wrap:wrap}
+.rbtn{
+  background:linear-gradient(180deg,#3a2c18,#241a0e);
+  color:var(--brass-hi);border:1px solid var(--brass-lo);border-radius:4px;
+  padding:5px 10px;font-size:12px;cursor:pointer;font-family:var(--mono);
+  box-shadow:var(--shadow);
+}
+.rbtn:hover{border-color:var(--brass);color:#fff;background:linear-gradient(180deg,#4a3820,#2c2010)}
+.rbtn:active{transform:translateY(1px)}
 
-* { margin:0; padding:0; box-sizing:border-box; }
+/* ── LAYOUT ── */
+main{max-width:1180px;margin:0 auto;padding:14px;display:flex;flex-direction:column;gap:14px}
+.card{
+  background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:1px solid var(--line);border-radius:8px;
+  box-shadow:inset 0 1px 0 rgba(198,154,78,.06),0 4px 12px rgba(0,0,0,.4);
+}
+.card>h2{
+  font-family:var(--mono);font-size:12px;letter-spacing:2px;text-transform:uppercase;
+  color:var(--brass);padding:9px 14px;border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:8px;
+}
+.card>h2 .badge{
+  margin-left:auto;font-size:11px;color:var(--ink-dim);
+  border:1px solid var(--line-hi);border-radius:10px;padding:1px 8px;letter-spacing:1px;
+}
+.card .body{padding:14px}
 
-@font-face {
-  font-family: 'CGA Fallback';
-  src: local('Courier New'), local('Consolas'), local('monospace');
+/* ── JACK BOARD ── */
+#board-wrap{position:relative}
+#cords{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;overflow:visible}
+#jacks{
+  position:relative;z-index:1;
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(82px,1fr));gap:10px;
 }
+.jack{
+  position:relative;aspect-ratio:1/1.05;
+  background:radial-gradient(circle at 50% 38%,#2a221a 0%,var(--bake) 70%),var(--bake);
+  border:1px solid #000;border-radius:7px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05),inset 0 -3px 6px rgba(0,0,0,.6),var(--shadow);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  cursor:pointer;user-select:none;transition:border-color .15s,transform .08s;
+}
+.jack:hover{border-color:var(--brass-lo)}
+.jack:active{transform:translateY(1px)}
+.jack .lamp{
+  width:16px;height:16px;border-radius:50%;
+  background:var(--lamp-off);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.8),inset 0 -1px 1px rgba(255,255,255,.06);
+}
+.jack .num{font-family:var(--mono);font-size:17px;color:var(--ink);letter-spacing:1px}
+/* socket hole decoration behind number */
+.jack .hole{
+  position:absolute;top:8px;width:10px;height:10px;border-radius:50%;
+  background:radial-gradient(circle at 50% 35%,#1a1410,#000 75%);
+  box-shadow:inset 0 1px 2px #000;
+}
+/* states */
+.jack.empty{opacity:.5}
+.jack.empty .num{color:var(--ink-dim)}
+.jack.reg .lamp{background:radial-gradient(circle at 50% 35%,#bfe8b0,var(--green));box-shadow:0 0 6px rgba(123,214,106,.6),inset 0 -1px 2px rgba(0,0,0,.4)}
+.jack.dnd{border-color:var(--amber)}
+.jack.dnd .lamp{background:radial-gradient(circle at 50% 35%,#ffd98a,var(--amber));box-shadow:0 0 6px var(--amber-glow),inset 0 -1px 2px rgba(0,0,0,.4)}
+.jack.call{border-color:var(--amber)}
+.jack.call .lamp{background:radial-gradient(circle at 50% 35%,#ffe1a0,var(--amber-glow));box-shadow:0 0 10px var(--amber-glow);animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.86)}}
+.jack .badge-dnd{position:absolute;top:4px;right:5px;font-size:8px;color:var(--amber);font-family:var(--mono);letter-spacing:1px}
 
-html, body {
-  width: 100%; height: 100%;
-  overflow: hidden;
-  background: var(--black);
-  font-family: 'VT323', 'Courier New', 'Consolas', monospace;
-  font-size: 16px;
-  color: var(--fg);
-}
+/* ── PATCH CORD label ── */
+.cord-label{font-family:var(--mono);font-size:10px;fill:var(--amber);paint-order:stroke;stroke:#000;stroke-width:3px;stroke-linejoin:round}
 
-/* CRT Monitor Frame */
-#crt-monitor {
-  position: relative;
-  width: 100%; height: 100%;
-  background: var(--bg);
-  border-radius: 12px;
-  overflow: hidden;
-}
+/* ── TABLES ── */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--brass-lo);padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:6px 8px;border-bottom:1px solid rgba(58,44,25,.5);font-family:var(--mono)}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(198,154,78,.05)}
+.empty-row td{color:var(--ink-dim);font-family:var(--sans);text-align:center;padding:14px}
+.chip{display:inline-block;font-size:10px;font-family:var(--mono);padding:1px 7px;border-radius:9px;border:1px solid;letter-spacing:.5px}
+.chip.answered{color:var(--green);border-color:var(--green)}
+.chip.busy{color:var(--amber);border-color:var(--amber)}
+.chip.cancelled{color:var(--ink-dim);border-color:var(--line-hi)}
+.chip.unavailable,.chip.failed{color:var(--red);border-color:var(--red)}
+.arrow{color:var(--brass)}
 
-/* Scanline overlay */
-#crt-monitor::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.12) 2px,
-    rgba(0, 0, 0, 0.12) 4px
-  );
-  pointer-events: none;
-  z-index: 1000;
+/* ── FORMS / CONTROLS ── */
+.field{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}
+.field label{font-size:11px;color:var(--brass);letter-spacing:.5px}
+input[type=text],input[type=password],input[type=file],select{
+  background:#0c0a07;border:1px solid var(--line-hi);border-radius:4px;color:var(--ink);
+  font-family:var(--mono);font-size:13px;padding:7px 9px;outline:none;width:100%;
 }
+input:focus,select:focus{border-color:var(--brass);box-shadow:0 0 0 2px rgba(198,154,78,.18)}
+.btn{
+  background:linear-gradient(180deg,#3a2c18,#241a0e);color:var(--brass-hi);
+  border:1px solid var(--brass-lo);border-radius:4px;padding:7px 14px;font-size:13px;
+  cursor:pointer;font-family:var(--mono);box-shadow:var(--shadow);
+}
+.btn:hover{border-color:var(--brass);color:#fff}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:linear-gradient(180deg,#7a5a1e,#5a4116);color:#fff;border-color:var(--brass)}
+.btn.danger{background:linear-gradient(180deg,#5a2418,#3a160e);color:#f3b9aa;border-color:#7a3424}
+.btn.danger:hover{background:linear-gradient(180deg,#7a3020,#4a1c12);color:#fff}
+.btn:disabled{opacity:.4;cursor:not-allowed;filter:grayscale(.6)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.note{font-size:11px;color:var(--ink-dim);margin:4px 0}
+.msg{font-size:12px;font-family:var(--mono);min-height:16px;margin-top:4px}
+.ok{color:var(--green)}.err{color:var(--red)}.warn{color:var(--amber)}
 
-/* CRT flicker */
-#crt-monitor::after {
-  content: '';
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  background: rgba(0, 0, 170, 0.03);
-  pointer-events: none;
-  z-index: 999;
-  animation: flicker 0.15s infinite alternate;
-}
+/* toggle switch */
+.toggle{position:relative;display:inline-block;width:46px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle .track{position:absolute;inset:0;background:#0c0a07;border:1px solid var(--line-hi);border-radius:24px;transition:.15s}
+.toggle .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--ink-dim);transition:.15s}
+.toggle input:checked+.track{background:rgba(255,176,0,.25);border-color:var(--amber)}
+.toggle input:checked+.track .knob{transform:translateX(22px);background:var(--amber);box-shadow:0 0 6px var(--amber-glow)}
 
-@keyframes flicker {
-  0%   { opacity: 0.97; }
-  50%  { opacity: 1.0; }
-  100% { opacity: 0.98; }
-}
+/* split grid for groups/forwarding & status panels */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.subhead{font-family:var(--mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--brass-lo);margin-bottom:8px}
 
-/* Subtle screen curvature via vignette */
-#vignette {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  background: radial-gradient(
-    ellipse at center,
-    transparent 60%,
-    rgba(0,0,0,0.35) 100%
-  );
-  pointer-events: none;
-  z-index: 998;
+/* ── MODAL / PANEL OVERLAY ── */
+.overlay{
+  display:none;position:fixed;inset:0;z-index:60;
+  background:rgba(0,0,0,.66);backdrop-filter:blur(2px);
+  align-items:flex-start;justify-content:center;padding:24px 14px;overflow:auto;
 }
+.overlay.show{display:flex}
+.modal{
+  width:100%;max-width:480px;background:linear-gradient(180deg,#221a10,#19130c);
+  border:1px solid var(--brass-lo);border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.7);
+}
+.modal h3{
+  font-family:var(--mono);font-size:13px;letter-spacing:1px;color:var(--brass-hi);
+  padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;
+}
+.modal h3 .x{margin-left:auto;cursor:pointer;color:var(--ink-dim);font-size:18px;line-height:1}
+.modal h3 .x:hover{color:var(--red)}
+.modal .mbody{padding:14px;max-height:74vh;overflow:auto}
+.hr{border:none;border-top:1px dashed var(--line-hi);margin:12px 0}
+.danger-zone{border-top:1px dashed #7a3424;margin-top:12px;padding-top:10px}
+.danger-zone .subhead{color:var(--red)}
 
-/* Phosphor glow on all text */
-#crt-monitor .glow { text-shadow: var(--glow-white); }
-#crt-monitor .glow-cyan { text-shadow: var(--glow-cyan); color: var(--cyan); }
-#crt-monitor .glow-green { text-shadow: 0 0 8px rgba(85,255,85,0.6); color: var(--green); }
-#crt-monitor .glow-yellow { text-shadow: 0 0 8px rgba(255,255,85,0.6); color: var(--yellow); }
-#crt-monitor .glow-red { text-shadow: 0 0 8px rgba(255,85,85,0.6); color: var(--red); }
-#crt-monitor .glow-magenta { text-shadow: 0 0 8px rgba(255,85,255,0.6); color: var(--magenta); }
+/* jack detail specific */
+#jd-lamp{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--lamp-off);vertical-align:middle;margin-right:6px}
+.kv{display:flex;justify-content:space-between;font-family:var(--mono);font-size:13px;padding:3px 0}
+.kv .k{color:var(--brass-lo)}
+.fwd-row{display:grid;grid-template-columns:78px 1fr auto;gap:8px;align-items:center;margin-bottom:7px}
+.fwd-row label{font-size:11px;color:var(--brass);font-family:var(--mono)}
 
-/* Main layout */
-#main-content {
-  position: relative;
-  width: 100%; height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: 4px 8px;
-  z-index: 1;
-  overflow: hidden;
-}
+/* wifi list */
+.wifi-net{display:flex;justify-content:space-between;align-items:center;padding:7px 9px;border:1px solid transparent;border-radius:4px;cursor:pointer}
+.wifi-net:hover{background:rgba(198,154,78,.06);border-color:var(--line-hi)}
+.wifi-ssid{color:var(--ink);font-family:var(--mono)}
+.wifi-meta{font-size:11px;color:var(--ink-dim);font-family:var(--mono)}
 
-/* ─── HEADER BAR ─── */
-#header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--dk-cyan);
-  color: var(--black);
-  padding: 2px 8px;
-  font-size: 18px;
-  font-weight: bold;
-  border-bottom: 2px solid var(--cyan);
-  flex-shrink: 0;
-  text-shadow: none;
-}
+/* OTA progress */
+#ota-prog{display:none;height:14px;border:1px solid var(--line-hi);border-radius:4px;background:#0c0a07;position:relative;margin:8px 0;overflow:hidden}
+#ota-bar{height:100%;width:0;background:linear-gradient(90deg,var(--brass-lo),var(--amber));transition:width .15s}
+#ota-pct{position:absolute;inset:0;text-align:center;font-size:10px;line-height:14px;font-family:var(--mono);color:#fff;text-shadow:0 0 3px #000}
 
-#header .title {
-  letter-spacing: 1px;
+#toast{
+  position:fixed;left:50%;bottom:18px;transform:translateX(-50%) translateY(80px);
+  background:#241a0e;border:1px solid var(--brass-lo);border-radius:6px;color:var(--ink);
+  padding:9px 16px;font-size:13px;font-family:var(--mono);z-index:90;opacity:0;
+  transition:transform .25s,opacity .25s;box-shadow:0 6px 20px rgba(0,0,0,.6);max-width:90vw;
 }
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
 
-#header .menu-items {
-  display: flex;
-  gap: 6px;
-}
+.recon{display:none;color:var(--amber);font-size:11px;font-family:var(--mono)}
+.recon.show{display:inline}
 
-.menu-btn {
-  background: var(--bg-dark);
-  color: var(--yellow);
-  border: 1px solid var(--cyan);
-  padding: 1px 8px;
-  font-family: inherit;
-  font-size: 15px;
-  cursor: pointer;
-  text-shadow: 0 0 6px rgba(255,255,85,0.4);
-}
-.menu-btn:hover {
-  background: var(--dk-yellow);
-  color: var(--black);
-}
-.menu-btn:active {
-  background: var(--yellow);
-  color: var(--black);
-}
-
-/* ─── BODY AREA: panels side by side ─── */
-#body-area {
-  display: flex;
-  flex: 1;
-  gap: 4px;
-  min-height: 0;
-  padding-top: 4px;
-  overflow: hidden;
-}
-
-#left-panels {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-#right-panel {
-  width: 220px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-/* ─── PANEL (box-drawing) ─── */
-.panel {
-  background: var(--panel-bg);
-  position: relative;
-  padding: 2px 6px;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.panel-title {
-  color: var(--yellow);
-  font-size: 17px;
-  text-shadow: 0 0 6px rgba(255,255,85,0.5);
-  margin-bottom: 2px;
-}
-
-.panel-border-top {
-  color: var(--cyan);
-  text-shadow: var(--glow-cyan);
-  font-size: 16px;
-  white-space: pre;
-  overflow: hidden;
-  line-height: 1.1;
-}
-.panel-border-bottom {
-  color: var(--cyan);
-  text-shadow: var(--glow-cyan);
-  font-size: 16px;
-  white-space: pre;
-  overflow: hidden;
-  line-height: 1.1;
-}
-
-.panel-body {
-  padding: 2px 4px;
-  font-size: 16px;
-  line-height: 1.3;
-}
-
-/* ─── STATUS PANEL ─── */
-.status-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 1px 0;
-}
-.status-label { color: var(--gray); }
-.status-value { color: var(--green); text-shadow: 0 0 6px rgba(85,255,85,0.4); }
-)rawhtml"
-R"rawhtml(
-/* ─── TABLES ─── */
-.retro-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 15px;
-}
-.retro-table th {
-  color: var(--yellow);
-  text-align: left;
-  padding: 1px 6px;
-  border-bottom: 1px solid var(--dk-cyan);
-  text-shadow: 0 0 4px rgba(255,255,85,0.3);
-  white-space: nowrap;
-}
-.retro-table td {
-  padding: 1px 6px;
-  color: var(--fg);
-  white-space: nowrap;
-}
-.retro-table tr:nth-child(even) {
-  background: rgba(0,0,80,0.3);
-}
-
-.status-online {
-  color: var(--green);
-  text-shadow: 0 0 6px rgba(85,255,85,0.6);
-}
-.status-offline {
-  color: var(--dk-gray);
-}
-.status-ringing {
-  color: var(--yellow);
-  animation: blinker 0.8s step-start infinite;
-}
-
-@keyframes blinker {
-  50% { opacity: 0; }
-}
-
-/* Scrollable table containers */
-.table-scroll {
-  max-height: 120px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--dk-cyan) var(--bg-dark);
-}
-.table-scroll::-webkit-scrollbar { width: 8px; }
-.table-scroll::-webkit-scrollbar-track { background: var(--bg-dark); }
-.table-scroll::-webkit-scrollbar-thumb { background: var(--dk-cyan); }
-
-/* ─── 3D ROTATING CANVAS ─── */
-#retro-canvas {
-  background: rgba(0, 0, 60, 0.5);
-  border: 1px solid var(--dk-cyan);
-  display: block;
-}
-#retro-label {
-  color: var(--dk-cyan);
-  font-size: 13px;
-  text-align: center;
-  margin-top: 2px;
-}
-
-/* ─── SYSTEM ORACLE BAR ─── */
-#oracle-bar {
-  background: var(--dk-mag);
-  color: var(--yellow);
-  padding: 3px 10px;
-  font-size: 16px;
-  text-align: center;
-  flex-shrink: 0;
-  text-shadow: 0 0 8px rgba(255,255,85,0.5);
-  border-top: 1px solid var(--magenta);
-  border-bottom: 1px solid var(--magenta);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ─── TERMINAL ─── */
-#terminal-container {
-  flex: 1;
-  min-height: 100px;
-  display: flex;
-  flex-direction: column;
-  background: var(--black);
-  border: 1px solid var(--dk-cyan);
-  overflow: hidden;
-}
-
-#terminal-title-bar {
-  background: var(--dk-cyan);
-  color: var(--black);
-  padding: 1px 8px;
-  font-size: 15px;
-  font-weight: bold;
-  flex-shrink: 0;
-}
-
-#terminal-output {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 8px;
-  font-size: 15px;
-  line-height: 1.3;
-  color: var(--fg);
-  text-shadow: 0 0 4px rgba(255,255,255,0.2);
-  scrollbar-width: thin;
-  scrollbar-color: var(--dk-cyan) var(--black);
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-#terminal-output::-webkit-scrollbar { width: 8px; }
-#terminal-output::-webkit-scrollbar-track { background: var(--black); }
-#terminal-output::-webkit-scrollbar-thumb { background: var(--dk-cyan); }
-
-#terminal-input-line {
-  display: flex;
-  align-items: center;
-  padding: 2px 8px 4px 8px;
-  background: var(--black);
-  flex-shrink: 0;
-  border-top: 1px solid #001144;
-}
-
-#terminal-prompt {
-  color: var(--cyan);
-  text-shadow: var(--glow-cyan);
-  white-space: pre;
-  font-size: 15px;
-}
-
-#terminal-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--green);
-  font-family: inherit;
-  font-size: 15px;
-  caret-color: var(--green);
-  text-shadow: 0 0 6px rgba(85,255,85,0.4);
-  margin-left: 2px;
-}
-
-/* Blinking block cursor via caret simulation */
-.cursor-blink {
-  display: inline-block;
-  width: 9px; height: 16px;
-  background: var(--green);
-  animation: cursorBlink 1s step-start infinite;
-  vertical-align: middle;
-  margin-left: 1px;
-}
-@keyframes cursorBlink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0; }
-}
-
-/* ─── WIFI MODAL ─── */
-#wifi-modal {
-  display: none;
-  position: fixed;
-  top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  background: var(--bg-dark);
-  border: 2px solid var(--cyan);
-  padding: 0;
-  z-index: 2000;
-  min-width: 450px;
-  max-width: 560px;
-  box-shadow: 0 0 30px rgba(85,255,255,0.3), inset 0 0 60px rgba(0,0,100,0.3);
-}
-
-#wifi-modal-title {
-  background: var(--dk-cyan);
-  color: var(--black);
-  padding: 3px 10px;
-  font-size: 17px;
-  font-weight: bold;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-#wifi-modal-body {
-  padding: 10px 14px;
-  max-height: 380px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--dk-cyan) var(--bg-dark);
-}
-
-#wifi-modal-body::-webkit-scrollbar { width: 8px; }
-#wifi-modal-body::-webkit-scrollbar-track { background: var(--bg-dark); }
-#wifi-modal-body::-webkit-scrollbar-thumb { background: var(--dk-cyan); }
-
-.wifi-network {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 6px;
-  margin: 2px 0;
-  cursor: pointer;
-  border: 1px solid transparent;
-}
-.wifi-network:hover {
-  background: rgba(85,255,255,0.1);
-  border-color: var(--dk-cyan);
-}
-.wifi-ssid { color: var(--green); }
-.wifi-rssi { color: var(--gray); font-size: 14px; }
-.wifi-enc { color: var(--dk-yellow); font-size: 13px; }
-
-#wifi-connect-form {
-  display: none;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--dk-cyan);
-}
-
-#wifi-connect-form label {
-  color: var(--cyan);
-  display: block;
-  margin-bottom: 4px;
-  font-size: 15px;
-}
-
-#wifi-connect-form input[type="text"],
-#wifi-connect-form input[type="password"] {
-  width: 100%;
-  background: var(--black);
-  border: 1px solid var(--dk-cyan);
-  color: var(--green);
-  font-family: inherit;
-  font-size: 15px;
-  padding: 4px 8px;
-  margin-bottom: 8px;
-  outline: none;
-}
-#wifi-connect-form input:focus {
-  border-color: var(--cyan);
-  box-shadow: 0 0 6px rgba(85,255,255,0.3);
-}
-
-.btn-retro {
-  background: var(--dk-cyan);
-  color: var(--black);
-  border: 1px solid var(--cyan);
-  padding: 3px 14px;
-  font-family: inherit;
-  font-size: 15px;
-  cursor: pointer;
-  font-weight: bold;
-  margin-right: 6px;
-}
-.btn-retro:hover { background: var(--cyan); }
-.btn-retro.btn-danger {
-  background: var(--dk-red);
-  color: var(--yellow);
-  border-color: var(--red);
-}
-.btn-retro.btn-danger:hover { background: var(--red); color: var(--black); }
-)rawhtml"
-R"rawhtml(
-/* ─── HELP MODAL ─── */
-#help-modal {
-  display: none;
-  position: fixed;
-  top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  background: var(--bg-dark);
-  border: 2px solid var(--cyan);
-  padding: 0;
-  z-index: 2000;
-  min-width: 480px;
-  max-width: 600px;
-  box-shadow: 0 0 30px rgba(85,255,255,0.3), inset 0 0 60px rgba(0,0,100,0.3);
-}
-#help-modal-title {
-  background: var(--dk-cyan);
-  color: var(--black);
-  padding: 3px 10px;
-  font-size: 17px;
-  font-weight: bold;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-#help-modal-body {
-  padding: 12px 16px;
-  line-height: 1.5;
-  font-size: 15px;
-  max-height: 420px;
-  overflow-y: auto;
-}
-
-/* ─── ADMIN / SECURITY + OTA PANELS ─── */
-.adm-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 2px 0;
-}
-.adm-form label {
-  color: var(--cyan);
-  font-size: 15px;
-}
-.adm-input {
-  background: var(--black);
-  border: 1px solid var(--dk-cyan);
-  color: var(--green);
-  font-family: inherit;
-  font-size: 15px;
-  padding: 4px 8px;
-  outline: none;
-  min-width: 120px;
-  flex: 1 1 120px;
-}
-.adm-input:focus {
-  border-color: var(--cyan);
-  box-shadow: 0 0 6px rgba(85,255,255,0.3);
-}
-input[type="file"].adm-input {
-  padding: 3px 4px;
-  color: var(--gray);
-}
-.adm-note {
-  color: var(--dk-yellow);
-  font-size: 14px;
-  margin: 2px 0;
-}
-.adm-msg {
-  font-size: 14px;
-  margin: 2px 0;
-  min-height: 16px;
-}
-.adm-state-ok { color: var(--green); text-shadow: 0 0 6px rgba(85,255,85,0.4); }
-.adm-locked-note {
-  color: var(--dk-red);
-  font-size: 14px;
-  margin: 2px 0;
-}
-/* Disabled (gated) controls */
-.btn-retro:disabled,
-.btn-retro[disabled] {
-  background: var(--dk-gray);
-  color: var(--bg-dark);
-  border-color: var(--dk-gray);
-  cursor: not-allowed;
-  opacity: 0.6;
-  text-shadow: none;
-}
-.btn-retro:disabled:hover,
-.btn-retro[disabled]:hover { background: var(--dk-gray); color: var(--bg-dark); }
-/* OTA progress bar */
-#ota-progress-wrap {
-  display: none;
-  margin: 4px 0;
-  height: 14px;
-  border: 1px solid var(--dk-cyan);
-  background: var(--black);
-  position: relative;
-}
-#ota-progress-bar {
-  height: 100%;
-  width: 0%;
-  background: var(--dk-cyan);
-  transition: width 0.15s linear;
-}
-#ota-progress-text {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  text-align: center;
-  font-size: 12px;
-  line-height: 14px;
-  color: var(--fg);
-  text-shadow: 0 0 4px rgba(0,0,0,0.8);
-}
-.ota-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 1px 0;
-  font-size: 15px;
-}
-.ota-row .status-label { color: var(--gray); }
-.ota-row .status-value { color: var(--cyan); text-shadow: 0 0 6px rgba(85,255,255,0.3); }
-
-/* ─── RESPONSIVE ─── */
-@media (max-width: 800px) {
-  html, body { overflow: auto; height: auto; }
-  #crt-monitor { height: auto; min-height: 100%; border-radius: 0; }
-  #main-content { height: auto; overflow: visible; }
-  #body-area { flex-direction: column; overflow: visible; }
-  #left-panels { overflow: visible; }
-  #right-panel { width: 100%; flex-direction: row; justify-content: center; flex-wrap: wrap; }
-  #retro-canvas { width: 150px !important; height: 150px !important; }
-  #header { flex-direction: column; align-items: stretch; gap: 4px; }
-  #header .menu-items { flex-wrap: wrap; justify-content: center; }
-  .panel-border-top, .panel-border-bottom { font-size: 12px; }
-  /* Tap-friendly controls */
-  .btn-retro { padding: 8px 16px; font-size: 16px; margin-bottom: 4px; }
-  .menu-btn { padding: 6px 10px; font-size: 16px; }
-  .adm-input { font-size: 16px; padding: 8px; flex-basis: 100%; }
-  .adm-form { flex-direction: column; align-items: stretch; }
-  .adm-form label { width: 100%; }
-  #terminal-container { min-height: 220px; }
-  /* Modals fill the small screen */
-  #wifi-modal, #help-modal {
-    min-width: 0;
-    width: 94vw;
-    max-width: 94vw;
-    max-height: 90vh;
-  }
-}
-
-/* ─── PHOSPHOR THEME PALETTES ─── */
-/* Default (no class) keeps the classic CGA blue defined in :root above.
-   Each theme just remaps the few colour variables; the layout is untouched. */
-body.theme-green {
-  --bg:#001500; --bg-dark:#000a00; --panel-bg:rgba(0,40,0,0.55);
-  --fg:#33FF66; --cyan:#33FF99; --yellow:#9CFF6A; --green:#33FF66;
-  --magenta:#7CFF8A; --dk-cyan:#0a8040; --gray:#5fae6f; --dk-gray:#205028;
-  --glow-cyan:0 0 8px rgba(51,255,153,0.6),0 0 2px rgba(51,255,153,0.3);
-  --glow-white:0 0 8px rgba(51,255,102,0.5),0 0 2px rgba(51,255,102,0.2);
-}
-body.theme-amber {
-  --bg:#1a0f00; --bg-dark:#0d0700; --panel-bg:rgba(60,35,0,0.55);
-  --fg:#FFB000; --cyan:#FFC850; --yellow:#FFD773; --green:#FFB000;
-  --magenta:#FF9C3A; --dk-cyan:#a86a00; --gray:#b98a40; --dk-gray:#5a3a00;
-  --glow-cyan:0 0 8px rgba(255,200,80,0.6),0 0 2px rgba(255,200,80,0.3);
-  --glow-white:0 0 8px rgba(255,176,0,0.5),0 0 2px rgba(255,176,0,0.2);
-}
-body.theme-cga {
-  /* High-contrast CGA palette 1: cyan / magenta / white on black */
-  --bg:#000000; --bg-dark:#0a000a; --panel-bg:rgba(40,0,40,0.5);
-  --fg:#FFFFFF; --cyan:#55FFFF; --yellow:#FF55FF; --green:#55FFFF;
-  --magenta:#FF55FF; --dk-cyan:#00AAAA; --gray:#AAAAAA; --dk-gray:#555555;
-  --glow-cyan:0 0 8px rgba(85,255,255,0.6),0 0 2px rgba(85,255,255,0.3);
-  --glow-white:0 0 8px rgba(255,255,255,0.5),0 0 2px rgba(255,255,255,0.2);
-}
-body.theme-white {
-  /* Monochrome white phosphor */
-  --bg:#0a0a0a; --bg-dark:#000000; --panel-bg:rgba(40,40,40,0.5);
-  --fg:#E8E8E8; --cyan:#FFFFFF; --yellow:#FFFFFF; --green:#D8D8D8;
-  --magenta:#C8C8C8; --dk-cyan:#888888; --gray:#AAAAAA; --dk-gray:#555555;
-  --glow-cyan:0 0 8px rgba(255,255,255,0.55),0 0 2px rgba(255,255,255,0.3);
-  --glow-white:0 0 8px rgba(255,255,255,0.5),0 0 2px rgba(255,255,255,0.2);
-}
-/* The CRT flicker overlay tints toward the active background for cohesion */
-body.theme-green  #crt-monitor::after { background:rgba(0,40,0,0.04); }
-body.theme-amber  #crt-monitor::after { background:rgba(60,35,0,0.04); }
-body.theme-cga    #crt-monitor::after { background:rgba(40,0,40,0.04); }
-body.theme-white  #crt-monitor::after { background:rgba(60,60,60,0.04); }
-
-/* ─── ASCII OPERATOR / ABOUT BOX ─── */
-.ascii-operator {
-  color: var(--cyan);
-  text-shadow: var(--glow-cyan);
-  font-size: 13px;
-  line-height: 1.05;
-  white-space: pre;
-  margin: 0 0 8px 0;
-  text-align: center;
+@media (max-width:720px){
+  .grid2{grid-template-columns:1fr}
+  #jacks{grid-template-columns:repeat(auto-fill,minmax(70px,1fr));gap:8px}
+  .rail-stats{width:100%;margin-left:0;justify-content:space-between}
+  .fwd-row{grid-template-columns:64px 1fr}
+  .fwd-row .btn{grid-column:2}
+}
+@media (prefers-reduced-motion:reduce){
+  .jack.call .lamp{animation:none}
+  *{transition:none!important}
 }
 </style>
 </head>
 <body>
-<div id="crt-monitor">
-  <div id="vignette"></div>
-  <div id="main-content">
 
-    <!-- ══════ HEADER BAR ══════ -->
-    <div id="header">
-      <span class="title">CGA CRT SipServer v5.03 — Retro-Console Switchboard</span>
-      <div class="menu-items">
-        <button class="menu-btn" onclick="showHelp()" title="Help">[F1 Help]</button>
-        <button class="menu-btn" onclick="refreshNow()" title="Refresh">[F5 Refresh]</button>
-        <button class="menu-btn" onclick="oracleSpeak()" title="Query Oracle">[F7 Oracle]</button>
-        <button class="menu-btn" onclick="showWifi()" title="WiFi">[F9 WiFi]</button>
-        <button class="menu-btn" id="theme-btn" onclick="cyclePhosphor()" title="Cycle phosphor palette">[Phosphor]</button>
-        <button class="menu-btn" id="sound-btn" onclick="toggleSound()" title="Toggle UI sounds (off by default)">[Sound: OFF]</button>
-      </div>
-    </div>
-
-    <!-- ══════ BODY ══════ -->
-    <div id="body-area">
-
-      <!-- LEFT COLUMN -->
-      <div id="left-panels">
-
-        <!-- STATUS PANEL -->
-        <div class="panel">
-          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
-          <div class="panel-title"> ║ ☼ SYSTEM STATUS ☼</div>
-          <div class="panel-body">
-            <div class="status-row"><span class="status-label">Server IP ···</span><span class="status-value" id="s-ip">0.0.0.0</span></div>
-            <div class="status-row"><span class="status-label">Port ········</span><span class="status-value" id="s-port">5060</span></div>
-            <div class="status-row"><span class="status-label">Uptime ······</span><span class="status-value" id="s-uptime">00:00:00</span></div>
-            <div class="status-row"><span class="status-label">Extensions ··</span><span class="status-value" id="s-ext-count">0</span></div>
-            <div class="status-row"><span class="status-label">Active Calls </span><span class="status-value" id="s-call-count">0</span></div>
-            <div class="status-row"><span class="status-label">Packets ·····</span><span class="status-value" id="s-packets">0</span></div>
-          </div>
-          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
-        </div>
-
-        <!-- REGISTERED EXTENSIONS -->
-        <div class="panel">
-          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
-          <div class="panel-title"> ║ ☎ REGISTERED EXTENSIONS</div>
-          <div class="panel-body">
-            <div class="table-scroll">
-              <table class="retro-table">
-                <thead>
-                  <tr><th>Ext#</th><th>IP Address</th><th>Port</th><th>Status</th></tr>
-                </thead>
-                <tbody id="ext-tbody">
-                  <tr><td colspan="4" style="color:var(--dk-gray)">No extensions registered</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
-        </div>
-
-        <!-- ACTIVE SESSIONS -->
-        <div class="panel">
-          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
-          <div class="panel-title"> ║ ⚡ ACTIVE SESSIONS</div>
-          <div class="panel-body">
-            <div class="table-scroll">
-              <table class="retro-table">
-                <thead>
-                  <tr><th>Caller</th><th>Callee</th><th>State</th><th>Duration</th></tr>
-                </thead>
-                <tbody id="sess-tbody">
-                  <tr><td colspan="4" style="color:var(--dk-gray)">No active sessions</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
-        </div>
-
-        <!-- ADMIN / SECURITY PANEL -->
-        <div class="panel">
-          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
-          <div class="panel-title"> ║ ▣ ADMIN / SECURITY</div>
-          <div class="panel-body">
-            <div id="admin-loading" style="color:var(--dk-gray);">Querying admin status...</div>
-
-            <!-- STATE A: not provisioned → set PIN -->
-            <div id="admin-setpin" style="display:none;">
-              <div class="adm-note">No admin PIN set. Create one to protect this device.</div>
-              <div class="adm-form">
-                <label for="adm-newpin">New PIN:</label>
-                <input class="adm-input" type="password" id="adm-newpin" inputmode="numeric" autocomplete="off" placeholder="min 4 chars">
-                <button class="btn-retro" onclick="adminSetPin()">⚿ Set PIN</button>
-              </div>
-            </div>
-
-            <!-- STATE B: provisioned, not authenticated → login -->
-            <div id="admin-login" style="display:none;">
-              <div class="adm-note">Admin login required.</div>
-              <div class="adm-form">
-                <label for="adm-pin">PIN:</label>
-                <input class="adm-input" type="password" id="adm-pin" inputmode="numeric" autocomplete="off" placeholder="Enter PIN">
-                <button class="btn-retro" onclick="adminLogin()">⮞ Login</button>
-              </div>
-            </div>
-
-            <!-- STATE C: authenticated -->
-            <div id="admin-loggedin" style="display:none;">
-              <div class="adm-msg adm-state-ok">● Logged in — admin controls unlocked.</div>
-              <div class="adm-form">
-                <button class="btn-retro" onclick="adminChangePinPrompt()" title="Set a new admin PIN">⚿ Change PIN</button>
-                <button class="btn-retro btn-danger" onclick="adminLogout()">⮜ Logout</button>
-              </div>
-            </div>
-
-            <!-- Inline change-pin (shown from STATE C) -->
-            <div id="admin-changepin" style="display:none;">
-              <div class="adm-form">
-                <label for="adm-changepin-val">New PIN:</label>
-                <input class="adm-input" type="password" id="adm-changepin-val" inputmode="numeric" autocomplete="off" placeholder="min 4 chars">
-                <button class="btn-retro" onclick="adminSetPin('change')">Save</button>
-                <button class="btn-retro btn-danger" onclick="document.getElementById('admin-changepin').style.display='none';">Cancel</button>
-              </div>
-            </div>
-
-            <div class="adm-msg" id="admin-msg"></div>
-          </div>
-          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
-        </div>
-
-        <!-- FIRMWARE UPDATE (OTA) PANEL -->
-        <div class="panel">
-          <div class="panel-border-top">╔══════════════════════════════════════════════════════════════╗</div>
-          <div class="panel-title"> ║ ⬆ FIRMWARE UPDATE (OTA)</div>
-          <div class="panel-body">
-            <div class="ota-row"><span class="status-label">OTA Support ·</span><span class="status-value" id="ota-supported">—</span></div>
-            <div class="ota-row"><span class="status-label">Running ·····</span><span class="status-value" id="ota-running">—</span></div>
-            <div class="ota-row"><span class="status-label">Boot Part ···</span><span class="status-value" id="ota-boot">—</span></div>
-            <div class="ota-row"><span class="status-label">Next Part ···</span><span class="status-value" id="ota-next">—</span></div>
-            <div class="adm-msg" id="ota-state-msg" style="color:var(--dk-gray);"></div>
-
-            <div id="ota-controls" style="margin-top:4px;">
-              <div class="adm-note" id="ota-gate-note" style="display:none;">Admin login required to update firmware.</div>
-              <div class="adm-form">
-                <input class="adm-input" type="file" id="ota-file" accept=".bin">
-              </div>
-              <div id="ota-progress-wrap">
-                <div id="ota-progress-bar"></div>
-                <div id="ota-progress-text">0%</div>
-              </div>
-              <div class="adm-form">
-                <button class="btn-retro" id="ota-upload-btn" onclick="otaUpload()">⬆ Upload firmware</button>
-                <button class="btn-retro btn-danger" id="ota-reboot-btn" onclick="otaReboot()">⟳ Reboot device</button>
-              </div>
-              <div class="adm-msg" id="ota-msg"></div>
-            </div>
-          </div>
-          <div class="panel-border-bottom">╚══════════════════════════════════════════════════════════════╝</div>
-        </div>
-
-      </div> <!-- /left-panels -->
-
-      <!-- RIGHT COLUMN: 3D Wireframe -->
-      <div id="right-panel">
-        <canvas id="retro-canvas" width="200" height="200"></canvas>
-        <div id="retro-label" class="glow-cyan">⚙ 3D Tesseract Projection ⚙</div>
-        <!-- Mini status lights -->
-        <div style="margin-top:8px; font-size:14px; text-align:left; width:100%;">
-          <div class="panel-border-top" style="font-size:14px;">┌──────────────────┐</div>
-          <div style="padding:2px 4px;">
-            <span style="color:var(--gray);">│</span> <span style="color:var(--green);">●</span> SIP Engine <span style="color:var(--green);">ON</span><br>
-            <span style="color:var(--gray);">│</span> <span id="ind-calls" style="color:var(--dk-gray);">●</span> <span id="ind-calls-label">Calls: 0</span><br>
-            <span style="color:var(--gray);">│</span> <span id="ind-pkts" style="color:var(--cyan);">▲</span> <span id="ind-pkts-label" style="color:var(--cyan);">Pkts: 0</span>
-          </div>
-          <div class="panel-border-bottom" style="font-size:14px;">└──────────────────┘</div>
-        </div>
-      </div>
-
-    </div> <!-- /body-area -->
-
-    <!-- ══════ SYSTEM ORACLE BAR ══════ -->
-    <div id="oracle-bar">
-      ☼ SYSTEM ORACLE: "In the beginning was the C, and the C was with the hardware, and the compiler was pleased." ☼
-    </div>
-
-    <!-- ══════ TERMINAL ══════ -->
-    <div id="terminal-container">
-      <div id="terminal-title-bar">═══ Retro Shell — C:/SipServer ═══</div>
-      <div id="terminal-output"></div>
-      <div id="terminal-input-line">
-        <span id="terminal-prompt">C:/SipServer&gt; </span>
-        <input type="text" id="terminal-input" autocomplete="off" spellcheck="false">
-        <span class="cursor-blink" id="input-cursor"></span>
-      </div>
-    </div>
-
-  </div> <!-- /main-content -->
-</div> <!-- /crt-monitor -->
-
-<!-- ══════ HELP MODAL ══════ -->
-<div id="help-modal">
-  <div id="help-modal-title">
-    <span>☼ CGA SipServer Help ☼</span>
-    <button class="btn-retro" onclick="closeHelp()">✕ Close</button>
+<!-- ══ OPERATOR RAIL ══ -->
+<div id="rail">
+  <div class="wordmark">
+    <b>POCKET&middot;DIAL</b><span class="sub">Switchboard</span>
   </div>
-  <div id="help-modal-body">
-    <div class="ascii-operator">    .-"""""-.
-   /  _   _  \    ~ SWITCHBOARD OPERATOR ~
-   |  o   o  |    "Number, please?"
-   |    ^    |    .--.__.--.
-    \  '-'  /    (  patch  )
-     '-...-'      '--.  .--'
-    __|___|__        ||
-   [_O_____O_]   ====[]====
-   /  PBX-1  \   |  |  |  |</div>
-    <span style="color:var(--yellow);">═══ CGA CRT SIP Switchboard v5.03 ═══</span><br><br>
-    <span style="color:var(--cyan);">KEYBOARD SHORTCUTS:</span><br>
-    <span style="color:var(--green);">  F1</span>  — This help screen<br>
-    <span style="color:var(--green);">  F5</span>  — Force refresh status<br>
-    <span style="color:var(--green);">  F7</span>  — Query System Oracle<br>
-    <span style="color:var(--green);">  F9</span>  — WiFi network manager<br>
-    <span style="color:var(--green);">  Esc</span> — Close modals / Focus terminal<br><br>
-    <span style="color:var(--cyan);">TERMINAL COMMANDS:</span><br>
-    <span style="color:var(--green);">  help</span>       — Show available commands<br>
-    <span style="color:var(--green);">  dir</span>        — List SipServer directory<br>
-    <span style="color:var(--green);">  registered</span> — Show registered extensions<br>
-    <span style="color:var(--green);">  sessions</span>   — Show active call sessions<br>
-    <span style="color:var(--green);">  uptime</span>     — Show server uptime<br>
-    <span style="color:var(--green);">  oracle</span>     — Receive System Oracle wisdom<br>
-    <span style="color:var(--green);">  wifi</span>       — Open WiFi manager<br>
-    <span style="color:var(--green);">  kill &lt;ext&gt;</span> — Terminate an extension<br>
-    <span style="color:var(--green);">  clear</span>      — Clear terminal output<br>
-    <span style="color:var(--green);">  ver</span>        — Show version info<br>
-    <span style="color:var(--green);">  ascii</span>      — Display classic bell ASCII art<br>
-    <span style="color:var(--green);">  about</span>      — Meet the switchboard operator<br>
-    <span style="color:var(--green);">  operator</span>   — Ring the operator for assistance<br>
-    <span style="color:var(--green);">  theme</span>      — Cycle phosphor palette<br>
-    <span style="color:var(--green);">  sound</span>      — Toggle UI sounds (off by default)<br>
-    <span style="color:var(--green);">  matrix</span>     — Follow the white rabbit<br><br>
-    <span style="color:var(--dk-gray);">  "CGA CRT Console: 640x480 resolution, 16 vibrant colors, and pure low-latency SIP."</span><br>
+  <div class="online-wrap"><span id="dot"></span><span id="online-txt">connecting&hellip;</span><span class="recon" id="recon">&nbsp;reconnecting&hellip;</span></div>
+  <div class="rail-stats">
+    <div class="stat"><span class="k">Uptime</span><span class="v" id="s-uptime">--:--:--</span></div>
+    <div class="stat"><span class="k">Address</span><span class="v" id="s-ip">0.0.0.0:5060</span></div>
+)html0"
+R"html1(    <div class="stat"><span class="k">Jacks</span><span class="v" id="s-jacks">0/32</span></div>
+    <div class="stat"><span class="k">Calls</span><span class="v" id="s-calls">0</span></div>
+    <div class="stat"><span class="k">Packets</span><span class="v" id="s-pkts">0</span></div>
   </div>
-)rawhtml"
-R"rawhtml(
+  <div class="rail-btns">
+    <button class="rbtn" onclick="refreshNow()" title="Refresh (F5)">&#8635; Refresh</button>
+    <button class="rbtn" onclick="openModal('wifi-modal');scanWifi()" title="WiFi (F9)">&#9783; WiFi</button>
+    <button class="rbtn" onclick="openModal('admin-modal')" title="Admin">&#9919; Admin</button>
+    <button class="rbtn" onclick="cycleTheme()" id="theme-btn" title="Cycle accent">Amber</button>
+    <button class="rbtn" onclick="openModal('help-modal')" title="Help (F1)">? Help</button>
+  </div>
 </div>
 
-<!-- ══════ WIFI MODAL ══════ -->
-<div id="wifi-modal">
-  <div id="wifi-modal-title">
-    <span>☼ WiFi Network Manager ☼</span>
-    <button class="btn-retro" onclick="closeWifi()">✕ Close</button>
-  </div>
-  <div id="wifi-modal-body">
-    <div style="margin-bottom:8px;">
-      <button class="btn-retro" onclick="scanWifi()">⟳ Scan Networks</button>
-      <span id="wifi-status" style="color:var(--gray); font-size:14px; margin-left:8px;">Ready</span>
+<main>
+
+  <!-- ══ JACK BOARD ══ -->
+  <section class="card" id="board-card">
+    <h2>&#9737; Jack Board <span class="badge" id="board-cap">0 / 32 lit</span></h2>
+    <div class="body" id="board-wrap">
+      <svg id="cords"></svg>
+      <div id="jacks"></div>
     </div>
-    <div id="wifi-networks-list">
-      <div style="color:var(--dk-gray);">Press "Scan Networks" to discover available WiFi...</div>
-    </div>
-    <div id="wifi-admin-note" class="adm-note" style="display:none;">⚿ Admin login required for the controls below. Use the ADMIN / SECURITY panel to log in.</div>
-    <div id="wifi-connect-form">
-      <label>SSID: <span id="wifi-selected-ssid" style="color:var(--green);"></span></label>
-      <label style="margin-top:4px;">Password:</label>
-      <input type="password" id="wifi-password" placeholder="Enter network key...">
-      <div style="margin-top:6px;">
-        <button class="btn-retro" id="wifi-connect-btn" onclick="connectWifi()">⚡ Connect</button>
-        <button class="btn-retro btn-danger" onclick="cancelWifiConnect()">Cancel</button>
+  </section>
+
+  <!-- ══ GROUPS & FORWARDING ══ -->
+  <section class="card">
+    <h2>&#9783; Ring Groups &amp; Forwarding</h2>
+    <div class="body">
+      <div class="grid2">
+        <div>
+          <div class="subhead">Ring / Hunt Groups</div>
+          <div id="groups-list"></div>
+          <hr class="hr">
+          <div class="subhead">New / Edit Group</div>
+          <div class="field"><label>Group extension</label><input type="text" id="grp-ext" inputmode="numeric" placeholder="e.g. 600"></div>
+          <div class="field"><label>Members (comma separated)</label><input type="text" id="grp-members" placeholder="101,102,103"></div>
+          <div class="field"><label>Mode</label>
+            <select id="grp-mode"><option value="ringall">Ring all</option><option value="hunt">Hunt</option></select>
+          </div>
+          <div class="row">
+            <button class="btn primary" onclick="saveGroup()">Save Group</button>
+            <span class="note">Empty members deletes the group.</span>
+          </div>
+          <div class="msg" id="grp-msg"></div>
+        </div>
+        <div>
+          <div class="subhead">Per-Extension Forwarding</div>
+          <div id="fwd-list"></div>
+          <hr class="hr">
+          <div class="subhead">Set Forward</div>
+          <div class="field"><label>Extension</label><input type="text" id="fwd-ext" inputmode="numeric" placeholder="e.g. 101"></div>
+          <div class="field"><label>Trigger</label>
+            <select id="fwd-trigger"><option value="always">Always</option><option value="busy">Busy</option><option value="noanswer">No answer</option></select>
+          </div>
+          <div class="field"><label>Target (blank clears)</label><input type="text" id="fwd-target" inputmode="numeric" placeholder="e.g. 102"></div>
+          <button class="btn primary" onclick="saveForward()">Save Forward</button>
+          <div class="msg" id="fwd-msg"></div>
+        </div>
       </div>
     </div>
-    <div style="margin-top:12px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
-      <div style="font-size:14px; color:var(--dk-yellow); margin-bottom:4px;">Standalone AP Mode:</div>
-      <button class="btn-retro" id="wifi-ap-btn" onclick="startApMode()">⚡ Host Standalone AP</button>
-      <div style="font-size:11px; color:var(--dk-cyan); margin-top:4px;">Persists across reboots. (Unconfigured devices auto-switch to Standalone ~5&nbsp;min after power-on.)</div>
+  </section>
+
+  <!-- ══ CALL LOG ══ -->
+  <section class="card">
+    <h2>&#9742; Call Log <span class="badge" id="cdr-count">0</span></h2>
+    <div class="body" style="padding:0">
+      <table>
+        <thead><tr><th>Caller</th><th></th><th>Callee</th><th>Result</th><th>Duration</th><th>Age</th></tr></thead>
+        <tbody id="cdr-tbody"><tr class="empty-row"><td colspan="6">No calls recorded yet</td></tr></tbody>
+      </table>
     </div>
-    <div style="margin-top:10px; border-top:1px dashed var(--dk-cyan); padding-top:8px;">
-      <button class="btn-retro" onclick="holdConfigMode()" title="Pause the automatic switch to Standalone while you configure">⏸ I'm Configuring (hold setup)</button>
-    </div>
-    <div style="margin-top:12px; border-top:1px dashed var(--dk-red); padding-top:8px;">
-      <div style="font-size:14px; color:var(--dk-red); margin-bottom:4px;">Danger Zone:</div>
-      <button class="btn-retro btn-danger" id="wifi-reset-btn" onclick="factoryReset()">⚠ Factory Reset</button>
+  </section>
+
+</main>
+
+<!-- ══ JACK DETAIL MODAL ══ -->
+<div class="overlay" id="jack-modal">
+  <div class="modal">
+    <h3><span id="jd-lamp"></span><span>Jack <span id="jd-num">--</span></span><span class="x" onclick="closeModal('jack-modal')">&times;</span></h3>
+    <div class="mbody">
+      <div class="kv"><span class="k">State</span><span id="jd-state">&mdash;</span></div>
+      <div class="kv"><span class="k">Address</span><span id="jd-addr">&mdash;</span></div>
+      <hr class="hr">
+      <div class="row" style="justify-content:space-between">
+        <span class="subhead" style="margin:0">Do Not Disturb</span>
+        <label class="toggle"><input type="checkbox" id="jd-dnd" onchange="toggleDnd()"><span class="track"><span class="knob"></span></span></label>
+      </div>
+      <hr class="hr">
+      <div class="subhead">Call Forwarding</div>
+      <div class="fwd-row"><label>Always</label><input type="text" id="jd-fwd-always" inputmode="numeric" placeholder="target ext"><button class="btn" onclick="jdSaveFwd('always')">Set</button></div>
+      <div class="fwd-row"><label>Busy</label><input type="text" id="jd-fwd-busy" inputmode="numeric" placeholder="target ext"><button class="btn" onclick="jdSaveFwd('busy')">Set</button></div>
+      <div class="fwd-row"><label>No answer</label><input type="text" id="jd-fwd-noanswer" inputmode="numeric" placeholder="target ext"><button class="btn" onclick="jdSaveFwd('noanswer')">Set</button></div>
+      <div class="msg" id="jd-msg"></div>
+      <div class="danger-zone">
+        <div class="subhead">Danger Zone</div>
+        <button class="btn danger" onclick="killJack()">&#9888; Force Disconnect</button>
+      </div>
     </div>
   </div>
 </div>
+
+<!-- ══ ADMIN MODAL ══ -->
+<div class="overlay" id="admin-modal">
+  <div class="modal">
+    <h3>&#9919; Admin / Security &amp; Firmware<span class="x" onclick="closeModal('admin-modal')">&times;</span></h3>
+    <div class="mbody">
+      <div class="subhead">Operator Authentication</div>
+      <div id="admin-loading" class="note">Querying admin status&hellip;</div>
+      <div id="admin-setpin" style="display:none">
+        <div class="note">No admin PIN set. Create one to protect this device.</div>
+        <div class="field"><label>New PIN (min 4 chars)</label><input type="password" id="adm-newpin" inputmode="numeric" autocomplete="off"></div>
+        <button class="btn primary" onclick="adminSetPin()">&#9919; Set PIN</button>
+      </div>
+      <div id="admin-login" style="display:none">
+        <div class="note">Admin login required to unlock controls.</div>
+        <div class="field"><label>PIN</label><input type="password" id="adm-pin" inputmode="numeric" autocomplete="off"></div>
+        <button class="btn primary" onclick="adminLogin()">Login</button>
+      </div>
+      <div id="admin-loggedin" style="display:none">
+        <div class="msg ok">&#9679; Logged in &mdash; admin controls unlocked.</div>
+        <div class="row">
+          <button class="btn" onclick="toggleChangePin()">Change PIN</button>
+          <button class="btn danger" onclick="adminLogout()">Logout</button>
+        </div>
+        <div id="admin-changepin" style="display:none;margin-top:8px">
+          <div class="field"><label>New PIN (min 4 chars)</label><input type="password" id="adm-changepin-val" inputmode="numeric" autocomplete="off"></div>
+          <button class="btn primary" onclick="adminSetPin('change')">Save</button>
+        </div>
+      </div>
+      <div class="msg" id="admin-msg"></div>
+
+      <hr class="hr">
+      <div class="subhead">&#8593; Firmware Update (OTA)</div>
+      <div class="kv"><span class="k">OTA support</span><span id="ota-supported">&mdash;</span></div>
+      <div class="kv"><span class="k">Running</span><span id="ota-running">&mdash;</span></div>
+      <div class="kv"><span class="k">Boot / Next</span><span id="ota-parts">&mdash;</span></div>
+      <div class="msg" id="ota-state-msg"></div>
+      <div class="note" id="ota-gate-note" style="display:none">Admin login required to update firmware.</div>
+      <div class="field"><label>Firmware image (.bin)</label><input type="file" id="ota-file" accept=".bin"></div>
+      <div id="ota-prog"><div id="ota-bar"></div><div id="ota-pct">0%</div></div>
+      <div class="row">
+        <button class="btn primary" id="ota-upload-btn" onclick="otaUpload()">&#8593; Upload</button>
+        <button class="btn danger" id="ota-reboot-btn" onclick="otaReboot()">&#8635; Reboot device</button>
+      </div>
+      <div class="msg" id="ota-msg"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ WIFI MODAL ══ -->
+<div class="overlay" id="wifi-modal">
+  <div class="modal">
+    <h3>&#9783; WiFi &amp; Network<span class="x" onclick="closeModal('wifi-modal')">&times;</span></h3>
+    <div class="mbody">
+      <div class="row"><button class="btn" onclick="scanWifi()">&#8635; Scan</button><span class="note" id="wifi-status">Ready</span></div>
+      <div id="wifi-list" style="margin-top:8px"><div class="note">Press Scan to discover networks&hellip;</div></div>
+      <div class="note" id="wifi-admin-note" style="display:none">&#9919; Admin login required for the controls below.</div>
+      <div id="wifi-connect" style="display:none">
+        <hr class="hr">
+        <div class="field"><label>SSID: <span id="wifi-ssid" style="color:var(--ink)"></span></label><input type="password" id="wifi-pw" placeholder="Network key"></div>
+        <div class="row">
+          <button class="btn primary" id="wifi-connect-btn" onclick="connectWifi()">&#9889; Connect</button>
+          <button class="btn" onclick="cancelWifiConnect()">Cancel</button>
+        </div>
+      </div>
+      <hr class="hr">
+      <div class="subhead">Standalone AP Mode</div>
+      <button class="btn" id="wifi-ap-btn" onclick="startApMode()">&#9889; Host Standalone AP</button>
+      <div class="note">Persists across reboots. Unconfigured devices auto-switch to Standalone ~5 min after power-on.</div>
+      <button class="btn" onclick="holdConfigMode()" style="margin-top:6px">&#9208; I'm Configuring (hold setup)</button>
+      <div class="danger-zone">
+        <div class="subhead">Danger Zone</div>
+        <button class="btn danger" id="wifi-reset-btn" onclick="factoryReset()">&#9888; Factory Reset</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ HELP MODAL ══ -->
+<div class="overlay" id="help-modal">
+  <div class="modal">
+    <h3>&#9737; Switchboard Help<span class="x" onclick="closeModal('help-modal')">&times;</span></h3>
+    <div class="mbody" style="line-height:1.7;font-size:13px">
+      <p style="color:var(--brass);font-family:var(--mono)">POCKET&middot;DIAL &mdash; vintage operator switchboard</p>
+      <hr class="hr">
+      <p><b>The board.</b> Each tile is an extension jack. A lit green lamp = registered. A pulsing amber lamp = in a call (patched with a cord). An amber ring = Do Not Disturb. A dim recessed tile = empty slot.</p>
+      <p style="margin-top:8px"><b>Patch-cords.</b> Active calls are drawn as curved operator cords between the two jacks, labelled with state and running duration.</p>
+      <p style="margin-top:8px"><b>Tap a jack</b> to open its panel: address, DND toggle, the three call-forward triggers, and a force-disconnect.</p>
+      <hr class="hr">
+      <p style="color:var(--brass);font-family:var(--mono)">Shortcuts</p>
+      <p><span style="font-family:var(--mono);color:var(--brass-hi)">F1</span> Help &nbsp; <span style="font-family:var(--mono);color:var(--brass-hi)">F5</span> Refresh &nbsp; <span style="font-family:var(--mono);color:var(--brass-hi)">F9</span> WiFi &nbsp; <span style="font-family:var(--mono);color:var(--brass-hi)">Esc</span> Close</p>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
 
 <script>
-/* ═══════════════════════════════════════════════════════════════
-   CGA CRT SipServer Dashboard — Premium Retro JavaScript
-   ═══════════════════════════════════════════════════════════════ */
+"use strict";
+var statusData={ip:"0.0.0.0",port:5060,uptime:0,clients:[],sessions:[],dnd:[],forwards:[],groups:[],packetsProcessed:0};
+var adminState={provisioned:false,authenticated:false};
+var otaUploading=false;
+var selectedSSID="";
+var selectedJack=null;
+var failCount=0;
+var POOL=32;
 
-// ─── STATE ───
-let statusData = {
-  ip: '0.0.0.0', port: 5060, uptime: 0,
-  clients: [], sessions: [], packetsProcessed: 0
+/* ── helpers ── */
+function $(id){return document.getElementById(id);}
+function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+function toast(msg,cls){var t=$("toast");t.textContent=msg;t.className=cls?("show "+cls):"show";clearTimeout(t._t);t._t=setTimeout(function(){t.className="";},2600);}
+function fmtUptime(sec){sec=Math.floor(sec||0);var h=Math.floor(sec/3600),m=Math.floor(sec%3600/60),s=sec%60;function p(n){return(n<10?"0":"")+n;}return p(h)+":"+p(m)+":"+p(s);}
+function setMsg(id,txt,cls){var e=$(id);if(e){e.textContent=txt||"";e.className="msg"+(cls?" "+cls:"");}}
+
+/* ── modals ── */
+function openModal(id){$(id).classList.add("show");}
+function closeModal(id){$(id).classList.remove("show");}
+document.addEventListener("click",function(e){if(e.target.classList&&e.target.classList.contains("overlay"))e.target.classList.remove("show");});
+
+/* ── theme accent cycling (amber default / phosphor green) ── */
+var THEMES=["amber","phosphor","ice"];
+var THEME_VARS={
+  amber:{amber:"#ffb000",glow:"#ff9c1a"},
+  phosphor:{amber:"#5dff8a",glow:"#33ff66"},
+  ice:{amber:"#5ec8ff",glow:"#39a9ff"}
 };
-let cmdHistory = [];
-let cmdHistoryIdx = -1;
-let oracleInterval = null;
-let selectedSSID = '';
-// Admin auth state: drives gating of dangerous controls + OTA.
-let adminState = { provisioned: false, authenticated: false };
-let otaUploading = false;
-// Whimsy state (pure client-side, persisted in localStorage).
-const PHOSPHOR_THEMES = ['cga', 'green', 'amber', 'cga2', 'white'];
-// Map the cycle key to the body class (cga2 = high-contrast cyan/magenta CGA).
-const PHOSPHOR_CLASS = { cga:'', green:'theme-green', amber:'theme-amber', cga2:'theme-cga', white:'theme-white' };
-const PHOSPHOR_LABEL = { cga:'CGA Blue', green:'Green', amber:'Amber', cga2:'Cyan/Mag', white:'White' };
-let phosphorIdx = 0;
-let soundEnabled = false;   // OPT-IN: never autoplay; defaults OFF.
-let audioCtx = null;        // lazily created on first user gesture.
-let matrixTimer = null;
-)rawhtml"
-R"rawhtml(
-// ─── SYSTEM ORACLE WORD GENERATOR ───
-const oraclePhrases = [
-  "In the beginning was the C, and the C was with the hardware, and the compiler was pleased.",
-  "For the console so loved the user, it gave them 640x480 resolution and 16 colors.",
-  "The righteous packeteer's packets shall never be dropped, for the router knows all interfaces.",
-  "Blessed is the SIP header, for it carries the voice of the remote node.",
-  "And on the seventh day, the engineer rested — but the server kept running.",
-  "Ask and the router shall route; seek and the socket shall bind; knock and the port shall open.",
-  "Thou shalt not saturate thy neighbor's bandwidth.",
-  "The system is my administrator; I shall not want for uptime.",
-  "Let there be light — and there was a gorgeous phosphor CRT glow at 60Hz.",
-  "He who writes in assembly writes closest to the silicon, closest to speed.",
-  "Yea, though I trace through the valley of the shadow of segfaults, I will fear no bug.",
-  "The meek shall inherit the mutex lock.",
-  "As the user thirsts for low latency, so my socket pants for zero-packet-loss audio.",
-  "Judge not the packet by its size, lest thy own packets be dropped by the firewall.",
-  "For dust thou art, and unto binary 1s and 0s shalt thou return.",
-  "Where two or three nodes are gathered in a LAN, there is a low-latency voice call.",
-  "A clean buffer is the sanctuary of a robust pointer.",
-  "Put on the full armor of security: firewall, cryptography, and a solid checksum.",
-  "The wages of buffer overflow is a core dump, but the gift of pure C++ is eternal uptime.",
-  "Many are called, but few are registered.",
-  "Every bit matters. Every byte is active. Every packet has a purpose.",
-  "Faith without packet transmission is like a SIP server with no extensions.",
-  "I am the Alpha and the Omega, the first bit and the last bit.",
-  "Let your yes be ACK and your no be NACK.",
-  "Render unto TCP the things that are TCP's, and unto UDP the things that are UDP's.",
-  "CGA CRT Console resolution: 640x480. No more. No less. Perfectly crisp.",
-  "The CPU works in mysterious clock cycles.",
-  "Whoever has ears, let them hear the ring group.",
-  "For I know the plans I have for your packets — plans to deliver, not to drop.",
-  "Create in me a clean buffer, and renew a right pointer within me.",
-  "The network interface declares the glory of uptime, and the console proclaims its handiwork.",
-  "Standard console resolution is 640x480. 16 bright CGA colors.",
-  "An elephant never forgets, and neither does ECC RAM.",
-];
+var themeIdx=0;
+function applyTheme(i){
+  themeIdx=((i%THEMES.length)+THEMES.length)%THEMES.length;
+  var k=THEMES[themeIdx],v=THEME_VARS[k];
+)html1"
+R"html2(  document.documentElement.style.setProperty("--amber",v.amber);
+  document.documentElement.style.setProperty("--amber-glow",v.glow);
+  var b=$("theme-btn");if(b)b.textContent=k.charAt(0).toUpperCase()+k.slice(1);
+  try{localStorage.setItem("pd.theme",k);}catch(e){}
+}
+function cycleTheme(){applyTheme(themeIdx+1);}
+function restoreTheme(){var k="amber";try{k=localStorage.getItem("pd.theme")||"amber";}catch(e){}var i=THEMES.indexOf(k);applyTheme(i>=0?i:0);}
 
-function getRandomOracle() {
-  return oraclePhrases[Math.floor(Math.random() * oraclePhrases.length)];
+/* ── extension classification from /api/status ── */
+function buildIndex(d){
+  var idx={};
+  (d.clients||[]).forEach(function(c){var n=String(c.number);idx[n]={num:n,addr:c.address||"",reg:true,call:false,state:"",dnd:false};});
+  (d.dnd||[]).forEach(function(n){n=String(n);if(!idx[n])idx[n]={num:n,addr:"",reg:false,call:false,state:""};idx[n].dnd=true;});
+  (d.sessions||[]).forEach(function(s){
+    [s.caller,s.callee].forEach(function(n){n=String(n);if(!idx[n])idx[n]={num:n,addr:"",reg:false,dnd:false};idx[n].call=true;idx[n].state=s.state||"";});
+  });
+  return idx;
 }
 
-function updateOracle() {
-  const bar = document.getElementById('oracle-bar');
-  bar.textContent = '\u263C SYSTEM ORACLE: "' + getRandomOracle() + '" \u263C';
+/* ── render jack board ── */
+function renderBoard(d){
+  var idx=buildIndex(d);
+  var nums=Object.keys(idx).sort(function(a,b){return (parseInt(a,10)||0)-(parseInt(b,10)||0);});
+  var board=$("jacks");
+  // Build/refresh tiles. We reuse DOM where possible to avoid churn.
+  var html="";
+  nums.forEach(function(n){
+    var e=idx[n];
+    var cls="jack";
+    if(e.call)cls+=" call";else if(e.reg)cls+=" reg";else cls+=" empty";
+    if(e.dnd)cls+=" dnd";
+    html+='<div class="'+cls+'" data-ext="'+esc(n)+'" onclick="openJack(\''+esc(n)+'\')">'
+      +'<span class="hole"></span>'
+      +(e.dnd?'<span class="badge-dnd">DND</span>':'')
+      +'<span class="lamp"></span><span class="num">'+esc(n)+'</span></div>';
+  });
+  if(!nums.length)html='<div class="note" style="grid-column:1/-1;text-align:center;padding:24px">No extensions seen yet. Register a phone to light a jack.</div>';
+  board.innerHTML=html;
+  var lit=(d.clients||[]).length;
+  $("board-cap").textContent=lit+" / "+POOL+" lit";
+  // cords drawn after layout settles
+  requestAnimationFrame(function(){drawCords(d);});
 }
 
-function oracleSpeak() {
-  updateOracle();
-  termPrint('SYSTEM ORACLE: "' + getRandomOracle() + '"', 'var(--yellow)');
+/* ── SVG patch-cords between caller and callee jacks ── */
+function drawCords(d){
+  var svg=$("cords");var wrap=$("board-wrap");
+  if(!svg||!wrap){return;}
+  var wr=wrap.getBoundingClientRect();
+  svg.setAttribute("width",wr.width);svg.setAttribute("height",wr.height);
+  svg.setAttribute("viewBox","0 0 "+wr.width+" "+wr.height);
+  var parts=[];
+  (d.sessions||[]).forEach(function(s){
+    var a=document.querySelector('.jack[data-ext="'+cssEsc(s.caller)+'"]');
+    var b=document.querySelector('.jack[data-ext="'+cssEsc(s.callee)+'"]');
+    if(!a||!b)return;
+    var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();
+    var x1=ra.left-wr.left+ra.width/2,y1=ra.top-wr.top+8;
+    var x2=rb.left-wr.left+rb.width/2,y2=rb.top-wr.top+8;
+    var sag=Math.max(40,Math.abs(x2-x1)*0.32)+24;
+    var mx=(x1+x2)/2,my=Math.max(y1,y2)+sag;
+    var ringing=(s.state||"").toUpperCase()==="RINGING";
+    var col=ringing?"var(--amber-glow)":"var(--amber)";
+    parts.push('<path d="M'+x1+' '+y1+' Q'+mx+' '+my+' '+x2+' '+y2+'" fill="none" stroke="'+col+'" stroke-width="3" stroke-linecap="round" opacity="0.85"/>');
+    parts.push('<circle cx="'+x1+'" cy="'+y1+'" r="4" fill="'+col+'"/><circle cx="'+x2+'" cy="'+y2+'" r="4" fill="'+col+'"/>');
+    var lx=mx,ly=my-6;
+    parts.push('<text class="cord-label" x="'+lx+'" y="'+ly+'" text-anchor="middle">'+esc((s.state||"")+" "+(s.duration||""))+'</text>');
+  });
+  svg.innerHTML=parts.join("");
+}
+function cssEsc(s){return String(s==null?"":s).replace(/["\\]/g,"\\$&");}
+
+/* ── jack detail panel ── */
+function openJack(ext){
+  selectedJack=ext;
+  var idx=buildIndex(statusData);var e=idx[ext]||{num:ext,addr:"",reg:false,call:false,state:"",dnd:false};
+  $("jd-num").textContent=ext;
+  var lamp=$("jd-lamp");
+  lamp.style.boxShadow="none";
+  if(e.call){lamp.style.background="var(--amber-glow)";lamp.style.boxShadow="0 0 8px var(--amber-glow)";}
+  else if(e.dnd){lamp.style.background="var(--amber)";}
+  else if(e.reg){lamp.style.background="var(--green)";lamp.style.boxShadow="0 0 6px var(--green)";}
+  else lamp.style.background="var(--lamp-off)";
+  $("jd-state").textContent=e.call?("IN CALL — "+(e.state||"")):(e.dnd?"DND":(e.reg?"REGISTERED":"IDLE / UNREGISTERED"));
+  $("jd-addr").textContent=e.addr||"—";
+  $("jd-dnd").checked=!!e.dnd;
+  // prefill forwarding from status
+  var fwd=(statusData.forwards||[]).filter(function(f){return String(f.extension)===String(ext);})[0]||{};
+  $("jd-fwd-always").value=fwd.always||"";
+  $("jd-fwd-busy").value=fwd.busy||"";
+  $("jd-fwd-noanswer").value=fwd.noanswer||"";
+  setMsg("jd-msg","");
+  openModal("jack-modal");
+}
+function gateCheck(){if(adminState.provisioned&&!adminState.authenticated){toast("Admin login required","err");openModal("admin-modal");return false;}return true;}
+
+function toggleDnd(){
+  if(!selectedJack)return;
+  if(!gateCheck()){$("jd-dnd").checked=!$("jd-dnd").checked;return;}
+  var on=$("jd-dnd").checked;
+  post("/api/dnd","extension="+encodeURIComponent(selectedJack)+"&on="+(on?"1":"0"))
+    .then(function(){setMsg("jd-msg","DND "+(on?"enabled":"disabled")+" for "+selectedJack,"ok");fetchStatus();})
+    .catch(function(err){setMsg("jd-msg",err.message,"err");$("jd-dnd").checked=!on;});
+}
+function jdSaveFwd(trigger){
+  if(!selectedJack||!gateCheck())return;
+  var t=$("jd-fwd-"+trigger).value.trim();
+  post("/api/forward","extension="+encodeURIComponent(selectedJack)+"&trigger="+trigger+"&target="+encodeURIComponent(t))
+    .then(function(){setMsg("jd-msg",trigger+" forward "+(t?("→ "+t):"cleared"),"ok");fetchStatus();})
+    .catch(function(err){setMsg("jd-msg",err.message,"err");});
+}
+function killJack(){
+  if(!selectedJack||!gateCheck())return;
+  if(!confirm("Force-disconnect extension "+selectedJack+"?"))return;
+  post("/api/kill","extension="+encodeURIComponent(selectedJack))
+    .then(function(){setMsg("jd-msg","Disconnect signal sent.","ok");toast("Disconnected "+selectedJack,"ok");fetchStatus();})
+    .catch(function(err){setMsg("jd-msg",err.message,"err");});
 }
 
-// ─── TERMINAL ───
-const termOutput = document.getElementById('terminal-output');
-const termInput = document.getElementById('terminal-input');
-// Touch devices (iPhone/Android): never auto-focus the terminal input — it pops the
-// on-screen keyboard over the captive portal. Users can still tap the input directly.
-const IS_TOUCH = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-const inputCursor = document.getElementById('input-cursor');
-
-function termPrint(text, color) {
-  const line = document.createElement('div');
-  if (color) line.style.color = color;
-  line.textContent = text;
-  termOutput.appendChild(line);
-  termOutput.scrollTop = termOutput.scrollHeight;
-}
-
-function termPrintHTML(html) {
-  const line = document.createElement('div');
-  line.innerHTML = html;
-  termOutput.appendChild(line);
-  termOutput.scrollTop = termOutput.scrollHeight;
-}
-
-function termClear() {
-  termOutput.innerHTML = '';
-}
-
-// Boot message
-function bootSequence() {
-  const bootLines = [
-    { t: '═══════════════════════════════════════════════════', c: 'var(--cyan)' },
-    { t: '  CGA CRT SipServer v5.03 — Retro-Console Switchboard', c: 'var(--yellow)' },
-    { t: '  "Standard resolution: 640x480, 16 vibrant colors."', c: 'var(--dk-gray)' },
-    { t: '═══════════════════════════════════════════════════', c: 'var(--cyan)' },
-    { t: '' },
-    { t: 'BIOS check .......... OK', c: 'var(--green)' },
-    { t: 'CGA Graphics ........ ACTIVE (640x480 @ 60Hz)', c: 'var(--green)' },
-    { t: 'SIP Stack ........... INITIALIZED', c: 'var(--green)' },
-    { t: 'UDP Socket bound .... OK', c: 'var(--green)' },
-    { t: 'System Oracle ....... ACTIVE', c: 'var(--green)' },
-    { t: 'RNG seed generated .. 0x' + Math.floor(Math.random()*0xFFFFFFFF).toString(16).toUpperCase(), c: 'var(--magenta)' },
-    { t: '' },
-    { t: '>>> SWITCHBOARD ONLINE — operator standing by <<<', c: 'var(--magenta)' },
-    { t: 'System ready. Type "help" for commands.', c: 'var(--fg)' },
-    { t: '' },
-  ];
-  bootLines.forEach(l => termPrint(l.t, l.c));
-}
-
-// A brief, skippable typewriter flourish shown ONCE on first load.
-// It never blocks usability: the dashboard is already interactive underneath.
-function bootFlourish() {
-  const msg = '☼  CGA CRT SWITCHBOARD ONLINE — patching you through  ☼';
-  const line = document.createElement('div');
-  line.style.color = 'var(--cyan)';
-  line.style.textShadow = 'var(--glow-cyan)';
-  termOutput.insertBefore(line, termOutput.firstChild);
-  let i = 0;
-  const skip = () => { line.textContent = msg; cleanup(); };
-  function cleanup() {
-    document.removeEventListener('keydown', skip, true);
-    termOutput.removeEventListener('click', skip, true);
+/* ── groups & forwarding panels ── */
+function renderGroups(d){
+  var list=$("groups-list");var g=d.groups||[];
+  if(!g.length){list.innerHTML='<div class="note">No groups defined.</div>';}
+  else{
+    list.innerHTML=g.map(function(x){
+      return '<div class="kv"><span><b style="color:var(--brass-hi)">'+esc(x.extension)+'</b> '
+        +'<span style="color:var(--ink-dim)">['+esc(x.mode)+']</span></span>'
+        +'<span style="color:var(--ink-dim);font-size:11px">'+esc(x.members||"")+'</span></div>';
+    }).join("");
   }
-  document.addEventListener('keydown', skip, true);
-  termOutput.addEventListener('click', skip, true);
-  const timer = setInterval(() => {
-    if (i >= msg.length) { clearInterval(timer); cleanup(); return; }
-    line.textContent = msg.slice(0, ++i);
-  }, 18);   // ~0.7s total; fast and non-blocking
-}
-
-function processCommand(cmd) {
-  const trimmed = cmd.trim();
-  if (!trimmed) return;
-
-  // Echo command
-  termPrintHTML('<span style="color:var(--cyan);">C:/SipServer&gt; </span><span style="color:var(--green);">' + escapeHtml(trimmed) + '</span>');
-
-  const parts = trimmed.split(/\s+/);
-  const command = parts[0].toLowerCase();
-
-  switch (command) {
-    case 'help':
-      termPrint('');
-      termPrint('═══ Available Commands ═══', 'var(--yellow)');
-      termPrint('  help        Show this help text', 'var(--cyan)');
-      termPrint('  dir         List SipServer directory', 'var(--cyan)');
-      termPrint('  registered  Show registered extensions', 'var(--cyan)');
-      termPrint('  sessions    Show active call sessions', 'var(--cyan)');
-      termPrint('  uptime      Show server uptime', 'var(--cyan)');
-      termPrint('  oracle      Receive System Oracle wisdom', 'var(--cyan)');
-      termPrint('  wifi        Open WiFi network manager', 'var(--cyan)');
-      termPrint('  kill <ext>  Terminate an extension', 'var(--cyan)');
-      termPrint('  clear       Clear terminal output', 'var(--cyan)');
-      termPrint('  ver         Show version info', 'var(--cyan)');
-      termPrint('  ascii       Display classic bell ASCII art', 'var(--cyan)');
-      termPrint('  about       Meet the switchboard operator', 'var(--cyan)');
-      termPrint('  operator    Ring the operator for assistance', 'var(--cyan)');
-      termPrint('  theme       Cycle phosphor palette', 'var(--cyan)');
-      termPrint('  sound       Toggle UI sounds (off by default)', 'var(--cyan)');
-      termPrint('  matrix      Follow the white rabbit', 'var(--cyan)');
-      termPrint('');
-      break;
-
-    case 'dir':
-      termPrint('');
-      termPrint(' Volume in drive C is CGA_SYSTEM', 'var(--gray)');
-      termPrint(' Directory of C:\\SipServer', 'var(--gray)');
-      termPrint('');
-      termPrint(' 05/27/2026  05:03p     <DIR>          .', 'var(--fg)');
-      termPrint(' 05/27/2026  05:03p     <DIR>          ..', 'var(--fg)');
-      termPrint(' 05/27/2026  05:03p          12,288    SipServer.cpp', 'var(--fg)');
-      termPrint(' 05/27/2026  05:03p           8,192    UdpServer.cpp', 'var(--fg)');
-      termPrint(' 05/27/2026  05:03p           4,096    HttpServer.cpp', 'var(--fg)');
-      termPrint(' 05/27/2026  05:03p           2,048    CMakeLists.txt', 'var(--fg)');
-      termPrint(' 05/27/2026  05:03p          16,384    IPHelper.hpp', 'var(--fg)');
-      termPrint(' 05/27/2026  05:03p           1,024    README.md', 'var(--yellow)');
-      termPrint('        6 File(s)     44,032 bytes', 'var(--gray)');
-      termPrint('        2 Dir(s)     1.44MB free', 'var(--gray)');
-      termPrint('');
-      break;
-
-    case 'registered':
-      termPrint('');
-      if (statusData.clients && statusData.clients.length > 0) {
-        termPrint('═══ Registered Extensions ═══', 'var(--yellow)');
-        termPrint(' EXT#     IP ADDRESS        PORT    STATUS', 'var(--cyan)');
-        termPrint(' ─────────────────────────────────────────', 'var(--dk-cyan)');
-        statusData.clients.forEach(c => {
-          const ext = String(c.number || c.extension || '????').padEnd(9);
-          const addrParts = (c.address || '?.?.?.?:?').split(':');
-          const ip = String(addrParts[0] || '?.?.?.?').padEnd(18);
-          const port = String(addrParts[1] || '?').padEnd(8);
-          termPrint(' ' + ext + ip + port + '● ONLINE', 'var(--green)');
-        });
-      } else {
-        termPrint(' No extensions currently registered.', 'var(--dk-gray)');
-      }
-      termPrint('');
-      break;
-
-    case 'sessions':
-      termPrint('');
-      if (statusData.sessions && statusData.sessions.length > 0) {
-        termPrint('═══ Active Sessions ═══', 'var(--yellow)');
-        termPrint(' CALLER     CALLEE     STATE        DURATION', 'var(--cyan)');
-        termPrint(' ─────────────────────────────────────────────', 'var(--dk-cyan)');
-        statusData.sessions.forEach(s => {
-          const caller = String(s.caller || '?').padEnd(11);
-          const callee = String(s.callee || '?').padEnd(11);
-          const state = String(s.state || '?').padEnd(13);
-          const dur = s.duration || '00:00';
-          termPrint(' ' + caller + callee + state + dur, 'var(--fg)');
-        });
-      } else {
-        termPrint(' No active sessions.', 'var(--dk-gray)');
-      }
-      termPrint('');
-      break;
-
-    case 'uptime':
-      termPrint('');
-      termPrint(' Server uptime: ' + formatUptime(statusData.uptime), 'var(--green)');
-      termPrint(' Packets processed: ' + (statusData.packetsProcessed || 0).toLocaleString(), 'var(--cyan)');
-      termPrint('');
-      break;
-
-    case 'oracle':
-      termPrint('');
-      oracleSpeak();
-      termPrint('');
-      break;
-
-    case 'wifi':
-      showWifi();
-      termPrint(' WiFi manager opened.', 'var(--cyan)');
-      break;
-
-    case 'kill':
-      if (parts.length < 2) {
-        termPrint(' Usage: kill <extension_number>', 'var(--red)');
-      } else {
-        const ext = parts[1];
-        if (adminState.provisioned && !adminState.authenticated) {
-          termPrint(' Admin login required. Open ADMIN / SECURITY panel to log in.', 'var(--red)');
-          break;
-        }
-        termPrint(' Sending KILL signal to extension ' + ext + '...', 'var(--yellow)');
-        fetch('/api/kill', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'extension=' + encodeURIComponent(ext)
-        }).then(r => {
-          if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
-          return r.text();
-        }).then(t => {
-          termPrint(' ' + (t || 'Extension terminated.'), 'var(--green)');
-        }).catch(e => {
-          termPrint(' ERROR: ' + e.message, 'var(--red)');
-        });
-      }
-      break;
-
-    case 'clear':
-      termClear();
-      break;
-
-    case 'ver':
-      termPrint('');
-      termPrint(' pocket-dial v5.03', 'var(--yellow)');
-      termPrint(' C++17 Compiler Engine', 'var(--cyan)');
-      termPrint(' Built: May 27, 2026', 'var(--gray)');
-      termPrint(' "CGA CRT Switchboard"', 'var(--dk-gray)');
-      termPrint(' Public domain — Classic License.', 'var(--dk-gray)');
-      termPrint('');
-      break;
-
-    case 'ascii':
-      termPrint('');
-      const bell = [
-        '         ______         ',
-        '        /      \\        ',
-        '       |   ||   |       ',
-        '       |   ||   |       ',
-        '      /____||____\\      ',
-        '     /            \\     ',
-        '     \\____________/     ',
-        '         (____)         ',
-      ];
-      bell.forEach(l => termPrint(l, 'var(--yellow)'));
-      termPrint('');
-      termPrint('  "beautiful-bell — CGA CRT SipServer"', 'var(--dk-gray)');
-      termPrint('');
-      break;
-)rawhtml"
-R"rawhtml(
-    case 'about':
-      termPrint('');
-      printOperator();
-      termPrint('');
-      termPrint(' CGA CRT SipServer — a retro-console SIP switchboard.', 'var(--yellow)');
-      termPrint(' Hand-soldered phosphor, vacuum-tube vibes, zero spoons.', 'var(--gray)');
-      termPrint('');
-      break;
-
-    case 'operator':
-      termPrint('');
-      printOperator();
-      termPrint('');
-      termPrint(' OPERATOR: "Switchboard online. One moment, connecting you now..."', 'var(--magenta)');
-      ringPreview();
-      termPrint('');
-      break;
-
-    case 'theme':
-      cyclePhosphor();
-      break;
-
-    case 'sound':
-      toggleSound();
-      break;
-
-    case 'matrix':
-      termPrint('');
-      matrixRain();
-      break;
-
-    default:
-      termPrint(' Unknown command: "' + escapeHtml(command) + '". Type "help" for commands.', 'var(--red)');
-      break;
+  var fl=$("fwd-list");var f=(d.forwards||[]).filter(function(x){return x.always||x.busy||x.noanswer;});
+  if(!f.length){fl.innerHTML='<div class="note">No active forwards.</div>';}
+  else{
+    fl.innerHTML=f.map(function(x){
+      var bits=[];if(x.always)bits.push("always→"+esc(x.always));if(x.busy)bits.push("busy→"+esc(x.busy));if(x.noanswer)bits.push("na→"+esc(x.noanswer));
+      return '<div class="kv"><span><b style="color:var(--brass-hi)">'+esc(x.extension)+'</b></span>'
+        +'<span style="color:var(--ink-dim);font-size:11px">'+bits.join("  ")+'</span></div>';
+    }).join("");
   }
 }
-
-// index_html.h: Issue #22 resolved. Ensure single quote is escaped as &#39; to match docs/app.js.
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+function saveGroup(){
+  if(!gateCheck())return;
+  var ext=$("grp-ext").value.trim();
+  if(!ext){setMsg("grp-msg","Group extension required.","err");return;}
+  var members=$("grp-members").value.trim();
+  var mode=$("grp-mode").value;
+  post("/api/group","extension="+encodeURIComponent(ext)+"&members="+encodeURIComponent(members)+"&mode="+mode)
+    .then(function(){setMsg("grp-msg",members?("Group "+ext+" saved."):("Group "+ext+" deleted."),"ok");fetchStatus();})
+    .catch(function(err){setMsg("grp-msg",err.message,"err");});
+}
+function saveForward(){
+  if(!gateCheck())return;
+  var ext=$("fwd-ext").value.trim();
+  if(!ext){setMsg("fwd-msg","Extension required.","err");return;}
+  var trigger=$("fwd-trigger").value;
+  var target=$("fwd-target").value.trim();
+  post("/api/forward","extension="+encodeURIComponent(ext)+"&trigger="+trigger+"&target="+encodeURIComponent(target))
+    .then(function(){setMsg("fwd-msg",target?(trigger+" → "+target):(trigger+" cleared"),"ok");fetchStatus();})
+    .catch(function(err){setMsg("fwd-msg",err.message,"err");});
 }
 
-// Terminal input handling
-termInput.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    const cmd = termInput.value;
-    cmdHistory.unshift(cmd);
-    if (cmdHistory.length > 50) cmdHistory.pop();
-    cmdHistoryIdx = -1;
-    termInput.value = '';
-    processCommand(cmd);
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    if (cmdHistoryIdx < cmdHistory.length - 1) {
-      cmdHistoryIdx++;
-      termInput.value = cmdHistory[cmdHistoryIdx];
-    }
-  } else if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    if (cmdHistoryIdx > 0) {
-      cmdHistoryIdx--;
-      termInput.value = cmdHistory[cmdHistoryIdx];
-    } else {
-      cmdHistoryIdx = -1;
-      termInput.value = '';
-    }
-  }
-});
-
-// Hide native cursor blink when typing
-termInput.addEventListener('focus', () => { inputCursor.style.display = 'none'; });
-termInput.addEventListener('blur',  () => { inputCursor.style.display = 'inline-block'; });
-
-// Click anywhere in terminal area to focus input
-document.getElementById('terminal-container').addEventListener('click', function(e) {
-  if (!IS_TOUCH && e.target.id !== 'terminal-output') termInput.focus();
-});
-
-// ─── FORMAT UPTIME ───
-function formatUptime(seconds) {
-  if (!seconds && seconds !== 0) return '00:00:00';
-  const s = Math.floor(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+/* ── CDR table ── */
+function renderCdr(records){
+  var tb=$("cdr-tbody");
+  $("cdr-count").textContent=records.length;
+  if(!records.length){tb.innerHTML='<tr class="empty-row"><td colspan="6">No calls recorded yet</td></tr>';return;}
+  tb.innerHTML=records.map(function(r){
+    var res=String(r.result||"").toLowerCase();
+    var dur=fmtDur(r.duration);
+    return '<tr><td style="color:var(--brass-hi)">'+esc(r.caller)+'</td>'
+      +'<td class="arrow">&rarr;</td>'
+      +'<td style="color:var(--brass-hi)">'+esc(r.callee)+'</td>'
+      +'<td><span class="chip '+esc(res)+'">'+esc(r.result)+'</span></td>'
+      +'<td>'+dur+'</td>'
+      +'<td style="color:var(--ink-dim)">'+fmtAge(r.ageSec)+'</td></tr>';
+  }).join("");
 }
+function fmtDur(s){s=Math.floor(s||0);var m=Math.floor(s/60),sec=s%60;return m+":"+(sec<10?"0":"")+sec;}
+function fmtAge(s){s=Math.floor(s||0);if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";return Math.floor(s/3600)+"h ago";}
 
-// ─── API POLLING ───
-function fetchStatus() {
-  fetch('/api/status')
-    .then(r => r.json())
-    .then(data => {
-      statusData = data;
-      updateUI(data);
-    })
-    .catch(() => {
-      // silent fail
+/* ── networking ── */
+function post(url,body){
+  return fetch(url,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:body})
+    .then(function(r){
+      if(r.status===401){handleAuthExpired();throw new Error("session expired — please log in");}
+      if(r.status===403){throw new Error("rejected (cross-origin)");}
+      if(!r.ok){throw new Error("HTTP "+r.status);}
+      return r.text();
     });
 }
-
-function updateUI(d) {
-  // Status panel
-  document.getElementById('s-ip').textContent = d.ip || '0.0.0.0';
-  document.getElementById('s-port').textContent = d.port || '5060';
-  document.getElementById('s-uptime').textContent = formatUptime(d.uptime);
-  document.getElementById('s-ext-count').textContent = (d.clients ? d.clients.length : 0);
-  document.getElementById('s-call-count').textContent = (d.sessions ? d.sessions.length : 0);
-  document.getElementById('s-packets').textContent = (d.packetsProcessed || 0).toLocaleString();
-
-  // Mini indicators
-  const callCount = d.sessions ? d.sessions.length : 0;
-  const indCalls = document.getElementById('ind-calls');
-  const indCallsLabel = document.getElementById('ind-calls-label');
-  indCallsLabel.textContent = 'Calls: ' + callCount;
-  if (callCount > 0) {
-    indCalls.style.color = 'var(--green)';
-    indCallsLabel.style.color = 'var(--green)';
-  } else {
-    indCalls.style.color = 'var(--dk-gray)';
-    indCallsLabel.style.color = 'var(--dk-gray)';
-  }
-  document.getElementById('ind-pkts-label').textContent = 'Pkts: ' + (d.packetsProcessed || 0).toLocaleString();
-
-  // Extensions table
-  const extTbody = document.getElementById('ext-tbody');
-  if (d.clients && d.clients.length > 0) {
-    extTbody.innerHTML = d.clients.map(c => {
-      const num = c.number || c.extension || '?';
-      const addrParts = (c.address || c.ip || '?:?').split(':');
-      const ip = addrParts[0] || '?';
-      const port = addrParts[1] || c.port || '?';
-      return '<tr>' +
-        '<td style="color:var(--cyan);">' + escapeHtml(String(num)) + '</td>' +
-        '<td>' + escapeHtml(String(ip)) + '</td>' +
-        '<td>' + escapeHtml(String(port)) + '</td>' +
-        '<td class="status-online">● ONLINE</td>' +
-        '</tr>';
-    }).join('');
-  } else {
-    extTbody.innerHTML = '<tr><td colspan="4" style="color:var(--dk-gray)">No extensions registered</td></tr>';
-  }
-
-  // Sessions table
-  const sessTbody = document.getElementById('sess-tbody');
-  if (d.sessions && d.sessions.length > 0) {
-    sessTbody.innerHTML = d.sessions.map(s => {
-      const stateColor = s.state === 'ESTABLISHED' ? 'var(--green)' :
-                         s.state === 'RINGING' ? 'var(--yellow)' :
-                         s.state === 'TRYING' ? 'var(--cyan)' : 'var(--fg)';
-      const stateClass = s.state === 'RINGING' ? 'status-ringing' : '';
-      return '<tr>' +
-        '<td style="color:var(--cyan);">' + escapeHtml(String(s.caller || '?')) + '</td>' +
-        '<td style="color:var(--cyan);">' + escapeHtml(String(s.callee || '?')) + '</td>' +
-        '<td class="' + stateClass + '" style="color:' + stateColor + ';">' + escapeHtml(String(s.state || '?')) + '</td>' +
-        '<td>' + escapeHtml(String(s.duration || '00:00')) + '</td>' +
-        '</tr>';
-    }).join('');
-  } else {
-    sessTbody.innerHTML = '<tr><td colspan="4" style="color:var(--dk-gray)">No active sessions</td></tr>';
-  }
+function fetchStatus(){
+  fetch("/api/status").then(function(r){return r.json();}).then(function(d){
+    statusData=d;failCount=0;setOnline(true);updateRail(d);renderBoard(d);renderGroups(d);
+  }).catch(function(){failCount++;if(failCount>=2)setOnline(false);});
 }
-
-function refreshNow() {
-  fetchStatus();
-  termPrint(' Status refreshed.', 'var(--green)');
+function fetchCdr(){
+  fetch("/api/cdr").then(function(r){return r.json();}).then(renderCdr).catch(function(){});
 }
-
-// ─── KEYBOARD SHORTCUTS ───
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'F1') { e.preventDefault(); showHelp(); }
-  if (e.key === 'F5') { e.preventDefault(); refreshNow(); }
-  if (e.key === 'F7') { e.preventDefault(); oracleSpeak(); }
-  if (e.key === 'F9') { e.preventDefault(); showWifi(); }
-  if (e.key === 'Escape') {
-    closeHelp(); closeWifi();
-    termInput.focus();
-  }
-});
-
-// ─── HELP MODAL ───
-function showHelp() { document.getElementById('help-modal').style.display = 'block'; }
-function closeHelp() { document.getElementById('help-modal').style.display = 'none'; }
-
-// ─── WIFI MODAL ───
-function showWifi() { document.getElementById('wifi-modal').style.display = 'block'; }
-function closeWifi() { document.getElementById('wifi-modal').style.display = 'none'; }
-
-function scanWifi() {
-  const statusEl = document.getElementById('wifi-status');
-  statusEl.textContent = 'Scanning...';
-  statusEl.style.color = 'var(--yellow)';
-
-  fetch('/api/wifi/scan')
-    .then(r => r.json())
-    .then(data => {
-      statusEl.textContent = 'Scan complete — ' + (data.networks ? data.networks.length : 0) + ' networks found';
-      statusEl.style.color = 'var(--green)';
-      renderWifiNetworks(data.networks || []);
-    })
-    .catch(e => {
-      statusEl.textContent = 'Scan failed: ' + e.message;
-      statusEl.style.color = 'var(--red)';
-    });
+function setOnline(ok){
+  var dot=$("dot"),txt=$("online-txt"),rec=$("recon");
+  if(ok){dot.className="on";txt.textContent="online";rec.className="recon";}
+  else{dot.className="warn";txt.textContent="offline";rec.className="recon show";}
 }
-
-function renderWifiNetworks(networks) {
-  const list = document.getElementById('wifi-networks-list');
-  list.innerHTML = '';
-  if (networks.length === 0) {
-    const empty = document.createElement('div');
-    empty.style.color = 'var(--dk-gray)';
-    empty.textContent = 'No networks found.';
-    list.appendChild(empty);
-    return;
-  }
-  // Build each row as DOM nodes and bind the click handler programmatically.
-  // The SSID never reaches markup as a string, so a crafted SSID (e.g. one
-  // containing quotes) cannot break out into a script context.
-  networks.forEach(n => {
-    const ssid = String(n.ssid == null ? '' : n.ssid);
-    const rssi = Number(n.rssi) || 0;
-    const enc = n.encryption || 'OPEN';
-    const bars = rssi > -50 ? '▂▄▆█' : rssi > -65 ? '▂▄▆░' : rssi > -75 ? '▂▄░░' : '▂░░░';
-
-    const row = document.createElement('div');
-    row.className = 'wifi-network';
-    row.addEventListener('click', () => selectWifi(ssid));
-
-    const ssidEl = document.createElement('span');
-    ssidEl.className = 'wifi-ssid';
-    ssidEl.textContent = ssid;
-
-    const metaEl = document.createElement('span');
-    const rssiEl = document.createElement('span');
-    rssiEl.className = 'wifi-rssi';
-    rssiEl.textContent = bars + ' ' + rssi + 'dBm';
-    const encEl = document.createElement('span');
-    encEl.className = 'wifi-enc';
-    encEl.textContent = '[' + enc + ']';
-    metaEl.appendChild(rssiEl);
-    metaEl.appendChild(document.createTextNode(' '));
-    metaEl.appendChild(encEl);
-
-    row.appendChild(ssidEl);
-    row.appendChild(metaEl);
-    list.appendChild(row);
-  });
+function updateRail(d){
+  $("s-uptime").textContent=fmtUptime(d.uptime);
+  $("s-ip").textContent=(d.ip||"0.0.0.0")+":"+(d.port||5060);
+  $("s-jacks").textContent=((d.clients||[]).length)+"/"+POOL;
+  $("s-calls").textContent=(d.sessions||[]).length;
+  $("s-pkts").textContent=(d.packetsProcessed||0).toLocaleString();
 }
+function refreshNow(){fetchStatus();fetchCdr();toast("Refreshed","ok");}
 
-function selectWifi(ssid) {
-  selectedSSID = ssid;
-  document.getElementById('wifi-selected-ssid').textContent = ssid;
-  document.getElementById('wifi-connect-form').style.display = 'block';
-  document.getElementById('wifi-password').value = '';
-  document.getElementById('wifi-password').focus();
+/* redraw cords on resize (debounced) */
+var rsTimer=null;
+window.addEventListener("resize",function(){clearTimeout(rsTimer);rsTimer=setTimeout(function(){drawCords(statusData);},120);});
+
+/* ════ ADMIN / AUTH ════ */
+function fetchAdminStatus(){
+  return fetch("/api/admin/status",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(d){
+    adminState.provisioned=!!d.provisioned;adminState.authenticated=!!d.authenticated;
+    renderAdminPanel();applyAuthGating();
+  }).catch(function(){});
 }
-)rawhtml"
-R"rawhtml(
-function connectWifi() {
-  const pw = document.getElementById('wifi-password').value;
-  const statusEl = document.getElementById('wifi-status');
-  statusEl.textContent = 'Connecting to ' + selectedSSID + '...';
-  statusEl.style.color = 'var(--yellow)';
-
-  fetch('/api/wifi/connect', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'ssid=' + encodeURIComponent(selectedSSID) + '&password=' + encodeURIComponent(pw)
-  }).then(r => {
-    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
-    return r.text();
-  }).then(t => {
-    statusEl.textContent = 'Connected to ' + selectedSSID + '!';
-    statusEl.style.color = 'var(--green)';
-    cancelWifiConnect();
-    termPrint(' WiFi: Connected to "' + selectedSSID + '"', 'var(--green)');
-  }).catch(e => {
-    statusEl.textContent = 'Connection failed: ' + e.message;
-    statusEl.style.color = 'var(--red)';
-    termPrint(' WiFi ERROR: ' + e.message, 'var(--red)');
-  });
+function renderAdminPanel(){
+  $("admin-loading").style.display="none";
+  $("admin-setpin").style.display="none";$("admin-login").style.display="none";
+  $("admin-loggedin").style.display="none";
+  if(!adminState.provisioned)$("admin-setpin").style.display="block";
+  else if(!adminState.authenticated)$("admin-login").style.display="block";
+  else $("admin-loggedin").style.display="block";
 }
-
-function startApMode() {
-  const statusEl = document.getElementById('wifi-status');
-  statusEl.textContent = 'Enabling AP Mode...';
-  statusEl.style.color = 'var(--yellow)';
-
-  fetch('/api/wifi/mode_ap', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-  }).then(r => {
-    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
-    return r.json();
-  }).then(data => {
-    statusEl.textContent = 'Mode AP set! Rebooting...';
-    statusEl.style.color = 'var(--green)';
-    termPrint(' WiFi: Operational mode set to Standalone AP. Rebooting...', 'var(--green)');
-  }).catch(e => {
-    statusEl.textContent = 'Failed to set AP mode: ' + e.message;
-    statusEl.style.color = 'var(--red)';
-    termPrint(' WiFi ERROR: ' + e.message, 'var(--red)');
-  });
+function controlsUnlocked(){return !adminState.provisioned||adminState.authenticated;}
+function applyAuthGating(){
+  var unlocked=controlsUnlocked();
+  ["wifi-connect-btn","wifi-ap-btn","wifi-reset-btn","ota-upload-btn","ota-reboot-btn"].forEach(function(id){var b=$(id);if(b)b.disabled=!unlocked;});
+  var wn=$("wifi-admin-note");if(wn)wn.style.display=unlocked?"none":"block";
+  var on=$("ota-gate-note");if(on)on.style.display=unlocked?"none":"block";
+  var of=$("ota-file");if(of)of.disabled=!unlocked;
 }
-
-function cancelWifiConnect() {
-  document.getElementById('wifi-connect-form').style.display = 'none';
-  selectedSSID = '';
+function handleAuthExpired(){adminState.authenticated=false;renderAdminPanel();applyAuthGating();setMsg("admin-msg","Session expired — please log in.","err");}
+function adminSetPin(mode){
+  var inputId=mode==="change"?"adm-changepin-val":"adm-newpin";
+  var pin=$(inputId).value;
+  if(!pin||pin.length<4){setMsg("admin-msg","PIN must be at least 4 characters.","err");return;}
+  fetch("/api/admin/set-pin",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"pin="+encodeURIComponent(pin)})
+    .then(function(r){
+      if(r.status===401){handleAuthExpired();return;}
+)html2"
+R"html3(      if(r.status===400){setMsg("admin-msg","Invalid PIN (min 4 chars).","err");return;}
+      if(!r.ok){setMsg("admin-msg","Failed (HTTP "+r.status+").","err");return;}
+      $(inputId).value="";$("admin-changepin").style.display="none";
+      setMsg("admin-msg","Admin PIN updated.","ok");fetchAdminStatus();
+    }).catch(function(e){setMsg("admin-msg","Error: "+e.message,"err");});
 }
-
-function holdConfigMode() {
-  fetch('/api/configuring', { method: 'POST' })
-    .then(r => r.json()).then(data => {
-      termPrint(' SETUP: ' + (data.message || 'Setup mode held; auto-standalone paused.'), 'var(--cyan)');
-    }).catch(e => termPrint(' SETUP ERROR: ' + e.message, 'var(--red)'));
+function adminLogin(){
+  var pin=$("adm-pin").value;if(!pin){setMsg("admin-msg","Enter your PIN.","err");return;}
+  fetch("/api/admin/login",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"pin="+encodeURIComponent(pin)})
+    .then(function(r){
+      $("adm-pin").value="";
+      if(r.status===401){setMsg("admin-msg","Incorrect PIN.","err");return;}
+      if(r.status===429){setMsg("admin-msg","Locked — wait a minute.","err");return;}
+      if(r.status===409){setMsg("admin-msg","No PIN set yet.","err");fetchAdminStatus();return;}
+      if(!r.ok){setMsg("admin-msg","Login failed (HTTP "+r.status+").","err");return;}
+      setMsg("admin-msg","Logged in.","ok");toast("Admin unlocked","ok");fetchAdminStatus();
+    }).catch(function(e){setMsg("admin-msg","Error: "+e.message,"err");});
 }
-
-function factoryReset() {
-  if (!confirm('Factory reset erases saved Wi-Fi config and reboots into captive-portal setup mode. Continue?')) return;
-  const statusEl = document.getElementById('wifi-status');
-  if (statusEl) { statusEl.textContent = 'Factory resetting...'; statusEl.style.color = 'var(--red)'; }
-  fetch('/api/factory-reset', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'confirm=ERASE'
-  }).then(r => {
-    if (r.status === 401) { handleAuthExpired(); throw new Error('session expired — please log in'); }
-    return r.json();
-  }).then(data => {
-    termPrint(' FACTORY RESET: ' + (data.message || 'Rebooting...'), 'var(--yellow)');
-  }).catch(e => termPrint(' RESET ERROR: ' + e.message, 'var(--red)'));
+function adminLogout(){
+  fetch("/api/admin/logout",{method:"POST",credentials:"same-origin"}).then(function(){setMsg("admin-msg","Logged out.","warn");fetchAdminStatus();}).catch(function(){});
 }
+function toggleChangePin(){var cp=$("admin-changepin");cp.style.display=cp.style.display==="block"?"none":"block";if(cp.style.display==="block")$("adm-changepin-val").focus();}
 
-// ═══════════════════════════════════════════════════════════════
-//   ADMIN / SECURITY — auth state machine + control gating
-// ═══════════════════════════════════════════════════════════════
-
-function setAdminMsg(text, color) {
-  const el = document.getElementById('admin-msg');
-  if (!el) return;
-  el.textContent = text || '';
-  el.style.color = color || 'var(--gray)';
+/* ════ OTA ════ */
+function fetchOtaStatus(){
+  return fetch("/api/ota/status",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(d){
+    $("ota-supported").textContent=d.otaSupported?"YES":"NO (host build)";
+    $("ota-running").textContent=d.running?"IN PROGRESS":"idle";
+    $("ota-parts").textContent=(d.boot||"—")+" / "+(d.next||"—");
+    var sm=$("ota-state-msg");
+    if(d.pendingVerify){sm.textContent="New firmware pending verification.";sm.className="msg warn";}
+    else if(d.error){sm.textContent="Last error: "+d.error;sm.className="msg err";}
+    else{sm.textContent="";sm.className="msg";}
+  }).catch(function(){});
 }
-
-// Fetch /api/admin/status and re-render the panel + gate all controls.
-function fetchAdminStatus() {
-  return fetch('/api/admin/status', { credentials: 'same-origin' })
-    .then(r => r.json())
-    .then(d => {
-      adminState.provisioned = !!d.provisioned;
-      adminState.authenticated = !!d.authenticated;
-      renderAdminPanel();
-      applyAuthGating();
-    })
-    .catch(() => { /* silent — leave last known state */ });
-}
-
-// Show exactly one of the three admin states.
-function renderAdminPanel() {
-  const loading   = document.getElementById('admin-loading');
-  const setpin    = document.getElementById('admin-setpin');
-  const login     = document.getElementById('admin-login');
-  const loggedin  = document.getElementById('admin-loggedin');
-  const changepin = document.getElementById('admin-changepin');
-  if (loading) loading.style.display = 'none';
-  setpin.style.display = 'none';
-  login.style.display = 'none';
-  loggedin.style.display = 'none';
-  changepin.style.display = 'none';
-
-  if (!adminState.provisioned) {
-    setpin.style.display = 'block';            // STATE A
-  } else if (!adminState.authenticated) {
-    login.style.display = 'block';             // STATE B
-  } else {
-    loggedin.style.display = 'block';          // STATE C
-  }
-}
-
-// A control is unlocked when the device is unprovisioned OR the admin is logged in.
-function controlsUnlocked() {
-  return !adminState.provisioned || adminState.authenticated;
-}
-
-// Enable/disable + show notes on every gated control (kill is handled in the
-// terminal command, this covers the button-driven controls + OTA).
-function applyAuthGating() {
-  const unlocked = controlsUnlocked();
-  ['wifi-connect-btn', 'wifi-ap-btn', 'wifi-reset-btn', 'ota-upload-btn', 'ota-reboot-btn']
-    .forEach(id => {
-      const btn = document.getElementById(id);
-      if (btn) btn.disabled = !unlocked;
-    });
-  const wifiNote = document.getElementById('wifi-admin-note');
-  if (wifiNote) wifiNote.style.display = unlocked ? 'none' : 'block';
-  const otaNote = document.getElementById('ota-gate-note');
-  if (otaNote) otaNote.style.display = unlocked ? 'none' : 'block';
-  const otaFile = document.getElementById('ota-file');
-  if (otaFile) otaFile.disabled = !unlocked;
-}
-
-// Called whenever a gated endpoint returns 401 mid-session.
-function handleAuthExpired() {
-  adminState.authenticated = false;
-  renderAdminPanel();
-  applyAuthGating();
-  setAdminMsg('Session expired — please log in.', 'var(--red)');
-  termPrint(' AUTH: session expired — please log in.', 'var(--red)');
-}
-
-// STATE A / change-pin: POST /api/admin/set-pin (allowed unprovisioned OR authed).
-function adminSetPin(mode) {
-  const inputId = (mode === 'change') ? 'adm-changepin-val' : 'adm-newpin';
-  const pin = document.getElementById(inputId).value;
-  if (!pin || pin.length < 4) {
-    setAdminMsg('PIN must be at least 4 characters.', 'var(--red)');
-    return;
-  }
-  fetch('/api/admin/set-pin', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'pin=' + encodeURIComponent(pin)
-  }).then(r => {
-    if (r.status === 401) { handleAuthExpired(); return; }
-    if (r.status === 400) { setAdminMsg('Invalid PIN (min 4 characters).', 'var(--red)'); return; }
-    if (!r.ok) { setAdminMsg('Failed to set PIN (HTTP ' + r.status + ').', 'var(--red)'); return; }
-    document.getElementById(inputId).value = '';
-    const cp = document.getElementById('admin-changepin');
-    if (cp) cp.style.display = 'none';
-    setAdminMsg('Admin PIN updated.', 'var(--green)');
-    termPrint(' ADMIN: PIN set.', 'var(--green)');
-    fetchAdminStatus();
-  }).catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
-}
-
-// STATE B: POST /api/admin/login.
-function adminLogin() {
-  const pin = document.getElementById('adm-pin').value;
-  if (!pin) { setAdminMsg('Enter your PIN.', 'var(--red)'); return; }
-  fetch('/api/admin/login', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'pin=' + encodeURIComponent(pin)
-  }).then(r => {
-    document.getElementById('adm-pin').value = '';
-    if (r.status === 401) { setAdminMsg('Incorrect PIN.', 'var(--red)'); return; }
-    if (r.status === 429) { setAdminMsg('Locked — wait a minute and try again.', 'var(--red)'); return; }
-    if (r.status === 409) { setAdminMsg('No PIN set yet. Set one first.', 'var(--red)'); fetchAdminStatus(); return; }
-    if (!r.ok) { setAdminMsg('Login failed (HTTP ' + r.status + ').', 'var(--red)'); return; }
-    setAdminMsg('Logged in.', 'var(--green)');
-    termPrint(' ADMIN: logged in.', 'var(--green)');
-    fetchAdminStatus();
-  }).catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
-}
-
-// STATE C: POST /api/admin/logout.
-function adminLogout() {
-  fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' })
-    .then(() => {
-      setAdminMsg('Logged out.', 'var(--yellow)');
-      termPrint(' ADMIN: logged out.', 'var(--yellow)');
-      fetchAdminStatus();
-    })
-    .catch(e => setAdminMsg('Error: ' + e.message, 'var(--red)'));
-}
-
-function adminChangePinPrompt() {
-  const cp = document.getElementById('admin-changepin');
-  cp.style.display = (cp.style.display === 'block') ? 'none' : 'block';
-  if (cp.style.display === 'block') document.getElementById('adm-changepin-val').focus();
-}
-
-// Submit admin forms on Enter.
-['adm-newpin', 'adm-changepin-val'].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) el.addEventListener('keydown', e => {
-    if (e.key === 'Enter') adminSetPin(id === 'adm-changepin-val' ? 'change' : undefined);
-  });
-});
-(function() {
-  const el = document.getElementById('adm-pin');
-  if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') adminLogin(); });
-})();
-
-// ═══════════════════════════════════════════════════════════════
-//   FIRMWARE UPDATE (OTA)
-// ═══════════════════════════════════════════════════════════════
-
-function setOtaMsg(text, color) {
-  const el = document.getElementById('ota-msg');
-  if (!el) return;
-  el.textContent = text || '';
-  el.style.color = color || 'var(--gray)';
-}
-
-function fetchOtaStatus() {
-  return fetch('/api/ota/status', { credentials: 'same-origin' })
-    .then(r => r.json())
-    .then(d => {
-      const dash = '—';
-      document.getElementById('ota-supported').textContent =
-        d.otaSupported ? 'YES' : 'NO (host build)';
-      document.getElementById('ota-running').textContent =
-        d.running ? 'IN PROGRESS' : 'idle';
-      document.getElementById('ota-boot').textContent = d.boot || dash;
-      document.getElementById('ota-next').textContent = d.next || dash;
-      const stateMsg = document.getElementById('ota-state-msg');
-      if (d.pendingVerify) {
-        stateMsg.textContent = 'New firmware pending verification.';
-        stateMsg.style.color = 'var(--yellow)';
-      } else if (d.error) {
-        stateMsg.textContent = 'Last error: ' + d.error;
-        stateMsg.style.color = 'var(--red)';
-      } else {
-        stateMsg.textContent = '';
-      }
-    })
-    .catch(() => { /* silent */ });
-}
-
-// Upload raw .bin bytes via XHR so we get an upload progress %.
-function otaUpload() {
-  if (otaUploading) return;
-  if (!controlsUnlocked()) { setOtaMsg('Admin login required.', 'var(--red)'); return; }
-  const fileEl = document.getElementById('ota-file');
-  const file = fileEl && fileEl.files && fileEl.files[0];
-  if (!file) { setOtaMsg('Choose a firmware .bin file first.', 'var(--red)'); return; }
-
-  const wrap = document.getElementById('ota-progress-wrap');
-  const bar = document.getElementById('ota-progress-bar');
-  const text = document.getElementById('ota-progress-text');
-  wrap.style.display = 'block';
-  bar.style.width = '0%';
-  text.textContent = '0%';
-  otaUploading = true;
-  document.getElementById('ota-upload-btn').disabled = true;
-  setOtaMsg('Uploading ' + file.name + ' (' + file.size.toLocaleString() + ' bytes)...', 'var(--yellow)');
-
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/ota/upload', true);
-  xhr.withCredentials = true;          // send the HttpOnly session cookie
-  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-
-  xhr.upload.onprogress = function(e) {
-    if (e.lengthComputable) {
-      const pct = Math.round((e.loaded / e.total) * 100);
-      bar.style.width = pct + '%';
-      text.textContent = pct + '%';
-    }
+function otaUpload(){
+  if(otaUploading)return;
+  if(!controlsUnlocked()){setMsg("ota-msg","Admin login required.","err");return;}
+  var fileEl=$("ota-file");var file=fileEl&&fileEl.files&&fileEl.files[0];
+  if(!file){setMsg("ota-msg","Choose a firmware .bin first.","err");return;}
+  var prog=$("ota-prog"),bar=$("ota-bar"),pct=$("ota-pct");
+  prog.style.display="block";bar.style.width="0%";pct.textContent="0%";
+  otaUploading=true;$("ota-upload-btn").disabled=true;
+  setMsg("ota-msg","Uploading "+file.name+" ("+file.size.toLocaleString()+" bytes)…","warn");
+  var xhr=new XMLHttpRequest();
+  xhr.open("POST","/api/ota/upload",true);xhr.withCredentials=true;
+  xhr.setRequestHeader("Content-Type","application/octet-stream");
+  xhr.upload.onprogress=function(e){if(e.lengthComputable){var p=Math.round(e.loaded/e.total*100);bar.style.width=p+"%";pct.textContent=p+"%";}};
+  xhr.onload=function(){
+    otaUploading=false;applyAuthGating();
+    if(xhr.status===200){bar.style.width="100%";pct.textContent="100%";var info={};try{info=JSON.parse(xhr.responseText);}catch(e){}
+      setMsg("ota-msg","Upload complete ("+(info.bytes||file.size)+" bytes). Reboot to apply.","ok");fetchOtaStatus();
+      if(info.rebootRequired&&confirm("Firmware uploaded. Reboot now to apply?"))otaReboot(true);
+    }else if(xhr.status===401){handleAuthExpired();setMsg("ota-msg","Session expired — please log in.","err");}
+    else if(xhr.status===501){setMsg("ota-msg","OTA only available on device (not host build).","err");}
+    else setMsg("ota-msg","Upload failed (HTTP "+xhr.status+").","err");
   };
-
-  xhr.onload = function() {
-    otaUploading = false;
-    applyAuthGating();   // re-evaluate the upload button enabled state
-    if (xhr.status === 200) {
-      bar.style.width = '100%';
-      text.textContent = '100%';
-      let info = {};
-      try { info = JSON.parse(xhr.responseText); } catch (e) {}
-      setOtaMsg('Upload complete (' + (info.bytes || file.size) + ' bytes). Reboot to apply.', 'var(--green)');
-      termPrint(' OTA: upload complete. Reboot to apply.', 'var(--green)');
-      fetchOtaStatus();
-      if (info.rebootRequired && confirm('Firmware uploaded. Reboot now to apply the update?')) {
-        otaReboot(true);
-      }
-    } else if (xhr.status === 401) {
-      handleAuthExpired();
-      setOtaMsg('Session expired — please log in.', 'var(--red)');
-    } else if (xhr.status === 501) {
-      setOtaMsg('OTA only available on device (not in host build).', 'var(--red)');
-    } else {
-      setOtaMsg('Upload failed (HTTP ' + xhr.status + ').', 'var(--red)');
-    }
-  };
-
-  xhr.onerror = function() {
-    otaUploading = false;
-    applyAuthGating();
-    setOtaMsg('Upload failed — network error.', 'var(--red)');
-  };
-
-  xhr.send(file);   // raw bytes as the request body
+  xhr.onerror=function(){otaUploading=false;applyAuthGating();setMsg("ota-msg","Upload failed — network error.","err");};
+  xhr.send(file);
+}
+function otaReboot(skip){
+  if(!controlsUnlocked()){setMsg("ota-msg","Admin login required.","err");return;}
+  if(!skip&&!confirm("Reboot the device now? Any active calls will drop."))return;
+  setMsg("ota-msg","Rebooting device…","warn");
+  fetch("/api/ota/reboot",{method:"POST",credentials:"same-origin"})
+    .then(function(r){if(r.status===401){handleAuthExpired();return;}setMsg("ota-msg","Reboot signal sent. Restarting…","ok");})
+    .catch(function(){setMsg("ota-msg","Reboot signal sent. Restarting…","ok");});
 }
 
-function otaReboot(skipConfirm) {
-  if (!controlsUnlocked()) { setOtaMsg('Admin login required.', 'var(--red)'); return; }
-  if (!skipConfirm && !confirm('Reboot the device now? Any active calls will drop.')) return;
-  setOtaMsg('Rebooting device...', 'var(--yellow)');
-  termPrint(' OTA: reboot requested.', 'var(--yellow)');
-  fetch('/api/ota/reboot', { method: 'POST', credentials: 'same-origin' })
-    .then(r => {
-      if (r.status === 401) { handleAuthExpired(); return; }
-      setOtaMsg('Reboot signal sent. Device is restarting...', 'var(--green)');
-    })
-    .catch(() => {
-      // A dropped connection here is expected — the device is rebooting.
-      setOtaMsg('Reboot signal sent. Device is restarting...', 'var(--green)');
-    });
+/* ════ WIFI ════ */
+function scanWifi(){
+  var st=$("wifi-status");st.textContent="Scanning…";st.style.color="var(--amber)";
+  fetch("/api/wifi/scan").then(function(r){return r.json();}).then(function(d){
+    var nets=d.networks||[];st.textContent="Found "+nets.length+" networks";st.style.color="var(--green)";
+    renderWifi(nets);
+  }).catch(function(e){st.textContent="Scan failed: "+e.message;st.style.color="var(--red)";});
 }
-
-// ═══════════════════════════════════════════════════════════════
-//   WHIMSY — phosphor themes, opt-in audio, terminal easter eggs
-//   (all pure client-side; no backend calls, no external assets)
-// ═══════════════════════════════════════════════════════════════
-
-// ─── PHOSPHOR THEME SWITCHER (persisted) ───
-function applyPhosphor(idx) {
-  phosphorIdx = ((idx % PHOSPHOR_THEMES.length) + PHOSPHOR_THEMES.length) % PHOSPHOR_THEMES.length;
-  const key = PHOSPHOR_THEMES[phosphorIdx];
-  // Remove every theme class, then add the active one (blank = default CGA blue).
-  Object.values(PHOSPHOR_CLASS).forEach(c => { if (c) document.body.classList.remove(c); });
-  if (PHOSPHOR_CLASS[key]) document.body.classList.add(PHOSPHOR_CLASS[key]);
-  const btn = document.getElementById('theme-btn');
-  if (btn) btn.textContent = '[' + PHOSPHOR_LABEL[key] + ']';
-  try { localStorage.setItem('cga.phosphor', key); } catch (e) {}
-}
-function cyclePhosphor() {
-  blip(660);
-  applyPhosphor(phosphorIdx + 1);
-  termPrint(' Phosphor palette: ' + PHOSPHOR_LABEL[PHOSPHOR_THEMES[phosphorIdx]], 'var(--cyan)');
-}
-function restorePhosphor() {
-  let key = 'cga';
-  try { key = localStorage.getItem('cga.phosphor') || 'cga'; } catch (e) {}
-  const i = PHOSPHOR_THEMES.indexOf(key);
-  applyPhosphor(i >= 0 ? i : 0);
-}
-
-// ─── OPT-IN AUDIO (WebAudio, no files, OFF by default, no autoplay) ───
-function ensureAudio() {
-  if (!soundEnabled) return null;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return null;
-  if (!audioCtx) { try { audioCtx = new AC(); } catch (e) { return null; } }
-  if (audioCtx.state === 'suspended') { audioCtx.resume().catch(() => {}); }
-  return audioCtx;
-}
-// A tiny percussive blip — used for clicks (cheap: one oscillator, ~60ms).
-function blip(freq) {
-  const ctx = ensureAudio();
-  if (!ctx) return;
-  const t = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = 'square';
-  osc.frequency.setValueAtTime(freq || 880, t);
-  gain.gain.setValueAtTime(0.0001, t);
-  gain.gain.exponentialRampToValueAtTime(0.06, t + 0.005);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
-  osc.connect(gain); gain.connect(ctx.destination);
-  osc.start(t); osc.stop(t + 0.07);
-}
-// A soft two-tone ring preview (classic 440/480Hz cadence, single short burst).
-function ringPreview() {
-  const ctx = ensureAudio();
-  if (!ctx) { termPrint(' (enable [Sound] to hear the ring preview)', 'var(--dk-gray)'); return; }
-  const t = ctx.currentTime;
-  [440, 480].forEach(f => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(f, t);
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(0.05, t + 0.02);
-    gain.gain.setValueAtTime(0.05, t + 0.55);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
-    osc.connect(gain); gain.connect(ctx.destination);
-    osc.start(t); osc.stop(t + 0.72);
+function renderWifi(nets){
+  var list=$("wifi-list");list.innerHTML="";
+  if(!nets.length){list.innerHTML='<div class="note">No networks found.</div>';return;}
+  nets.forEach(function(n){
+    var ssid=String(n.ssid==null?"":n.ssid);var rssi=Number(n.rssi)||0;var enc=n.encryption||"OPEN";
+    var bars=rssi>-50?"▂▄▆█":rssi>-65?"▂▄▆ ":rssi>-75?"▂▄  ":"▂   ";
+    var row=document.createElement("div");row.className="wifi-net";
+    row.addEventListener("click",function(){selectWifi(ssid);});
+    var s=document.createElement("span");s.className="wifi-ssid";s.textContent=ssid;
+    var m=document.createElement("span");m.className="wifi-meta";m.textContent=bars+" "+rssi+"dBm ["+enc+"]";
+    row.appendChild(s);row.appendChild(m);list.appendChild(row);
   });
 }
-function toggleSound() {
-  soundEnabled = !soundEnabled;
-  const btn = document.getElementById('sound-btn');
-  if (btn) btn.textContent = '[Sound: ' + (soundEnabled ? 'ON' : 'OFF') + ']';
-  try { localStorage.setItem('cga.sound', soundEnabled ? '1' : '0'); } catch (e) {}
-  if (soundEnabled) {
-    ensureAudio();   // create within this user gesture so it's allowed to play
-    blip(880);
-    termPrint(' Audio enabled. Try the "operator" command for a ring preview.', 'var(--green)');
-  } else {
-    termPrint(' Audio muted.', 'var(--gray)');
-  }
+function selectWifi(ssid){selectedSSID=ssid;$("wifi-ssid").textContent=ssid;$("wifi-connect").style.display="block";$("wifi-pw").value="";$("wifi-pw").focus();}
+function cancelWifiConnect(){$("wifi-connect").style.display="none";selectedSSID="";}
+function connectWifi(){
+  var st=$("wifi-status");st.textContent="Connecting to "+selectedSSID+"…";st.style.color="var(--amber)";
+  post("/api/wifi/connect","ssid="+encodeURIComponent(selectedSSID)+"&password="+encodeURIComponent($("wifi-pw").value))
+    .then(function(){st.textContent="Connected to "+selectedSSID+"!";st.style.color="var(--green)";cancelWifiConnect();toast("WiFi connected","ok");})
+    .catch(function(e){st.textContent="Failed: "+e.message;st.style.color="var(--red)";});
 }
-function restoreSound() {
-  let on = false;
-  try { on = localStorage.getItem('cga.sound') === '1'; } catch (e) {}
-  soundEnabled = on;
-  const btn = document.getElementById('sound-btn');
-  if (btn) btn.textContent = '[Sound: ' + (on ? 'ON' : 'OFF') + ']';
-  // NOTE: do NOT create/resume AudioContext here — that would be autoplay.
+function startApMode(){
+  var st=$("wifi-status");st.textContent="Enabling AP Mode…";st.style.color="var(--amber)";
+  fetch("/api/wifi/mode_ap",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"}})
+    .then(function(r){if(r.status===401){handleAuthExpired();throw new Error("session expired");}return r.json();})
+    .then(function(){st.textContent="AP mode set! Rebooting…";st.style.color="var(--green)";})
+    .catch(function(e){st.textContent="Failed: "+e.message;st.style.color="var(--red)";});
 }
-
-// ─── MATRIX RAIN (terminal easter egg; auto-stops, key/click to abort) ───
-function matrixRain() {
-  if (matrixTimer) return;
-  termPrint(' Wake up... following the white rabbit. (press any key to stop)', 'var(--green)');
-  const glyphs = '01<>{}[]#$%&*+=ｦｱｳｴｵｶｷｸｹｺﾅﾆﾇﾉ';
-  let frames = 0;
-  function stop() {
-    if (!matrixTimer) return;
-    clearInterval(matrixTimer); matrixTimer = null;
-    document.removeEventListener('keydown', stop, true);
-    termOutput.removeEventListener('click', stop, true);
-    termPrint(' ...there is no spoon.', 'var(--dk-gray)');
-  }
-  matrixTimer = setInterval(() => {
-    let row = '';
-    const n = 44;
-    for (let i = 0; i < n; i++) row += glyphs[Math.floor(Math.random() * glyphs.length)];
-    termPrint(row, 'var(--green)');
-    if (++frames >= 24) stop();
-  }, 70);
-  document.addEventListener('keydown', stop, true);
-  termOutput.addEventListener('click', stop, true);
+function holdConfigMode(){
+  fetch("/api/configuring",{method:"POST"}).then(function(r){return r.json();})
+    .then(function(d){toast(d.message||"Setup mode held.","ok");}).catch(function(e){toast("Error: "+e.message,"err");});
+}
+function factoryReset(){
+  if(!confirm("Factory reset erases saved Wi-Fi config and reboots into captive-portal setup. Continue?"))return;
+  var st=$("wifi-status");st.textContent="Factory resetting…";st.style.color="var(--red)";
+  fetch("/api/factory-reset",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"confirm=ERASE"})
+    .then(function(r){if(r.status===401){handleAuthExpired();throw new Error("session expired");}return r.json();})
+    .then(function(d){toast(d.message||"Rebooting…","warn");}).catch(function(e){toast("Error: "+e.message,"err");});
 }
 
-// ─── ASCII OPERATOR (about box, rendered into the terminal) ───
-function printOperator() {
-  const art = [
-    "    .-\"\"\"\"\"-.",
-    "   /  _   _  \\     ~ SWITCHBOARD OPERATOR ~",
-    "   |  o   o  |     \"Number, please?\"",
-    "   |    ^    |      .--.__.--.",
-    "    \\  '-'  /      (  patch   )",
-    "     '-...-'        '--.  .--'",
-    "    __|___|__          ||",
-    "   [_O_____O_]     ====[]====",
-    "   /  PBX-1  \\     |  |  |  |",
-  ];
-  art.forEach(l => termPrint(l, 'var(--cyan)'));
-}
+/* ── keyboard shortcuts ── */
+document.addEventListener("keydown",function(e){
+  if(e.key==="F1"){e.preventDefault();openModal("help-modal");}
+  else if(e.key==="F5"){e.preventDefault();refreshNow();}
+  else if(e.key==="F9"){e.preventDefault();openModal("wifi-modal");scanWifi();}
+  else if(e.key==="Escape"){["jack-modal","admin-modal","wifi-modal","help-modal"].forEach(function(id){closeModal(id);});}
+});
+["adm-newpin","adm-changepin-val"].forEach(function(id){var el=$(id);if(el)el.addEventListener("keydown",function(e){if(e.key==="Enter")adminSetPin(id==="adm-changepin-val"?"change":undefined);});});
+(function(){var el=$("adm-pin");if(el)el.addEventListener("keydown",function(e){if(e.key==="Enter")adminLogin();});})();
 
-// ─── 3D WIREFRAME ROTATING TESSERACT ───
-(function() {
-  const canvas = document.getElementById('retro-canvas');
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  let angle = 0;
-
-  // Tesseract vertices (a rotating 4D hypercube projected into 3D)
-  const tesseractVerts = [
-    // Inner cube (scale 0.35)
-    [-0.35, -0.35,  0.35], // 0
-    [ 0.35, -0.35,  0.35], // 1
-    [ 0.35,  0.35,  0.35], // 2
-    [-0.35,  0.35,  0.35], // 3
-    [-0.35, -0.35, -0.35], // 4
-    [ 0.35, -0.35, -0.35], // 5
-    [ 0.35,  0.35, -0.35], // 6
-    [-0.35,  0.35, -0.35], // 7
-    // Outer cube (scale 0.75)
-    [-0.75, -0.75,  0.75], // 8
-    [ 0.75, -0.75,  0.75], // 9
-    [ 0.75,  0.75,  0.75], // 10
-    [-0.75,  0.75,  0.75], // 11
-    [-0.75, -0.75, -0.75], // 12
-    [ 0.75, -0.75, -0.75], // 13
-    [ 0.75,  0.75, -0.75], // 14
-    [-0.75,  0.75, -0.75], // 15
-  ];
-
-  // Edges
-  const tesseractEdges = [
-    // Inner cube
-    [0,1],[1,2],[2,3],[3,0],
-    [4,5],[5,6],[6,7],[7,4],
-    [0,4],[1,5],[2,6],[3,7],
-    // Outer cube
-    [8,9],[9,10],[10,11],[11,8],
-    [12,13],[13,14],[14,15],[15,12],
-    [8,12],[9,13],[10,14],[11,15],
-    // Connecting inner to outer
-    [0,8],[1,9],[2,10],[3,11],
-    [4,12],[5,13],[6,14],[7,15],
-  ];
-
-  function project(x, y, z) {
-    const fov = 3.0;
-    const dist = fov + z;
-    const scale = fov / dist * (W * 0.38);
-    return [W/2 + x * scale, H/2 + y * scale];
-  }
-
-  function rotateY(v, a) {
-    const cos = Math.cos(a), sin = Math.sin(a);
-    return [v[0]*cos + v[2]*sin, v[1], -v[0]*sin + v[2]*cos];
-  }
-
-  function rotateX(v, a) {
-    const cos = Math.cos(a), sin = Math.sin(a);
-    return [v[0], v[1]*cos - v[2]*sin, v[1]*sin + v[2]*cos];
-  }
-
-  function drawTesseract() {
-    ctx.clearRect(0, 0, W, H);
-
-    // Starfield background
-    ctx.fillStyle = 'rgba(0, 0, 40, 1)';
-    ctx.fillRect(0, 0, W, H);
-
-    // Twinkling stars
-    const starSeed = Math.floor(Date.now() / 500);
-    for (let i = 0; i < 30; i++) {
-      const sx = ((i * 7919 + starSeed * 13) % W);
-      const sy = ((i * 6271 + starSeed * 7) % H);
-      const brightness = ((i * 3571 + starSeed) % 3 === 0) ? 0.8 : 0.3;
-      ctx.fillStyle = 'rgba(255,255,255,' + brightness + ')';
-      ctx.fillRect(sx, sy, 1, 1);
-    }
-
-    // Transform and project vertices
-    const tiltX = 0.35;
-    const projected = tesseractVerts.map(v => {
-      let rv = rotateX(v, tiltX);
-      rv = rotateY(rv, angle);
-      return project(rv[0], rv[1], rv[2]);
-    });
-
-    // Draw edges with cyan glow
-    ctx.shadowColor = '#55FFFF';
-    ctx.shadowBlur = 4;
-    ctx.strokeStyle = '#55FFFF';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    tesseractEdges.forEach(([a, b]) => {
-      ctx.moveTo(projected[a][0], projected[a][1]);
-      ctx.lineTo(projected[b][0], projected[b][1]);
-    });
-    ctx.stroke();
-
-    // Draw vertices as dots
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = '#FFFFFF';
-    projected.forEach(p => {
-      ctx.beginPath();
-      ctx.arc(p[0], p[1], 1.5, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    ctx.shadowBlur = 0;
-
-    // Glowing orbital ring around center
-    const haloPhase = Date.now() * 0.001;
-    const haloOpacity = 0.15 + 0.1 * Math.sin(haloPhase * 2);
-    ctx.strokeStyle = 'rgba(255, 255, 85, ' + haloOpacity + ')';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    // Center tesseract halo
-    const haloCenter3D = rotateY(rotateX([0, 0, 0], tiltX), angle);
-    const hc = project(haloCenter3D[0], haloCenter3D[1], haloCenter3D[2]);
-    ctx.arc(hc[0], hc[1], 35, 0, Math.PI * 2);
-    ctx.stroke();
-
-    angle += 0.008;
-    requestAnimationFrame(drawTesseract);
-  }
-
-  drawTesseract();
-})();
-
-// ─── INIT ───
-restorePhosphor();          // apply persisted palette before first paint settles
-restoreSound();             // restore the toggle label (does NOT start audio)
-bootSequence();
-bootFlourish();             // one quick, skippable typewriter line on top
-// Subtle click blip on any button press (only audible once Sound is enabled).
-document.addEventListener('click', function(e) {
-  if (e.target && e.target.closest && e.target.closest('button')) blip(720);
-}, true);
-fetchStatus();
-fetchAdminStatus();
-fetchOtaStatus();
-setInterval(fetchStatus, 3000);
-// Re-check auth + OTA state periodically (e.g. session lapses, OTA progress).
-setInterval(fetchAdminStatus, 15000);
-setInterval(() => { if (!otaUploading) fetchOtaStatus(); }, 15000);
-oracleInterval = setInterval(updateOracle, 12000);
-
-// Focus terminal on load (desktop only — avoid popping the mobile keyboard)
-if (!IS_TOUCH) setTimeout(() => termInput.focus(), 100);
-
+/* ── init ── */
+restoreTheme();
+fetchStatus();fetchCdr();fetchAdminStatus();fetchOtaStatus();
+setInterval(fetchStatus,2000);
+setInterval(fetchCdr,5000);
+setInterval(fetchAdminStatus,15000);
+setInterval(function(){if(!otaUploading)fetchOtaStatus();},15000);
 </script>
 </body>
 </html>
-)rawhtml";
+)html3"
+;
 
 #endif // INDEX_HTML_H
