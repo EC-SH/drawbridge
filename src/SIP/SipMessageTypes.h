@@ -18,8 +18,16 @@ public:
 	static constexpr auto ACK                = "ACK";
 	static constexpr auto BYE                = "BYE";
 	static constexpr auto OPTIONS            = "OPTIONS";
+	// Blind transfer (RFC 3515). REFER carries a Refer-To target; the transferor
+	// is acknowledged with 202 Accepted and progress is reported back via NOTIFY.
+	static constexpr auto REFER              = "REFER";
+	static constexpr auto NOTIFY             = "NOTIFY";
+	// Instant message (RFC 3428). Inbound MESSAGEs (delivery receipts / IMs) are
+	// acked with 200 OK for hygiene; the server never originates a MESSAGE.
+	static constexpr auto MESSAGE            = "MESSAGE";
 	static constexpr auto NOT_FOUND          = "SIP/2.0 404 Not Found";
 	static constexpr auto BAD_REQUEST        = "SIP/2.0 400 Bad Request";
+	static constexpr auto ACCEPTED           = "SIP/2.0 202 Accepted";
 };
 
 #endif

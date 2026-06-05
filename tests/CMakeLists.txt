@@ -18,6 +18,7 @@ add_executable(sip_parser_tests
     SipMessage_test.cpp
     SipMessage_header_test.cpp
     SipStatus_test.cpp
+    Pbx_test.cpp
     ../src/SIP/SipMessage.cpp
     ../src/SIP/SipStatus.cpp
 )

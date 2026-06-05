@@ -24,6 +24,11 @@ void SipClient::reset(std::string number, sockaddr_in address, int expiresSecond
 	_lastPingTime = std::chrono::steady_clock::now() - std::chrono::seconds(30);
 }
 
+void SipClient::release()
+{
+	_number.clear();
+}
+
 bool SipClient::isExpired(std::chrono::steady_clock::time_point now) const
 {
 	return now >= _expiresAt;

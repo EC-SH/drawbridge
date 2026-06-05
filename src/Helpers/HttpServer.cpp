@@ -385,6 +385,42 @@ void HttpServer::handleClient(int clientSock)
 			sendApiDnd(clientSock, req.body);
 		}
 	}
+	else if (req.method == "POST" && req.path == "/api/forward")
+	{
+		// Mutating: same gate as /api/dnd (same-origin + auth once provisioned).
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
+		else
+		{
+			sendApiForward(clientSock, req.body);
+		}
+	}
+	else if (req.method == "POST" && req.path == "/api/group")
+	{
+		// Mutating: same gate as /api/dnd (same-origin + auth once provisioned).
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
+		else
+		{
+			sendApiGroup(clientSock, req.body);
+		}
+	}
 	else if (req.method == "GET" && req.path == "/api/wifi/scan")
 	{
 		sendApiWifiScan(clientSock);
@@ -658,6 +694,8 @@ void HttpServer::sendApiStatus(int sock)
 	std::vector<std::pair<std::string, std::string>> clients;
 	std::vector<std::tuple<std::string, std::string, std::string, int>> sessions;
 	std::vector<std::string> dndExtensions;
+	std::vector<std::tuple<std::string, std::string, std::string, std::string>> forwards;
+	std::vector<std::tuple<std::string, std::string, std::string>> ringGroups;
 	uint64_t packets = 0;
 	uint64_t dropped = 0;
 
@@ -666,6 +704,8 @@ void HttpServer::sendApiStatus(int sock)
 		clients = _handler->getActiveClients();
 		sessions = _handler->getActiveSessions();
 		dndExtensions = _handler->getDndExtensions();
+		forwards = _handler->getForwards();
+		ringGroups = _handler->getRingGroups();
 		packets = _handler->getPacketsProcessed();
 		dropped = _handler->getPacketsDropped();   // Issue #38
 	}
@@ -727,6 +767,29 @@ void HttpServer::sendApiStatus(int sock)
 	{
 		if (i > 0) json << ",";
 		json << "\"" << jsonEscape(dndExtensions[i]) << "\"";
+	}
+	json << "],";
+
+	// Call-forward array (Class A sweep): per-extension always/busy/noanswer targets.
+	json << "\"forwards\":[";
+	for (size_t i = 0; i < forwards.size(); i++)
+	{
+		if (i > 0) json << ",";
+		json << "{\"extension\":\"" << jsonEscape(std::get<0>(forwards[i]))
+		     << "\",\"always\":\""   << jsonEscape(std::get<1>(forwards[i]))
+		     << "\",\"busy\":\""     << jsonEscape(std::get<2>(forwards[i]))
+		     << "\",\"noanswer\":\"" << jsonEscape(std::get<3>(forwards[i])) << "\"}";
+	}
+	json << "],";
+
+	// Ring/hunt-group array (Class A sweep): group ext, mode, comma-joined members.
+	json << "\"groups\":[";
+	for (size_t i = 0; i < ringGroups.size(); i++)
+	{
+		if (i > 0) json << ",";
+		json << "{\"extension\":\"" << jsonEscape(std::get<0>(ringGroups[i]))
+		     << "\",\"mode\":\""     << jsonEscape(std::get<1>(ringGroups[i]))
+		     << "\",\"members\":\""  << jsonEscape(std::get<2>(ringGroups[i])) << "\"}";
 	}
 	json << "]";
 
@@ -827,6 +890,82 @@ void HttpServer::sendApiDnd(int sock, const std::string& body)
 	sendResponse(sock, 200, "OK", "application/json",
 	             "{\"status\":\"ok\",\"extension\":\"" + jsonEscape(ext) +
 	             "\",\"dnd\":" + (enable ? "true" : "false") + "}");
+}
+
+void HttpServer::sendApiForward(int sock, const std::string& body)
+{
+	// Params: extension, trigger ("always"|"busy"|"noanswer"), target (empty=clear).
+	std::string ext     = getFormParam(body, "extension");
+	std::string trigger = getFormParam(body, "trigger");
+	std::string target  = getFormParam(body, "target");
+
+	if (ext.empty() || trigger.empty())
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"missing extension or trigger parameter\"}");
+		return;
+	}
+	if (trigger != "always" && trigger != "busy" && trigger != "noanswer")
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"trigger must be always|busy|noanswer\"}");
+		return;
+	}
+	if (ext == "777" || ext == "999")
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"cannot forward a virtual extension\"}");
+		return;
+	}
+
+	if (_handler != nullptr)
+	{
+		_handler->setForward(ext, trigger, target);
+	}
+
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"extension\":\"" + jsonEscape(ext) +
+	             "\",\"trigger\":\"" + jsonEscape(trigger) +
+	             "\",\"target\":\"" + jsonEscape(target) + "\"}");
+}
+
+void HttpServer::sendApiGroup(int sock, const std::string& body)
+{
+	// Params: extension (group ext), members (comma/space list), mode ("ringall"|"hunt").
+	// An empty member list deletes the group.
+	std::string ext     = getFormParam(body, "extension");
+	std::string members = getFormParam(body, "members");
+	std::string mode    = getFormParam(body, "mode");
+
+	if (ext.empty())
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"missing extension parameter\"}");
+		return;
+	}
+	if (ext == "777" || ext == "999")
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"cannot use a reserved extension as a group\"}");
+		return;
+	}
+	if (mode.empty()) mode = "ringall";
+	if (mode != "ringall" && mode != "hunt")
+	{
+		sendResponse(sock, 400, "Bad Request", "application/json",
+		             "{\"error\":\"mode must be ringall|hunt\"}");
+		return;
+	}
+
+	if (_handler != nullptr)
+	{
+		_handler->setRingGroup(ext, members, mode);
+	}
+
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"extension\":\"" + jsonEscape(ext) +
+	             "\",\"mode\":\"" + jsonEscape(mode) +
+	             "\",\"members\":\"" + jsonEscape(members) + "\"}");
 }
 
 bool HttpServer::isSameOrigin(const HttpRequest& req) const

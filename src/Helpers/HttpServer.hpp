@@ -62,6 +62,10 @@ private:
 	void sendApiCdr(int sock);
 	// Phase 2: set per-extension Do Not Disturb. Mutating (same-origin + auth gated).
 	void sendApiDnd(int sock, const std::string& body);
+	// Class A sweep: set per-extension call forwarding (always/busy/noanswer) and
+	// configure ring/hunt groups. Mutating (same-origin + auth gated), mirroring DND.
+	void sendApiForward(int sock, const std::string& body);
+	void sendApiGroup(int sock, const std::string& body);
 	void sendApiWifiScan(int sock);
 	void sendApiWifiConnect(int sock, const std::string& body);
 	void sendApiWifiModeAp(int sock);

@@ -50,4 +50,14 @@
 #define POCKETDIAL_MSG_POOL POCKETDIAL_MAX_CLIENTS
 #endif
 
+// Maximum number of concurrent server-originated "register beep" dialogs. Each new
+// REGISTER fires a brief signaling-only auto-answer INVITE (the phone's intercom
+// tone) that is ACK/BYE'd straight back down; this caps how many such short-lived
+// outbound UAC dialogs can be in flight at once. Tiny by design — a beep is cosmetic,
+// so if every slot is busy a registration simply skips its beep. Each slot is a small
+// fixed record (no heap), so this stays cheap even on the constrained node.
+#ifndef POCKETDIAL_MAX_BEEPS
+#define POCKETDIAL_MAX_BEEPS 4
+#endif
+
 #endif

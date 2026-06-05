@@ -21,6 +21,7 @@ public:
 	SipClient(std::string number, sockaddr_in address, int expiresSeconds = 3600);
 
 	void reset(std::string number, sockaddr_in address, int expiresSeconds);
+	void release();
 
 	bool operator==(const SipClient& other) const;
 

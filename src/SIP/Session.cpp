@@ -22,6 +22,12 @@ void Session::reset(std::string callID, std::shared_ptr<SipClient> src)
 	_isBroadcast = false;
 	_pendingTargets.clear();
 	_inviteMessage.reset();
+	_ringTimerArmed = false;
+	_noAnswerTarget.clear();
+	_huntActive = false;
+	_huntMembers.clear();
+	_huntIndex = 0;
+	_groupExt.clear();
 }
 
 void Session::setState(State state)
@@ -92,4 +98,10 @@ void Session::release()
 	_isBroadcast = false;
 	_pendingTargets.clear();
 	_inviteMessage.reset();
+	_ringTimerArmed = false;
+	_noAnswerTarget.clear();
+	_huntActive = false;
+	_huntMembers.clear();
+	_huntIndex = 0;
+	_groupExt.clear();
 }
