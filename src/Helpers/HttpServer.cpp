@@ -151,9 +151,29 @@ void HttpServer::acceptLoop()
 		}
 
 		// Dispatch client handling in a detached thread context to prevent DoS connection stalls.
-		std::thread([this, clientSock]() {
-			handleClient(clientSock);
-		}).detach();
+		// std::thread's constructor THROWS std::system_error if the underlying task can't be
+		// created (transient heap/task-limit pressure — e.g. the dashboard polling every 2s
+		// while SIP traffic churns the heap). An uncaught throw here runs on the accept-loop
+		// pthread and calls std::terminate()/abort(), rebooting the whole device. Catch it and
+		// drop just this one connection so the server keeps serving instead of crashing.
+		try
+		{
+			std::thread([this, clientSock]() {
+				handleClient(clientSock);
+			}).detach();
+		}
+		catch (const std::exception& e)
+		{
+			std::cerr << "[HttpServer] connection thread spawn failed: " << e.what()
+				<< " — dropping connection\n";
+#if defined _WIN32 || defined _WIN64
+			closesocket(clientSock);
+#else
+			close(clientSock);
+#endif
+			// Brief backoff so we don't spin-fail under sustained memory pressure.
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		}
 	}
 }
 
