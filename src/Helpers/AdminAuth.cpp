@@ -626,4 +626,27 @@ namespace AdminAuth
 			sess.expiresAtMs = 0;
 		}
 	}
+
+	// credentialIsSet: lightweight NVS probe used by the boot provisioning gate.
+	// Opens NVS namespace "storage", reads key "admin_hash" as a string, and
+	// returns true iff the string is non-empty. Closes the handle on exit.
+	// On non-ESP builds it delegates to the in-memory isProvisioned() so the
+	// host unit tests exercise the same logic path.
+	bool credentialIsSet()
+	{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+		nvs_handle_t h;
+		if (nvs_open("storage", NVS_READONLY, &h) != ESP_OK)
+		{
+			return false;
+		}
+		char hashBuf[128] = {0};
+		size_t hashLen = sizeof(hashBuf);
+		esp_err_t err = nvs_get_str(h, "admin_hash", hashBuf, &hashLen);
+		nvs_close(h);
+		return (err == ESP_OK && hashBuf[0] != '\0');
+#else
+		return isProvisioned();
+#endif
+	}
 }

@@ -12,6 +12,7 @@
 #include "PoolConfig.hpp"
 #include "CallDetailRecord.hpp"
 #include "PbxConfig.hpp"
+#include "AdminAuth.hpp"
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	// PBX config (call-forward / ring groups) and the persistent CDR ring live in
@@ -21,6 +22,9 @@
 	// load*/persist* helpers at the bottom of this file).
 	#include "nvs_flash.h"
 	#include "nvs.h"
+	#include "esp_sntp.h"
+	#include "esp_system.h"
+	#include "esp_idf_version.h"
 #endif
 
 std::vector<std::shared_ptr<SipMessage>> RequestsHandler::_messagePool;
@@ -81,6 +85,8 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	// (no handler is dispatching yet), so these run without holding _mutex.
 	loadPbxConfig();
 	loadCdrRing();
+	// Task 2B: load the admin extension from NVS (defaults to "101" if absent).
+	loadAdminExt();
 }
 
 std::shared_ptr<SipMessage> RequestsHandler::getMessageFromPool(std::string message, sockaddr_in src)
@@ -179,11 +185,63 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 				+ std::string(request->getHeader()), !status->softFail);
 		}
 
-		auto it = _handlers.find(handlerKey);
-		if (it != _handlers.end())
+		// Task 2C: SIP INFO with DTMF relay body — handle before the handler table
+		// so it is never mistakenly forwarded by a catch-all entry.
+		if (handlerKey == "INFO")
 		{
-			it->second(std::move(request));
+			// Scan headers for Content-Type: application/dtmf-relay.
+			const std::string& rawMsg = request->toString();
+			bool isDtmfRelay = false;
+			{
+				size_t pos = 0;
+				while (pos < rawMsg.size())
+				{
+					size_t nl = rawMsg.find('\n', pos);
+					size_t next = (nl == std::string::npos) ? rawMsg.size() : nl + 1;
+					// Header/body boundary: blank line.
+					if (pos < rawMsg.size() && (rawMsg[pos] == '\r' || rawMsg[pos] == '\n')) break;
+					// Case-insensitive match for "content-type:" (13 chars).
+					if ((rawMsg[pos] == 'c' || rawMsg[pos] == 'C') && (next - pos) >= 13)
+					{
+						std::string nameLC = rawMsg.substr(pos, 13);
+						std::transform(nameLC.begin(), nameLC.end(), nameLC.begin(),
+							[](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+						if (nameLC == "content-type:")
+						{
+							size_t valEnd = (nl == std::string::npos) ? rawMsg.size() : nl;
+							std::string val = rawMsg.substr(pos + 13, valEnd - (pos + 13));
+							if (val.find("application/dtmf-relay") != std::string::npos)
+							{
+								isDtmfRelay = true;
+							}
+							break;
+						}
+					}
+					pos = next;
+				}
+			}
+			// Always 200 OK a SIP INFO (RFC 6086 §4.2.1).
+			{
+				auto infoOk = getMessageFromPool(request->toString(), request->getSource());
+				infoOk->setHeader(SipMessageTypes::OK);
+				std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+				infoOk->setVia(std::string(request->getVia()) + ";received=" + activeIp);
+				_outbox.emplace_back(request->getSource(), std::move(infoOk));
+			}
+			if (isDtmfRelay)
+			{
+				onDtmfInfo(request);
+			}
 		}
+		else
+		{
+			auto it = _handlers.find(handlerKey);
+			if (it != _handlers.end())
+			{
+				it->second(std::move(request));
+			}
+		}
+
 		localOutbox = std::move(_outbox);
 		_outbox.clear();
 
@@ -372,6 +430,20 @@ void RequestsHandler::onReqTerminated(std::shared_ptr<SipMessage> data)
 
 void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 {
+	// Task 2A: Retransmission guard — silently drop if a session for this Call-ID
+	// is already active (Invited or Connected). RFC 3261 §17.2.3: a UAS that receives
+	// a retransmission of a request for which a non-2xx final response has been sent
+	// should retransmit that response; for 2xx, the ACK re-drive handles it. The
+	// simplest safe policy here is a silent drop so we never create a second session
+	// slot for the same dialog, which could exhaust the pool and trigger spurious 503.
+	if (auto existing = getSession(data->getCallID());
+		existing.has_value() &&
+		(existing.value()->getState() == Session::State::Invited ||
+		 existing.value()->getState() == Session::State::Connected))
+	{
+		return; // silent drop per RFC 3261 §17.2.3
+	}
+
 	if (!isValidAor(data->getFromNumber()) || !isValidAor(data->getToNumber()))
 	{
 		auto response = getMessageFromPool(data->toString(), data->getSource());
@@ -2948,4 +3020,345 @@ void RequestsHandler::persistCdrRing()
 		nvs_close(h);
 	}
 #endif
+}
+
+// ── Task 2B: Admin extension NVS key ─────────────────────────────────────────
+
+void RequestsHandler::loadAdminExt()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
+	{
+		return;
+	}
+	char buf[32] = {0};
+	size_t len = sizeof(buf);
+	esp_err_t err = nvs_get_str(h, "admin_ext", buf, &len);
+	nvs_close(h);
+	if (err == ESP_OK && buf[0] != '\0')
+	{
+		_adminExt = buf;
+	}
+	// else: keep the in-class default "101"
+#endif
+}
+
+void RequestsHandler::saveAdminExt(const std::string& ext)
+{
+	_adminExt = ext;
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
+	{
+		nvs_set_str(h, "admin_ext", ext.c_str());
+		nvs_commit(h);
+		nvs_close(h);
+	}
+#endif
+}
+
+std::string RequestsHandler::getAdminExt() const
+{
+	return _adminExt;
+}
+
+// ── Task 2C: DTMF digit-collection state machine + CLASS service codes ────────
+
+void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
+{
+	// --- 1. Parse "Signal=X" from the body -----------------------------------
+	const std::string& raw = data->toString();
+	char digit = 0;
+	{
+		size_t sep = raw.find("\r\n\r\n");
+		if (sep == std::string::npos) sep = raw.find("\n\n");
+		if (sep != std::string::npos)
+		{
+			std::string body = raw.substr(sep);
+			size_t sigPos = body.find("Signal=");
+			if (sigPos == std::string::npos) sigPos = body.find("signal=");
+			if (sigPos != std::string::npos)
+			{
+				size_t valIdx = sigPos + 7; // after "Signal="
+				while (valIdx < body.size() && body[valIdx] == ' ') ++valIdx;
+				if (valIdx < body.size())
+				{
+					digit = body[valIdx];
+				}
+			}
+		}
+	}
+	if (digit == 0)
+	{
+		return; // malformed / no signal — nothing to do
+	}
+
+	// --- 2. Look up or create the per-Call-ID accumulator -------------------
+	std::string callId(data->getCallID());
+	auto& accum = _dtmfState[callId];
+
+	// --- 3. Timeout: reset accumulator if > TIMEOUT_MS since last digit -----
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	TickType_t now = xTaskGetTickCount();
+	uint32_t elapsedMs = (now - accum.lastTick) * portTICK_PERIOD_MS;
+#else
+	uint32_t now = static_cast<uint32_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	uint32_t elapsedMs = (accum.lastTick == 0) ? 0 : (now - accum.lastTick);
+#endif
+	if (accum.lastTick != 0 && elapsedMs > DtmfAccum::TIMEOUT_MS)
+	{
+		accum.digits.clear();
+	}
+	accum.lastTick = now;
+
+	// --- 4. Append digit ----------------------------------------------------
+	accum.digits += digit;
+	const std::string& seq = accum.digits;
+	std::string callerExt(data->getFromNumber());
+
+	// --- 5. Admin menu gate (Task 2C-5): *PIN + 3-digit code ----------------
+	// Pattern: * + PIN(4+) + 3-digit-code  (minimum 8 chars total after '*')
+	// Admin gate fires only when the caller IS the admin extension.
+	if (callerExt == _adminExt && seq.size() >= 8 && seq[0] == '*')
+	{
+		// Try all PIN lengths starting at 4 (minimum) up to seq.size()-4
+		// so we can still fit a 3-char command code.
+		bool adminMatched = false;
+		for (size_t pinLen = 4; pinLen + 3 < seq.size(); ++pinLen)
+		{
+			std::string pinCandidate = seq.substr(1, pinLen);
+			std::string code = seq.substr(1 + pinLen, 3);
+			// Only digits in the PIN.
+			bool allDigits = true;
+			for (char c : pinCandidate)
+			{
+				if (!std::isdigit(static_cast<unsigned char>(c))) { allDigits = false; break; }
+			}
+			if (!allDigits) continue;
+
+			if (!AdminAuth::verifyPin(pinCandidate)) continue;
+
+			// PIN verified — execute the command code.
+			if (code == "001")
+			{
+				// NTP resync (esp_sntp_restart is ESP-IDF v5+; fall back to log if absent)
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+				esp_sntp_restart();
+#else
+				queueLog("[admin] NTP sync requested via DTMF (esp_sntp_restart not available on this IDF version)");
+#endif
+#endif
+				queueLog("[admin] NTP sync requested via DTMF");
+				adminMatched = true;
+			}
+			else if (code == "101")
+			{
+				// Topology switch: toggle wifi_mode between 1 (CLIENT) and 2 (AP).
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+				nvs_handle_t h;
+				if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
+				{
+					uint8_t mode = 1;
+					nvs_get_u8(h, "wifi_mode", &mode);
+					mode = (mode == 1) ? 2 : 1;
+					nvs_set_u8(h, "wifi_mode", mode);
+					nvs_commit(h);
+					nvs_close(h);
+				}
+				queueLog("[admin] topology switch via DTMF, restarting");
+				esp_restart();
+#else
+				queueLog("[admin] topology switch requested (stub on host)");
+#endif
+				adminMatched = true;
+			}
+			else if (code == "200")
+			{
+				// Extension target config stub
+				queueLog("[admin] targets config: dial new ext (stub)");
+				adminMatched = true;
+			}
+			else if (code == "999")
+			{
+				// Factory reset — requires follow-up digit '1' within 5 s.
+				// We reuse the DtmfAccum: if the NEXT digit arriving is '1', execute.
+				// Mark pending by storing a special sentinel in the accumulator.
+				if (seq.size() > 1 + pinLen + 3)
+				{
+					// Extra char after command: check for confirmation '1'
+					char confirm = seq[1 + pinLen + 3];
+					if (confirm == '1')
+					{
+						queueLog("[admin] factory reset confirmed via DTMF");
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+						nvs_flash_erase();
+						esp_restart();
+#else
+						queueLog("[admin] factory reset (stub on host)");
+#endif
+					}
+					else
+					{
+						queueLog("[admin] factory reset: awaiting confirm digit '1'");
+					}
+				}
+				else
+				{
+					queueLog("[admin] factory reset: awaiting confirm digit '1'");
+				}
+				adminMatched = true;
+			}
+
+			if (adminMatched)
+			{
+				accum.digits.clear();
+				return;
+			}
+		}
+
+		// If the sequence starts with *NNNN (4+ digits) but no code matched yet,
+		// and the wrong caller is trying, send 403.
+	}
+	else if (seq.size() >= 2 && seq[0] == '*' && callerExt != _adminExt)
+	{
+		// If it starts with * but the caller is NOT the admin ext and is trying
+		// to use the admin menu (8+ chars), reject.
+		if (seq.size() >= 8)
+		{
+			auto response = getMessageFromPool(data->toString(), data->getSource());
+			response->setHeader("SIP/2.0 403 Forbidden");
+			response->clearBody();
+			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+			response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+			_outbox.emplace_back(data->getSource(), std::move(response));
+			accum.digits.clear();
+			return;
+		}
+	}
+
+	// --- 6. CLASS feature code matching (Task 2C-4) --------------------------
+
+	// *60 — Enable Selective Call Rejection (DND=true) for caller's extension.
+	if (seq == "*60")
+	{
+		// isDndEnabled / setDnd operate on the _dnd map. We're already inside _mutex.
+		if (_dnd.find(callerExt) == _dnd.end() &&
+			_dnd.size() >= static_cast<size_t>(POCKETDIAL_MAX_CLIENTS))
+		{
+			queueLog("*60 SCR: DND table full for " + callerExt, true);
+		}
+		else
+		{
+			_dnd[callerExt] = true;
+			queueLog("*60 SCR enabled for " + callerExt);
+		}
+		accum.digits.clear();
+		return;
+	}
+
+	// *80 — Disable SCR/DND for caller's extension.
+	if (seq == "*80")
+	{
+		_dnd.erase(callerExt);
+		queueLog("*80 SCR disabled for " + callerExt);
+		accum.digits.clear();
+		return;
+	}
+
+	// *73 — Disable CFU for caller's extension.
+	if (seq == "*73")
+	{
+		auto it = _forwards.find(callerExt);
+		if (it != _forwards.end())
+		{
+			it->second.always.clear();
+			if (it->second.empty()) _forwards.erase(it);
+			persistForwards();
+		}
+		queueLog("*73 CFU disabled for " + callerExt);
+		accum.digits.clear();
+		return;
+	}
+
+	// *69 — Speak last-caller extension: redirect call to echo ext 777 and log CDR lookup.
+	if (seq == "*69")
+	{
+		// Find the last CDR entry where callee == callerExt (i.e. last inbound call).
+		std::string lastCaller;
+		for (size_t i = 0; i < _cdrCount; ++i)
+		{
+			size_t idx = (_cdrHead + POCKETDIAL_CDR_RECORDS - 1 - i) % POCKETDIAL_CDR_RECORDS;
+			if (_cdrRing[idx].callee == callerExt && !_cdrRing[idx].caller.empty())
+			{
+				lastCaller = _cdrRing[idx].caller;
+				break;
+			}
+		}
+		if (!lastCaller.empty())
+		{
+			queueLog("*69 last caller for " + callerExt + " is " + lastCaller);
+			// Reroute to extension 777 (echo loopback) so the caller hears tones.
+			// Find the active session for this Call-ID and redirect its RTP to 777.
+			auto session = getSession(callId);
+			if (session.has_value())
+			{
+				_dummyClient->reset("777", session.value()->getSrc()
+					? session.value()->getSrc()->getAddress() : sockaddr_in{}, 3600);
+				session.value()->setDest(_dummyClient);
+			}
+		}
+		else
+		{
+			queueLog("*69 no last caller found for " + callerExt);
+		}
+		accum.digits.clear();
+		return;
+	}
+
+	// *11 — Echo loopback: reroute active call's RTP endpoint to extension 777.
+	if (seq == "*11")
+	{
+		auto session = getSession(callId);
+		if (session.has_value())
+		{
+			auto src = session.value()->getSrc();
+			if (src)
+			{
+				_dummyClient->reset("777", src->getAddress(), 3600);
+				session.value()->setDest(_dummyClient);
+				queueLog("*11 echo loopback for call " + callId);
+			}
+		}
+		accum.digits.clear();
+		return;
+	}
+
+	// *72NNNN — Enable CFU for caller's extension to NNNN (4+ digits after *72).
+	// Requires the full sequence to be collected; we match once it's ≥6 chars and
+	// none of the above shorter patterns matched.
+	if (seq.size() >= 6 && seq[0] == '*' && seq[1] == '7' && seq[2] == '2')
+	{
+		std::string target = seq.substr(3);
+		if (target.size() >= 4 && isValidAor(target))
+		{
+			bool isNew = (_forwards.find(callerExt) == _forwards.end());
+			if (isNew && _forwards.size() >= static_cast<size_t>(POCKETDIAL_MAX_CLIENTS))
+			{
+				queueLog("*72 CFU: forward table full for " + callerExt, true);
+			}
+			else
+			{
+				_forwards[callerExt].always = target;
+				persistForwards();
+				queueLog("*72 CFU enabled: " + callerExt + " -> " + target);
+			}
+			accum.digits.clear();
+			return;
+		}
+		// else: keep accumulating (target not yet 4 digits)
+	}
 }

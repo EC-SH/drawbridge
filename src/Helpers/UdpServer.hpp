@@ -36,6 +36,11 @@ public:
 	using OnNewMessageEvent = std::function<void(std::string, sockaddr_in)>;
 	static constexpr int BUFFER_SIZE = 2048;
 
+	// Back-off constants for socket/bind retry (ESP builds only).
+	// Initial delay 500 ms, doubles each attempt, hard cap at 30 s.
+	static constexpr uint32_t kBackoffInitialMs = 500;
+	static constexpr uint32_t kBackoffMaxMs     = 30000;
+
 	UdpServer(std::string ip, int port, OnNewMessageEvent event);
 	~UdpServer();
 
@@ -46,9 +51,15 @@ private:
 	void closeServer();
 	void receiveLoop();
 
+	// Opens and binds the UDP socket.
+	// ESP builds: retries with exponential back-off until successful — never
+	// throws and never calls esp_restart().
+	// Other platforms: throws std::runtime_error on failure (original behaviour).
+	bool openSocket();
+
 	std::string _ip;
 	int _port;
-	int _sockfd;
+	int _sockfd = -1;
 	sockaddr_in _servaddr;
 	OnNewMessageEvent _onNewMessageEvent;
 	std::atomic<bool> _keepRunning;

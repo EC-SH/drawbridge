@@ -486,6 +486,52 @@ static void system_status_task(void *pvParameters) {
             if (lvgl_lock(100)) {
                 ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount);
                 ui_update_board(board);
+
+                // Supplementary updates for non-switchboard screens (gated so we only pay
+                // the cost of snapshot building when that screen is actually visible)
+                ui_screen_t cur = ui_current_screen();
+                if (cur == SCREEN_TOPOLOGY) {
+                    uint8_t mode = 0;
+                    nvs_handle_t nh;
+                    if (nvs_open("storage", NVS_READONLY, &nh) == ESP_OK) {
+                        nvs_get_u8(nh, "wifi_mode", &mode);
+                        nvs_close(nh);
+                    }
+                    ui_update_topology(g_localIp.c_str(), mode, g_stationNum);
+                } else if (cur == SCREEN_TELEMETRY) {
+                    UiTelemetrySnapshot ts{};
+                    strncpy(ts.ip, g_localIp.c_str(), sizeof(ts.ip) - 1);
+                    ts.wifi_mode     = 0;
+                    ts.session_count = sessionCount;
+                    ts.session_max   = 8;
+                    ts.client_count  = clientCount;
+                    ts.client_max    = 32;
+                    // Read wifi_mode for telemetry
+                    nvs_handle_t nh;
+                    if (nvs_open("storage", NVS_READONLY, &nh) == ESP_OK) {
+                        nvs_get_u8(nh, "wifi_mode", &ts.wifi_mode);
+                        size_t sz = sizeof(ts.ssid);
+                        nvs_get_str(nh, "wifi_ssid", ts.ssid, &sz);
+                        nvs_close(nh);
+                    }
+                    // Pre-format session table
+                    if (g_sipServer) {
+                        RequestsHandler& h = g_sipServer->getHandler();
+                        auto sessions = h.getActiveSessions();
+                        size_t off = 0;
+                        for (const auto& s : sessions) {
+                            if (off >= sizeof(ts.sessions_text) - 40) break;
+                            off += snprintf(ts.sessions_text + off,
+                                sizeof(ts.sessions_text) - off - 1,
+                                "%s%s <-> %s  [%s]",
+                                (off == 0 ? "" : "\n"),
+                                std::get<0>(s).c_str(), std::get<1>(s).c_str(),
+                                std::get<2>(s).c_str());
+                        }
+                    }
+                    ui_update_telemetry(&ts);
+                }
+
                 lvgl_unlock();
             }
 
@@ -674,10 +720,12 @@ extern "C" void app_main(void) {
     char saved_ssid[33] = {0};
     char saved_pass[64] = {0};
 
+    uint8_t provisioned = 0;
     nvs_handle_t nvs_handle;
     if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
         if (nvs_get_u8(nvs_handle, "wifi_mode", &wifi_mode) != ESP_OK) wifi_mode = 0;
         if (nvs_get_u8(nvs_handle, "decayed", &decayed)     != ESP_OK) decayed   = 0;
+        if (nvs_get_u8(nvs_handle, "provisioned", &provisioned) != ESP_OK) provisioned = 0;
         size_t size = sizeof(saved_ssid);
         if (nvs_get_str(nvs_handle, "wifi_ssid", saved_ssid, &size) != ESP_OK) saved_ssid[0] = '\0';
         size = sizeof(saved_pass);
@@ -685,6 +733,26 @@ extern "C" void app_main(void) {
         nvs_close(nvs_handle);
     } else {
         wifi_mode = 0;
+    }
+
+    // Initialize WiFi driver before any wifi_init_softap / wifi_init_sta calls below
+    {
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        esp_wifi_set_ps(WIFI_PS_NONE);
+    }
+
+    // ── Provisioning gate: unprovisioned device boots to setup screen, SIP held dark ──
+    if (!provisioned) {
+        ESP_LOGW(TAG, "[boot] device unprovisioned — directing to provisioning flow (SIP held dark)");
+        // Bring up minimal open AP so the setup screen is accessible (no credentials needed)
+        wifi_init_softap("POCKET-DIAL-SETUP", "", true);
+        g_localIp = "192.168.4.1";
+        if (lvgl_lock(-1)) { ui_navigate_to(SCREEN_PROVISIONING); lvgl_unlock(); }
+        // Status task starts so the screen can update; SIP/HTTP tasks are NOT started.
+        xTaskCreatePinnedToCore(&system_status_task, "status_task", 4096, NULL, 3, NULL, 0);
+        // Spin here — the provisioning screen's topology button writes provisioned=1 and reboots.
+        while (true) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 
     // Consume the one-shot decay flag. If last boot's captive portal timed out, come up in
@@ -700,14 +768,6 @@ extern "C" void app_main(void) {
     }
 
     ESP_LOGI(TAG, "Persisted Network settings: Mode=%d, SSID=%s, decayed=%d", wifi_mode, saved_ssid, decayed);
-
-    // Initialize base WiFi configuration
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    // Disable modem-sleep power save: it adds escalating latency (tens of ms, climbing
-    // between DTIM beacons) that made the web dashboard feel unreachable. Keep the radio
-    // hot so HTTP/SIP stay responsive.
-    esp_wifi_set_ps(WIFI_PS_NONE);
 
     // Boot priority: explicit Standalone (or a transient decay) -> Standalone AP;
     // else saved STATION creds -> try to join as client (fall back to captive portal);

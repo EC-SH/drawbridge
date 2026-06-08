@@ -6,6 +6,8 @@
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 #include <lwip/sockets.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #elif defined(__linux__)
 #include <netinet/in.h>
 #elif defined _WIN32 || defined _WIN64
@@ -14,6 +16,7 @@
 
 #include <functional>
 #include <unordered_map>
+#include <string>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -91,6 +94,11 @@ public:
 	void setRingGroup(const std::string& groupExt, const std::string& members, const std::string& mode);
 	std::vector<std::tuple<std::string, std::string, std::string>> getRingGroups();
 
+	// ── Admin extension (Task 2B) ─────────────────────────────────────────────────
+	// NVS-persisted extension identity for the administrative endpoint.
+	// Default "101". Loaded from NVS namespace "pbxcfg", key "admin_ext" at boot.
+	std::string getAdminExt() const;
+
 private:
 	void initHandlers();
 
@@ -109,6 +117,13 @@ private:
 	void onAck(std::shared_ptr<SipMessage> data);
 	void onRefer(std::shared_ptr<SipMessage> data);   // blind transfer (RFC 3515)
 	void onMessage(std::shared_ptr<SipMessage> data); // inbound MESSAGE (RFC 3428): ack 200 OK
+
+	// ── DTMF SIP INFO handler (Task 2C) ──────────────────────────────────────────
+	// Invoked from handle() when a SIP INFO arrives carrying
+	// Content-Type: application/dtmf-relay. Parses the Signal= digit, updates the
+	// per-Call-ID accumulator, and dispatches CLASS feature code actions.
+	// Called from the single-threaded SIP handler path — no additional mutex needed.
+	void onDtmfInfo(std::shared_ptr<SipMessage> data);
 
 	// ── Register beep (signaling-only intercom tone) ─────────────────────────────
 	// On a NEW registration, send the registering phone a brief auto-answer INVITE so
@@ -338,6 +353,28 @@ private:
 	std::chrono::steady_clock::time_point _lastTick{};
 
 	std::vector<std::pair<bool, std::string>> _logQueue;
+
+	// ── Admin extension (Task 2B) ─────────────────────────────────────────────────
+	// NVS-persisted extension identity for the administrative endpoint.
+	// Default "101". Loaded from NVS namespace "pbxcfg", key "admin_ext" at boot.
+	std::string _adminExt{"101"};
+	void loadAdminExt();
+	void saveAdminExt(const std::string& ext);
+
+	// ── DTMF digit-collection state machine (Task 2C) ────────────────────────────
+	// Per-Call-ID accumulator. Accessed only from the single-threaded UDP receiver
+	// task (the same path that calls handle()), so no additional mutex is needed.
+	struct DtmfAccum
+	{
+		std::string digits;          // accumulated digit string
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+		TickType_t  lastTick{0};     // xTaskGetTickCount() of last digit
+#else
+		uint32_t    lastTick{0};     // monotonic ms counter on host
+#endif
+		static constexpr uint32_t TIMEOUT_MS = 5000;
+	};
+	std::unordered_map<std::string, DtmfAccum> _dtmfState;
 };
 
 #endif

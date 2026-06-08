@@ -52,12 +52,51 @@ struct UiBoardSnapshot {
     int     patchCount;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-screen navigation (Task 3A)
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef enum {
+    SCREEN_SWITCHBOARD = 0,
+    SCREEN_PROVISIONING,
+    SCREEN_TOPOLOGY,
+    SCREEN_TELEMETRY,
+    SCREEN_PERIMETER,
+    SCREEN_COUNT
+} ui_screen_t;
+
+void ui_navigate_to(ui_screen_t screen);
+ui_screen_t ui_current_screen(void);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Telemetry snapshot (Task 3D)
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef struct {
+    char ip[20];
+    char gateway[20];
+    char netmask[20];
+    char dns[20];
+    char ssid[33];
+    uint8_t wifi_mode;
+    int session_count;
+    int session_max;
+    int client_count;
+    int client_max;
+    char sessions_text[512]; // pre-formatted session table
+} UiTelemetrySnapshot;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Initialize the LVGL switchboard interface (header, status strip, jack board,
 // patch strip, operator-log ticker, and the QR/reboot/onboarding modals).
 void ui_init(void);
 
-// Transition between Onboarding Setup Mode and the main switchboard. In onboarding
-// mode the scannable Wi-Fi QR join code + setup instructions cover the board.
+// Transition between Onboarding/Provisioning mode and the main switchboard.
+// In provisioning mode ui_navigate_to(SCREEN_PROVISIONING) is called.
+// Signature unchanged so esp_main_display.cpp compiles without modification.
 void ui_set_onboarding_mode(bool onboarding, const char* ssid = "My-Ap", const char* pass = "12345678");
 
 // Update the compact status strip (IP:port, EXT n/32, active CALLS) and the header
@@ -70,8 +109,17 @@ void ui_update_status(const std::string& ip, int uptimeSec, int stationNum, int 
 void ui_update_board(const UiBoardSnapshot& snap);
 
 // Append one line to the operator-log ticker (append-only, bounded; does NOT trigger
-// a full-screen repaint under the partial-refresh display driver).
+// a full-screen repaint under the partial-refresh display driver). Also feeds the
+// 32-line telemetry log ring buffer.
 void ui_add_log(const char* line);
+
+// Update topology screen widgets (called from system_status_task when SCREEN_TOPOLOGY
+// is active; already called under s_lvgl_mux).
+void ui_update_topology(const char *ip, uint8_t mode, int clients);
+
+// Update telemetry screen widgets (called from system_status_task when SCREEN_TELEMETRY
+// is active; already called under s_lvgl_mux).
+void ui_update_telemetry(const UiTelemetrySnapshot *snap);
 
 // Header battery/aux indicator (kept for source compatibility; folded into header).
 void ui_set_battery(float volts, int percent);
