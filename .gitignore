@@ -69,3 +69,10 @@ dependencies.lock
 scratch/
 serial_log.txt
 post_issue_comments.ps1
+
+# Code-review fixes session scratch (added 2026-06-08)
+build_*.log
+.claude/
+# Smoke-test tooling: keep the reusable scripts, ignore generated images/logs
+.smoke/*
+!.smoke/*.py

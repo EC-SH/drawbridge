@@ -275,17 +275,11 @@ extern "C" void app_main(void)
     xTaskCreatePinnedToCore(log_drain_task, "log_drain", 2048, nullptr, 1, nullptr, 0);
 
     // ── Networking stack ────────────────────────────────────────────────
-    esp_err_t err;
-
-    err = esp_netif_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_netif_init failed (%d) — continuing anyway", err);
-    }
-
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_event_loop_create_default failed (%d) — continuing anyway", err);
-    }
+    // netif + default event loop are non-retryable boot prerequisites; abort on failure
+    // (matching the display build) rather than logging and then crashing deeper on an
+    // uninitialized stack. UdpServer's socket back-off is the recoverable-retry layer.
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     s_eth_event_group = xEventGroupCreate();
 

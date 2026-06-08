@@ -248,17 +248,13 @@ extern "C" void app_main(void)
     xTaskCreatePinnedToCore(log_drain_task, "log_drain", 2048, nullptr, 1, nullptr, 0);
 
     // ── Networking stack init ────────────────────────────────────────────────
-    esp_err_t err;
-
-    err = esp_netif_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_netif_init failed (%d) — continuing anyway", err);
-    }
-
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_event_loop_create_default failed (%d) — continuing anyway", err);
-    }
+    // netif + default event loop are non-retryable boot prerequisites: if they fail the
+    // Wi-Fi/lwIP stack cannot come up at all. Aborting here (matching the display build)
+    // is correct — logging and continuing only defers the failure to a murkier crash
+    // inside esp_wifi_init()/esp_netif_create_default_* on an uninitialized stack. The
+    // recoverable, retry-with-backoff layer is the UDP socket in UdpServer, not this.
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     // ── Task 1D: read topology from NVS ─────────────────────────────────────
     uint8_t topology_mode = TOPOLOGY_INFRA;  // default: INFRA (AP + DHCP)
@@ -279,6 +275,12 @@ extern "C" void app_main(void)
         sip_ip = wifi_init_sta();
         if (sip_ip.empty()) {
             ESP_LOGE(TAG, "[boot] CLIENT: no IP — falling back to INFRA");
+            // wifi_init_sta() already called esp_wifi_init() (and possibly esp_wifi_start()).
+            // Tear the driver back down before the INFRA path calls esp_wifi_init() again;
+            // a second init without an intervening deinit returns ESP_ERR_WIFI_INIT_STATE
+            // and the ESP_ERROR_CHECK inside wifi_init_softap() would abort → boot loop.
+            esp_wifi_stop();    // returns ESP_ERR_WIFI_NOT_STARTED if STA never started; ignored
+            esp_wifi_deinit();
             topology_mode = TOPOLOGY_INFRA;
         }
     }

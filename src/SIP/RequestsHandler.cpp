@@ -200,16 +200,16 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 					size_t next = (nl == std::string::npos) ? rawMsg.size() : nl + 1;
 					// Header/body boundary: blank line.
 					if (pos < rawMsg.size() && (rawMsg[pos] == '\r' || rawMsg[pos] == '\n')) break;
-					// Case-insensitive match for "content-type:" (13 chars).
-					if ((rawMsg[pos] == 'c' || rawMsg[pos] == 'C') && (next - pos) >= 13)
+					// Header name = text before the first ':' (RFC 3261: no WS before colon).
+					size_t colon = rawMsg.find(':', pos); if (colon != std::string::npos && colon < ((nl == std::string::npos) ? rawMsg.size() : nl))
 					{
-						std::string nameLC = rawMsg.substr(pos, 13);
+						std::string nameLC = rawMsg.substr(pos, colon - pos);
 						std::transform(nameLC.begin(), nameLC.end(), nameLC.begin(),
 							[](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-						if (nameLC == "content-type:")
+						if (nameLC == "content-type" || nameLC == "c")
 						{
 							size_t valEnd = (nl == std::string::npos) ? rawMsg.size() : nl;
-							std::string val = rawMsg.substr(pos + 13, valEnd - (pos + 13));
+							std::string val = rawMsg.substr(colon + 1, valEnd - (colon + 1));
 							if (val.find("application/dtmf-relay") != std::string::npos)
 							{
 								isDtmfRelay = true;
@@ -1617,6 +1617,10 @@ bool RequestsHandler::setCallState(std::string_view callID, Session::State state
 
 void RequestsHandler::endCall(std::string_view callID, std::string_view srcNumber, std::string_view destNumber, std::string_view reason)
 {
+	// DTMF accumulators are keyed by Call-ID and share the dialog lifecycle; drop
+	// this dialog's entry so _dtmfState can't grow unbounded across calls (Fix #4).
+	_dtmfState.erase(std::string(callID));
+
 	// Capture the session (for CDR start time / final state) BEFORE we erase it.
 	std::shared_ptr<Session> ending;
 	auto sit = _sessions.find(std::string(callID));
@@ -2260,6 +2264,14 @@ void RequestsHandler::tick()
 		_outbox.clear();
 
 		sweepExpired();
+
+		// Belt-and-suspenders (Fix #4): drop DTMF accumulators whose dialog is gone,
+		// in case a teardown path bypassed endCall(). Bounded by the small session pool.
+		for (auto dit = _dtmfState.begin(); dit != _dtmfState.end(); )
+		{
+			if (_sessions.find(dit->first) == _sessions.end()) dit = _dtmfState.erase(dit);
+			else ++dit;
+		}
 
 		// No-answer timers (CFNA + hunt-group progression). Poll the armed sessions
 		// and act on any that have run past their ring deadline without connecting.
@@ -3122,24 +3134,34 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 	// --- 5. Admin menu gate (Task 2C-5): *PIN + 3-digit code ----------------
 	// Pattern: * + PIN(4+) + 3-digit-code  (minimum 8 chars total after '*')
 	// Admin gate fires only when the caller IS the admin extension.
-	if (callerExt == _adminExt && seq.size() >= 8 && seq[0] == '*')
+	if (callerExt == _adminExt && !seq.empty() && seq[0] == '*')
 	{
-		// Try all PIN lengths starting at 4 (minimum) up to seq.size()-4
-		// so we can still fit a 3-char command code.
+		// Format: '*' + PIN(>=4 digits) + '#' + 3-digit code [+ confirm digit].
+		// The '#' terminates the PIN so its length is unambiguous: we verify the
+		// PIN EXACTLY ONCE per completed code. (The old version looped over every
+		// candidate PIN length calling verifyPin() for each, so a single normal
+		// admin entry charged several failed attempts against the brute-force
+		// lockout and could lock the admin out of both DTMF and the dashboard.)
 		bool adminMatched = false;
-		for (size_t pinLen = 4; pinLen + 3 < seq.size(); ++pinLen)
+		size_t hashPos = seq.find('#');
+		if (hashPos != std::string::npos && hashPos >= 5 && (seq.size() - hashPos - 1) >= 3)
 		{
-			std::string pinCandidate = seq.substr(1, pinLen);
-			std::string code = seq.substr(1 + pinLen, 3);
-			// Only digits in the PIN.
-			bool allDigits = true;
+			std::string pinCandidate = seq.substr(1, hashPos - 1);
+			std::string rest = seq.substr(hashPos + 1);   // CODE[confirm]
+			std::string code = rest.substr(0, 3);
+			// PIN must be all digits.
+			bool allDigits = !pinCandidate.empty();
 			for (char c : pinCandidate)
 			{
 				if (!std::isdigit(static_cast<unsigned char>(c))) { allDigits = false; break; }
 			}
-			if (!allDigits) continue;
-
-			if (!AdminAuth::verifyPin(pinCandidate)) continue;
+			// Single verify — a wrong PIN is exactly one counted failed attempt.
+			if (!allDigits || !AdminAuth::verifyPin(pinCandidate))
+			{
+				queueLog("[admin] DTMF admin auth failed", true);
+				accum.digits.clear();
+				return;
+			}
 
 			// PIN verified — execute the command code.
 			if (code == "001")
@@ -3184,14 +3206,10 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			}
 			else if (code == "999")
 			{
-				// Factory reset — requires follow-up digit '1' within 5 s.
-				// We reuse the DtmfAccum: if the NEXT digit arriving is '1', execute.
-				// Mark pending by storing a special sentinel in the accumulator.
-				if (seq.size() > 1 + pinLen + 3)
+				// Factory reset — requires a follow-up confirm digit '1'.
+				if (rest.size() >= 4)
 				{
-					// Extra char after command: check for confirmation '1'
-					char confirm = seq[1 + pinLen + 3];
-					if (confirm == '1')
+					if (rest[3] == '1')
 					{
 						queueLog("[admin] factory reset confirmed via DTMF");
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
@@ -3203,14 +3221,17 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 					}
 					else
 					{
-						queueLog("[admin] factory reset: awaiting confirm digit '1'");
+						queueLog("[admin] factory reset aborted (confirm != '1')");
 					}
+					adminMatched = true;
 				}
 				else
 				{
+					// Confirm digit not yet received — keep the accumulator and
+					// wait. Do NOT set adminMatched (the tail would clear it).
 					queueLog("[admin] factory reset: awaiting confirm digit '1'");
+					return;
 				}
-				adminMatched = true;
 			}
 
 			if (adminMatched)
@@ -3223,21 +3244,20 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 		// If the sequence starts with *NNNN (4+ digits) but no code matched yet,
 		// and the wrong caller is trying, send 403.
 	}
-	else if (seq.size() >= 2 && seq[0] == '*' && callerExt != _adminExt)
+	else if (callerExt != _adminExt && !seq.empty() && seq[0] == '*' &&
+	         seq.find('#') != std::string::npos)
 	{
-		// If it starts with * but the caller is NOT the admin ext and is trying
-		// to use the admin menu (8+ chars), reject.
-		if (seq.size() >= 8)
-		{
-			auto response = getMessageFromPool(data->toString(), data->getSource());
-			response->setHeader("SIP/2.0 403 Forbidden");
-			response->clearBody();
-			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-			response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
-			_outbox.emplace_back(data->getSource(), std::move(response));
-			accum.digits.clear();
-			return;
-		}
+		// A non-admin caller attempting the admin-menu pattern (*PIN#…): reject.
+		// CLASS service codes (*60/*72/…) have no '#', so they fall through to the
+		// per-subscriber feature handling below for any registered caller.
+		auto response = getMessageFromPool(data->toString(), data->getSource());
+		response->setHeader("SIP/2.0 403 Forbidden");
+		response->clearBody();
+		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		_outbox.emplace_back(data->getSource(), std::move(response));
+		accum.digits.clear();
+		return;
 	}
 
 	// --- 6. CLASS feature code matching (Task 2C-4) --------------------------

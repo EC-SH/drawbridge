@@ -5,6 +5,8 @@
 #include "esp_system.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "AdminAuth.hpp"
+#include "SshServer.hpp"
 #include <cstdio>
 #include <cstring>
 
@@ -159,6 +161,11 @@ static int  s_prov_stage         = 0;
 static char s_prov_password[64]  = {};
 static char s_prov_pin_first[16] = {};
 static bool s_prov_pin_confirming = false;
+// Live PIN-pad entry buffer. Hoisted to file scope (was a lambda-local static) so
+// _prov_show_stage() can reset it on (re)entry to Stage 1 — otherwise backing out
+// mid-confirm and returning leaves stale digits / a stale "confirming" flag.
+static char s_prov_pin_entry[16]   = {};
+static int  s_prov_pin_entry_len   = 0;
 static lv_obj_t* s_prov_panels[4]  = {};
 static lv_obj_t* s_prov_pass_ta    = nullptr;
 static lv_obj_t* s_prov_passc_ta   = nullptr;
@@ -1090,22 +1097,46 @@ static void _prov_show_stage(int stage) {
         if (stage == 1) lv_obj_add_flag(s_prov_kbd, LV_OBJ_FLAG_HIDDEN);
         else            lv_obj_clear_flag(s_prov_kbd, LV_OBJ_FLAG_HIDDEN);
     }
+    // Entering Stage 1 always starts a fresh PIN entry. Without this, navigating
+    // Back out of a half-finished confirm step and returning would leave
+    // s_prov_pin_confirming / the entry buffer stale, so the pad would show
+    // "Confirm PIN:" on first entry and compare against a stale first PIN.
+    if (stage == 1) {
+        s_prov_pin_confirming = false;
+        s_prov_pin_entry_len  = 0;
+        s_prov_pin_entry[0]   = '\0';
+        s_prov_pin_first[0]   = '\0';
+        if (s_prov_pin_lbl) lv_label_set_text(s_prov_pin_lbl, "Enter PIN:");
+    }
 }
 
 static void _prov_commit_and_reboot(uint8_t wifi_mode) {
 #if defined(ESP_PLATFORM)
+    // 1. Persist the admin credential as a salted, iterated SHA-256 hash via
+    //    AdminAuth::setPin — NOT a plaintext nvs_set_str. AdminAuth stores BOTH
+    //    admin_salt and admin_hash and marks itself provisioned only when both are
+    //    present; verifyPin() (used by the HTTP dashboard login AND the DTMF admin
+    //    menu) hashes the candidate against the stored salt. Writing a raw password
+    //    to "admin_hash" with no salt made the boot gate pass but left every
+    //    verifyPin() returning false — i.e. a permanent admin lockout. The Stage-1
+    //    PIN is the credential because both verify paths take a (numeric) PIN.
+    const char* pin = s_prov_pin_first[0] ? s_prov_pin_first : "0000";
+    if (!AdminAuth::setPin(pin)) {
+        ESP_LOGE("prov", "AdminAuth::setPin failed (PIN too short?) — NOT committing provisioned flag");
+        return;  // leave device unprovisioned so the operator can retry
+    }
+
+    // 2. Persist the topology selection and the provisioned flag.
     nvs_handle_t h;
     if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK) {
-        // Write credentials (simplified — credentialIsSet() checks non-empty admin_hash)
-        nvs_set_str(h, "admin_hash", s_prov_password[0] ? s_prov_password : "pocketdial");
-        nvs_set_str(h, "admin_pin",  s_prov_pin_first[0] ? s_prov_pin_first : "0000");
-        nvs_set_u8(h,  "wifi_mode",  wifi_mode);
-        nvs_set_u8(h,  "provisioned", 1);
+        nvs_set_u8(h, "wifi_mode",   wifi_mode);
+        nvs_set_u8(h, "provisioned", 1);
         nvs_commit(h);
         nvs_close(h);
     }
+
+    // 3. admin_ext was written by Stage 3 into "pbxcfg"; commit to be safe.
     if (nvs_open("pbxcfg", NVS_READWRITE, &h) == ESP_OK) {
-        // admin_ext written by Stage 3; we just commit here
         nvs_commit(h);
         nvs_close(h);
     }
@@ -1271,9 +1302,9 @@ static void _build_provisioning_screen(void) {
         lv_obj_set_style_text_color(s_prov_pin_lbl, t.accent, LV_PART_MAIN);
         lv_label_set_text(s_prov_pin_lbl, "● ● ● ●");
 
-        // Numeric PIN pad (3x4 grid)
-        static char pin_entry[16] = {};
-        static int  pin_len = 0;
+        // Numeric PIN pad (3x4 grid). Entry state lives at file scope
+        // (s_prov_pin_entry / s_prov_pin_entry_len) so _prov_show_stage() can reset
+        // it on (re)entry to this stage — see Fix #5.
         lv_obj_t* grid = lv_obj_create(p1);
         lv_obj_set_size(grid, 200, 200);
         lv_obj_set_style_bg_color(grid, t.bg, LV_PART_MAIN);
@@ -1294,31 +1325,32 @@ static void _build_provisioning_screen(void) {
                 const char* k = (const char*)lv_event_get_user_data(e);
                 if (!k) return;
                 if (strcmp(k, "<") == 0) {
-                    if (pin_len > 0) pin_entry[--pin_len] = '\0';
+                    if (s_prov_pin_entry_len > 0) s_prov_pin_entry[--s_prov_pin_entry_len] = '\0';
                 } else if (strcmp(k, "OK") == 0) {
-                    if (pin_len < 4) return;
+                    if (s_prov_pin_entry_len < 4) return;
                     if (!s_prov_pin_confirming) {
-                        strncpy(s_prov_pin_first, pin_entry, sizeof(s_prov_pin_first)-1);
+                        strncpy(s_prov_pin_first, s_prov_pin_entry, sizeof(s_prov_pin_first)-1);
                         s_prov_pin_confirming = true;
-                        pin_len = 0; pin_entry[0] = '\0';
+                        s_prov_pin_entry_len = 0; s_prov_pin_entry[0] = '\0';
                         if (s_prov_pin_lbl) lv_label_set_text(s_prov_pin_lbl, "Confirm PIN:");
                         return;
                     }
-                    if (strcmp(pin_entry, s_prov_pin_first) != 0) {
+                    if (strcmp(s_prov_pin_entry, s_prov_pin_first) != 0) {
                         s_prov_pin_confirming = false;
-                        pin_len = 0; pin_entry[0] = '\0';
+                        s_prov_pin_entry_len = 0; s_prov_pin_entry[0] = '\0';
+                        s_prov_pin_first[0] = '\0';
                         if (s_prov_pin_lbl) lv_label_set_text(s_prov_pin_lbl, "Mismatch — re-enter PIN:");
                         return;
                     }
                     _prov_show_stage(2);
                     return;
                 } else {
-                    if (pin_len < 6) { pin_entry[pin_len++] = k[0]; pin_entry[pin_len] = '\0'; }
+                    if (s_prov_pin_entry_len < 6) { s_prov_pin_entry[s_prov_pin_entry_len++] = k[0]; s_prov_pin_entry[s_prov_pin_entry_len] = '\0'; }
                 }
                 // Rebuild dot display
                 if (s_prov_pin_lbl) {
                     char dots[32] = {};
-                    for (int d = 0; d < pin_len; d++) {
+                    for (int d = 0; d < s_prov_pin_entry_len; d++) {
                         strcat(dots, d > 0 ? " ●" : "●");
                     }
                     lv_label_set_text(s_prov_pin_lbl, dots[0] ? dots : "● ● ● ●");
@@ -1746,12 +1778,9 @@ static void _build_perimeter_screen(void) {
     lv_obj_add_event_cb(s_perim_ssh_sw, [](lv_event_t* e) {
         bool enabled = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
 #if defined(ESP_PLATFORM)
-        nvs_handle_t h;
-        if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK) {
-            nvs_set_u8(h, "ssh_enabled", enabled ? 1 : 0);
-            nvs_commit(h);
-            nvs_close(h);
-        }
+        // setEnabled() persists ssh_enabled to NVS AND applies it immediately
+        // (starts/stops the engine), so no separate NVS write is needed (Ticket 3e).
+        SshServer::instance().setEnabled(enabled);
 #endif
         ESP_LOGI("perim", "[ui] SSH %s", enabled ? "enabled" : "disabled");
     }, LV_EVENT_VALUE_CHANGED, nullptr);

@@ -49,6 +49,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/Helpers/UdpServer.cpp"
                             "../src/Helpers/HttpServer.cpp"
                             "../src/Helpers/AdminAuth.cpp"
+                            "../src/Helpers/SshServer.cpp"
                             "../src/Helpers/OtaUpdater.cpp"
                             "../src/SIP/RequestsHandler.cpp"
                             "../src/SIP/Session.cpp"
@@ -60,8 +61,15 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipStatus.cpp"
                             "../src/SIP/RtpSender.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
-                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update esp_driver_ledc ${EXTRA_REQUIRES}
+                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update esp_driver_ledc console esp_timer ${EXTRA_REQUIRES}
                     PRIV_REQUIRES esp_wifi)
+
+# SshServer.cpp initializes esp_console_cmd_t arrays with only the fields it uses (the
+# ESP-IDF console convention; trailing members default to 0). Under -Wextra that trips
+# -Werror=missing-field-initializers. Demote it for this file only — same approach the
+# display build already uses for esp_main_display.cpp and qrcode.c.
+set_source_files_properties("../src/Helpers/SshServer.cpp"
+    PROPERTIES COMPILE_FLAGS "-Wno-error=missing-field-initializers")
 
 # Issue #49: the display transport reserves Core 1 for the LVGL graphics task and
 # runs the SIP engine on Core 0, so the UDP receiver (which carries SIP signaling)

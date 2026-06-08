@@ -245,13 +245,24 @@ void SshServer::start()
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
     // Read NVS "ssh_enabled" key.
     {
+        // Read-only: opening NVS_READWRITE merely to READ a flag is wrong and can fail
+        // when the partition has no free pages for a write handle. Previously, on such a
+        // failure _enabled kept its default (true) and SSH started despite being disabled
+        // (fail-open). Use NVS_READONLY and fail CLOSED. A missing key (namespace exists,
+        // key absent) still leaves val=1 → enabled-by-default after provisioning.
         nvs_handle_t h;
-        if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
+        esp_err_t e = nvs_open("storage", NVS_READONLY, &h);
+        if (e == ESP_OK)
         {
-            uint8_t val = 1;  // default: enabled
+            uint8_t val = 1;  // default: enabled when the key is absent
             nvs_get_u8(h, "ssh_enabled", &val);
             nvs_close(h);
             _enabled = (val != 0);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "ssh_enabled NVS read failed (%s) — defaulting SSH OFF", esp_err_to_name(e));
+            _enabled = false;
         }
     }
 
@@ -369,7 +380,8 @@ void SshServer::sshListenTask(void* arg)
     // Try to load the host key from NVS.
     {
         nvs_handle_t h;
-        if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
+        // Read-only: we only read the host-key blob here (Fix #6).
+        if (nvs_open("storage", NVS_READONLY, &h) == ESP_OK)
         {
             size_t len = 0;
             if (nvs_get_blob(h, "ssh_host_key", nullptr, &len) == ESP_OK && len > 0)

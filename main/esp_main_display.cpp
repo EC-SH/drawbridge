@@ -38,6 +38,7 @@
 #include "OtaUpdater.hpp"
 #include "DnsServer.hpp"
 #include "IPHelper.hpp"
+#include "SshServer.hpp"
 #include "host_compat.h"
 
 static const char *TAG = "main_display";
@@ -54,8 +55,12 @@ static const char *TAG = "main_display";
 
 #define TOUCH_SDA   4
 #define TOUCH_SCL   8
-#define TOUCH_RST   12
-#define TOUCH_INT   11
+// NOTE: the JC3248W535's AXS15231B touch controller shares the display silicon and
+// is read over I2C only — it has NO dedicated INT/RST routed to a usable GPIO. The
+// reference board map (esp-idf-jc3248w535-axs15231b/main/board.h) defines neither,
+// and GPIO 11/12 (previously mis-assigned here as TOUCH_INT/TOUCH_RST) are actually
+// the microSD CMD/CLK lines on this board. We therefore drive touch in polled mode
+// (int/rst = GPIO_NUM_NC); see hardware_touch_init().
 
 // Onboarding credentials
 #define ONBOARDING_SSID "My-Ap"
@@ -101,6 +106,13 @@ static lv_color_t       *s_band_buf       = NULL;  // internal DMA bounce (320 x
 static std::string g_localIp = "192.168.4.1";
 static int g_stationNum = 0;
 static bool g_setupComplete = false;
+
+// Cached operational Wi-Fi config, read once from NVS at boot (Fix #7). wifi_mode only
+// changes via a topology switch, which reboots — so these never go stale at runtime.
+// system_status_task uses these instead of re-opening NVS every tick under the LVGL
+// mutex (flash I/O held under s_lvgl_mux stalls the render path / risks TE-vsync misses).
+static uint8_t g_wifiMode      = 0;
+static char    g_wifiSsid[33]  = {0};
 
 // Captive-portal decay: if no one confirms config within this window, the device "decays"
 // into open Standalone AP mode so it's a usable PBX unattended. The web "I'm configuring"
@@ -258,8 +270,13 @@ static esp_lcd_touch_handle_t hardware_touch_init() {
     esp_lcd_touch_config_t touch_config = {};
     touch_config.x_max = 320;
     touch_config.y_max = 480;
-    touch_config.rst_gpio_num = (gpio_num_t)TOUCH_RST;
-    touch_config.int_gpio_num = (gpio_num_t)TOUCH_INT;
+    // No dedicated touch INT/RST GPIO on the JC3248W535 (GPIO 11/12 are the SD CMD/CLK
+    // lines, not touch). NC => the driver polls coordinates over I2C, matching the
+    // known-good reference. Driving the SD pins as touch INT/RST broke nothing visibly
+    // because read_data polls anyway, but it mis-claimed shared pins and could leave the
+    // panel waiting on an interrupt that never represents a real touch.
+    touch_config.rst_gpio_num = GPIO_NUM_NC;
+    touch_config.int_gpio_num = GPIO_NUM_NC;
     touch_config.flags.swap_xy = 0;
     touch_config.flags.mirror_x = 0;
     touch_config.flags.mirror_y = 0;
@@ -491,29 +508,18 @@ static void system_status_task(void *pvParameters) {
                 // the cost of snapshot building when that screen is actually visible)
                 ui_screen_t cur = ui_current_screen();
                 if (cur == SCREEN_TOPOLOGY) {
-                    uint8_t mode = 0;
-                    nvs_handle_t nh;
-                    if (nvs_open("storage", NVS_READONLY, &nh) == ESP_OK) {
-                        nvs_get_u8(nh, "wifi_mode", &mode);
-                        nvs_close(nh);
-                    }
-                    ui_update_topology(g_localIp.c_str(), mode, g_stationNum);
+                    // Cached at boot — no NVS open under the LVGL lock (Fix #7).
+                    ui_update_topology(g_localIp.c_str(), g_wifiMode, g_stationNum);
                 } else if (cur == SCREEN_TELEMETRY) {
                     UiTelemetrySnapshot ts{};
                     strncpy(ts.ip, g_localIp.c_str(), sizeof(ts.ip) - 1);
-                    ts.wifi_mode     = 0;
+                    ts.wifi_mode     = g_wifiMode;          // cached at boot (Fix #7)
                     ts.session_count = sessionCount;
                     ts.session_max   = 8;
                     ts.client_count  = clientCount;
                     ts.client_max    = 32;
-                    // Read wifi_mode for telemetry
-                    nvs_handle_t nh;
-                    if (nvs_open("storage", NVS_READONLY, &nh) == ESP_OK) {
-                        nvs_get_u8(nh, "wifi_mode", &ts.wifi_mode);
-                        size_t sz = sizeof(ts.ssid);
-                        nvs_get_str(nh, "wifi_ssid", ts.ssid, &sz);
-                        nvs_close(nh);
-                    }
+                    strncpy(ts.ssid, g_wifiSsid, sizeof(ts.ssid) - 1);
+                    ts.ssid[sizeof(ts.ssid) - 1] = '\0';
                     // Pre-format session table
                     if (g_sipServer) {
                         RequestsHandler& h = g_sipServer->getHandler();
@@ -735,6 +741,11 @@ extern "C" void app_main(void) {
         wifi_mode = 0;
     }
 
+    // Cache the operational config for system_status_task (Fix #7 — see globals above).
+    g_wifiMode = wifi_mode;
+    strncpy(g_wifiSsid, saved_ssid, sizeof(g_wifiSsid) - 1);
+    g_wifiSsid[sizeof(g_wifiSsid) - 1] = '\0';
+
     // Initialize WiFi driver before any wifi_init_softap / wifi_init_sta calls below
     {
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -823,6 +834,16 @@ extern "C" void app_main(void) {
 
         ESP_LOGI(TAG, "Captive onboarding active at http://192.168.4.1/ or pocketdial.local (decays in %ds)", CAPTIVE_DECAY_SECONDS);
         xTaskCreatePinnedToCore(&captive_decay_task, "decay_task", 3072, NULL, 3, NULL, 0);
+    }
+
+    // ── SSH / esp_console engine (Ticket 2) ─────────────────────────────────
+    // Start only when the device is fully operational (SIP up); never on the captive
+    // onboarding path. start() reads ssh_enabled from NVS internally and fails closed.
+    // Without the wolfSSH managed component this runs in STUB mode: the esp_console
+    // command registry is populated and the listen task idles — there is no TCP SSH
+    // transport until wolfssh is added and POCKETDIAL_HAS_WOLFSSH is defined.
+    if (g_setupComplete) {
+        SshServer::instance().start();
     }
 
     // 5. Spin up periodic status and battery updater task
