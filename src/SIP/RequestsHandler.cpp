@@ -1273,11 +1273,18 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 		_outbox.emplace_back(data->getSource(), std::move(accepted));
 	}
 
-	// Tear down the transferor's existing dialog (blind transfer drops the original
-	// call) so a stale session doesn't pin a pool slot, then drive the new INVITE.
+	// Blind transfer drops the transferor's ORIGINAL call. Tear that leg down FIRST,
+	// then drive the new INVITE — ordering is load-bearing: redirectInvite() reuses the
+	// Session stored under this Call-ID, so ending the call AFTER it (the previous
+	// order) erased the freshly-created transfer leg, and the target's 200 OK then
+	// matched no session and the transfer silently never completed. onBusy()/tick()
+	// (CFB/CFNA) end-then-redirect for exactly this reason. CDR is recorded as the
+	// original leg tears down; redirectInvite() then allocates a clean session.
 	std::string callID(data->getCallID());
-
 	auto targetClient = findClient(target);
+
+	endCall(callID, transferor->getNumber(), std::string(data->getToNumber()), "blind transfer");
+
 	bool ok = targetClient.has_value() && redirectInvite(data, transferor, target);
 
 	// NOTIFY the transferor with the transfer result (message/sipfrag body).
@@ -1296,9 +1303,6 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 	{
 		queueLog("REFER: blind transfer " + transferor->getNumber() + " -> " + target);
 	}
-
-	// Drop the transferor's prior leg (best-effort; CDR recorded as it tears down).
-	endCall(callID, transferor->getNumber(), std::string(data->getToNumber()), "blind transfer");
 }
 
 void RequestsHandler::onMessage(std::shared_ptr<SipMessage> data)

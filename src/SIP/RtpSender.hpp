@@ -105,11 +105,17 @@ private:
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	static void taskTrampoline(void* arg);
 	void runLoop();                       // 20 ms-paced sender loop (Core 0)
-	int              _sock = -1;
-	TaskHandle_t     _taskHandle = nullptr;
-	SemaphoreHandle_t _taskExited = nullptr;
-	volatile bool    _stopRequested = false;
-	sockaddr_in      _dest{};
+	int               _sock = -1;
+	// Cross-thread control flags (no binary semaphore — that was prone to a stale
+	// "give" surviving a timed-out join and freeing the next stream's socket early).
+	//   _stopRequested : the SIP thread asks the media task to finish its frame & exit.
+	//   _taskRunning   : true from just-before-launch until the task's very last act.
+	//                    The task OWNS its teardown (closes its own socket, clears the
+	//                    slot) and clears _taskRunning LAST, so the destructor can join
+	//                    on it and start() can refuse to overlap a dying task.
+	std::atomic<bool> _stopRequested{false};
+	std::atomic<bool> _taskRunning{false};
+	sockaddr_in       _dest{};
 #endif
 
 	std::atomic<bool> _active{false};
