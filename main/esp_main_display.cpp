@@ -194,8 +194,10 @@ static void hardware_display_init(lv_disp_drv_t* disp_drv) {
     ESP_LOGI(TAG, "Instantiating axs15231b panel driver...");
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_dev_config = {};
-    panel_dev_config.reset_gpio_num = -1; // Reset pin is not defined
-    panel_dev_config.rgb_endian = LCD_RGB_ENDIAN_BGR;
+    panel_dev_config.reset_gpio_num = GPIO_NUM_NC; // Reset pin is not defined
+    // ESP-IDF 6.0 renamed esp_lcd_panel_dev_config_t::rgb_endian -> rgb_ele_order
+    // (and the LCD_RGB_ENDIAN_* enum -> LCD_RGB_ELEMENT_ORDER_*).
+    panel_dev_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
     panel_dev_config.bits_per_pixel = 16;
     
     axs15231b_vendor_config_t vendor_config = {};
@@ -247,7 +249,9 @@ static esp_lcd_touch_handle_t hardware_touch_init() {
     // The AXS15231B config macro predates the i2c_master driver and leaves scl_speed_hz
     // at 0, which i2c_master_bus_add_device rejects ("invalid scl frequency"). Set it.
     touch_io_config.scl_speed_hz = 400000;
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(i2c_bus, &touch_io_config, &touch_io));
+    // ESP-IDF 6.0 dropped the legacy esp_lcd_new_panel_io_i2c and promoted the _v2
+    // (i2c_master_bus_handle_t) signature to the canonical name.
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &touch_io_config, &touch_io));
 
     ESP_LOGI(TAG, "Creating axs15231b touch driver...");
     esp_lcd_touch_handle_t touch_handle = NULL;

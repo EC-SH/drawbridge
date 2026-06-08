@@ -10,7 +10,6 @@
 
 #pragma once
 
-#include "hal/spi_ll.h"
 #include "esp_lcd_touch.h"
 #include "esp_lcd_panel_vendor.h"
 
@@ -130,8 +129,8 @@ esp_err_t esp_lcd_new_panel_axs15231b(const esp_lcd_panel_io_handle_t io, const 
 
 #define AXS15231B_PANEL_IO_SPI_CONFIG(cs, dc, cb, cb_ctx)       \
     {                                                           \
-        .cs_gpio_num = cs,                                      \
-        .dc_gpio_num = dc,                                      \
+        .cs_gpio_num = (gpio_num_t)(cs),                        \
+        .dc_gpio_num = (gpio_num_t)(dc),                        \
         .spi_mode = 3,                                          \
         .pclk_hz = 40 * 1000 * 1000,                            \
         .trans_queue_depth = 10,                                \
@@ -143,8 +142,8 @@ esp_err_t esp_lcd_new_panel_axs15231b(const esp_lcd_panel_io_handle_t io, const 
 
 #define AXS15231B_PANEL_IO_QSPI_CONFIG(cs, cb, cb_ctx)          \
     {                                                           \
-        .cs_gpio_num = cs,                                      \
-        .dc_gpio_num = -1,                                      \
+        .cs_gpio_num = (gpio_num_t)(cs),                        \
+        .dc_gpio_num = (gpio_num_t)(-1),                        \
         .spi_mode = 3,                                          \
         .pclk_hz = 40 * 1000 * 1000,                            \
         .trans_queue_depth = 10,                                \

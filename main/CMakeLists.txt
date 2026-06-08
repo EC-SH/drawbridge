@@ -75,9 +75,14 @@ endif()
 
 if(SIP_TRANSPORT STREQUAL "display")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_UDP_RX_CORE=0)
-    # qrcode.c (ricmoo QRCode) uses #pragma mark (an Xcode-ism); GCC treats it as an
-    # unknown pragma, which -Werror=all turns into an error. Demote to a warning here.
-    set_source_files_properties("ui/qrcode.c" PROPERTIES COMPILE_FLAGS "-Wno-error=unknown-pragmas")
+    # qrcode.c (ricmoo QRCode, vendored): uses #pragma mark (an Xcode-ism) GCC flags as an
+    # unknown pragma, plus an `x < 0` guard on an unsigned arg that -Wtype-limits reports
+    # as always-false. Both are harmless in this third-party file; demote to warnings.
+    set_source_files_properties("ui/qrcode.c" PROPERTIES COMPILE_FLAGS "-Wno-error=unknown-pragmas -Wno-error=type-limits")
+    # esp_main_display.cpp builds the AXS15231B panel-IO configs through the driver's
+    # partial designated-initializer macros (the IDF convention); under C++ -Wextra the
+    # unset trailing flag fields trip -Werror=missing-field-initializers. Demote it.
+    set_source_files_properties("esp_main_display.cpp" PROPERTIES COMPILE_FLAGS "-Wno-error=missing-field-initializers")
 endif()
 
 # Resource-constrained profile: shrink the pre-allocated SIP object pools to fit a
