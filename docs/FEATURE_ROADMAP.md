@@ -41,7 +41,7 @@ Cross-references:
 | Capacity model | Compile-time pools `POCKETDIAL_MAX_CLIENTS/MAX_SESSIONS/MSG_POOL`; graceful `503` on exhaustion; Pocket/Office/Rack tiers | `src/SIP/PoolConfig.hpp`, [SCALING.md](SCALING.md) |
 | Security (signalling) | Per-source-IP token-bucket rate limit, optional CIDR allowlist, AOR input whitelist, bounded parser (header/body boundary) | `allowPacket`, `ipAllowed`, `isValidAor`, `findHeader` |
 | Security (HTTP) | Same-origin/CSRF check, 16 KB body cap, `SO_RCVTIMEO`, no wildcard CORS | `ARCHITECTURE.md` §5 |
-| Dev / debug | Desktop (Linux/Windows) host build & CI smoke harness; Yealink Action-URI test controller | `main.cpp`, `scratch/yealink_controller.py` |
+| Dev / debug | Desktop (Linux/Windows) host build & CI smoke harness; SIP load tester + liveness/SSH/HTTP smoke scripts | `main.cpp`, `tests/load/sip_stress.py`, `.smoke/`, `tests/http/test_api.sh` |
 
 ---
 

@@ -105,7 +105,7 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 * [Supported SIP Methods \& Responses](#supported-sip-methods--responses)
 * [Virtual Extensions (`777` & `999`)](#virtual-extensions-777--999)
 * [VoIP Interoperability & SDP Stripping](#voip-interoperability--sdp-stripping)
-* [Automated Testing & Remote Control](#automated-testing--remote-control)
+* [Automated Testing & Smoke Tools](#automated-testing--smoke-tools)
 * [Building](#building)
   * [ESP32-S3 (ESP-IDF v5.3)](#esp32-s3-esp-idf-v53)
   * [JC3248W535EN Smart Display](#jc3248w535en-smart-display)
@@ -288,25 +288,35 @@ During testing with strict, professional SIP terminals (like Yealink IP phones),
 
 ---
 
-## Automated Testing & Remote Control
+## Automated Testing & Smoke Tools
 
-To facilitate automated signaling tests and validation in lab networks without physical button presses, the directory contains:
+The repo ships stdlib-only Python tooling for validating a running PBX — on the host build or on real hardware — without manual phone presses:
 
-### `scratch/yealink_controller.py`
-A comprehensive Python CLI tool that exploits the remote control **Action URI** endpoints on Yealink IP phones. It bypasses Web UI form handshakes and security limits by performing secure Basic A[...]
-
-#### Basic Usage:
+### `tests/load/sip_stress.py`
+SIP load/stress tester. Registers virtual user-agents, places echo-test (`777`) calls against a registrar, and measures registration + call-setup latency, throughput, and the static-pool / rate-limit ceilings (also samples the HTTP `/api/status` counters).
 ```bash
-# Force the T29G phone (Extension 102 / IP 181) to dial the emergency broadcast
-python scratch/yealink_controller.py 181 --dial 999
-
-# Force the older model (Extension 105 / IP 205) to dial the echo loopback
-python scratch/yealink_controller.py 205 --dial 777
-
-# Send key press codes to simulate key actions (like toggling Speakerphone or Mute)
-python scratch/yealink_controller.py both --key SPEAKER
-python scratch/yealink_controller.py 181 --key CANCEL
+python tests/load/sip_stress.py <registrar-ip> [port]
 ```
+
+### `.smoke/sip_probe.py`
+Quick liveness probe — sends a SIP `REGISTER` (falling back to `OPTIONS`) over UDP and reports any response. Exit 0 if the stack answers.
+```bash
+python .smoke/sip_probe.py <ip> [port]      # default port 5060
+```
+
+### `.smoke/ssh_test.py`
+Scripted SSH smoke test for the wolfSSH console (open while unsecured; the admin PIN becomes the password once set).
+```bash
+python .smoke/ssh_test.py <host> [password]
+```
+
+### `tests/http/test_api.sh`
+The single HTTP API smoke suite (happy-path → CSRF → input-validation → 404 → OTA → admin-auth), used by both CI and on-hardware runs.
+```bash
+bash tests/http/test_api.sh <ip:port>       # e.g. 127.0.0.1:8080
+```
+
+The `.smoke/` directory also holds hardware helpers: `capture.py` (bounded USB-CDC serial boot-log capture) and `gen_provision_nvs.py` (generates an NVS image to provision a board for headless SIP/SSH testing).
 
 ---
 
