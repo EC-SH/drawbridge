@@ -276,3 +276,65 @@ defense, while preserving open first-run onboarding and the existing CI smoke te
 eavesdroppable (I-1/I-2) and the session cookie replayable (5.3). The single highest-leverage
 next step is **WPA2 on the SoftAP**, which encrypts the whole link in one move; physical and
 firmware-supply-chain risks are durably addressed by **Secure Boot v2 + flash encryption**.
+
+---
+
+## 9. The SIP auth surface (digest auth + Learn mode)
+
+> **Status:** forward-looking — this section analyzes the auth surface of the **SIP digest
+> auth + Learn-mode adoption** work being built now (milestone M1), not yet shipped code.
+> It extends the STRIDE analysis above with the new IDs `S-4`, `D-5`, `I-6`, `T-6`, `E-3`
+> and continues the residual-risk convention. Cross-refs: [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md)
+> §3.3 (SIP digest auth, WPA2), the operator runbook [LEARN_MODE.md](LEARN_MODE.md), and
+> [PROVISIONING.md](PROVISIONING.md) §7.3 (the shared per-extension secret store).
+
+The registrar is **fully open today** (`POCKETDIAL_OPEN_REGISTRAR`); §4 records this as the
+S-3/D-2 SIP-layer gap, explicitly out of scope for the HTTP-auth change. This phase closes
+it. SIP **digest authentication** (RFC 2617, MD5 / `qop=auth`) challenges **REGISTER** —
+**INVITE is not independently challenged in M1** (it relies on the registration binding an
+authenticated REGISTER established; per-INVITE/proxy-auth `407` is a tracked follow-up, see
+§9.1). The registrar mode becomes **runtime-selectable** (`open` / `learn` / `secure`);
+**Learn mode** adopts an existing fleet trust-on-first-use, keyed by **device MAC** (resolved
+from the REGISTER's source IP via the LAN ARP table — phones do not carry MAC in SIP), then
+**locks each extension ↔ MAC** once secured. (RFC 8760 SHA-256 digest is not implemented;
+MD5 is the wire algorithm, matching the installed-phone fleet — SHA-256 is a hardening item.)
+
+### 9.1 What digest auth closes
+
+| ID | Threat (was) | Mitigation (this phase) | Residual risk |
+|----|--------------|-------------------------|---------------|
+| S-3 | **SIP identity spoofing** — on the open registrar any peer can REGISTER/INVITE as any extension. *(prior residual risk, §4 Spoofing)* | In `secure` mode every REGISTER is digest-challenged (`401` + `WWW-Authenticate: Digest realm,nonce,qop=auth`); the UA must return `response == MD5(HA1:nonce:nc:cnonce:qop:HA2)`. An extension is registrable only by a party that knows its secret. **This holds even on a trusted link** — it is independent of the WPA2/link fix. | Nonce replay is bounded by a time-window + server-secret nonce with `stale` handling; an attacker who can read the live exchange (open AP, I-2) can attempt replay inside the window — the link fix (WPA2) and a short nonce lifetime are the backstops. Digest is `auth` (not `auth-int`): the message body is not integrity-protected. **Scope (M1): only REGISTER is digest-challenged.** INVITE is not independently authenticated — it trusts the binding an authenticated REGISTER created, so a peer that can forge a request matching a *registered* contact on a trusted L2 is not separately challenged. Independent INVITE challenge (`407 Proxy-Authentication-Required`) is the tracked follow-up; on a hostile L2 the backstop is again WPA2. |
+| D-2 | **Malicious call teardown** — BYE/`/api/kill`-style teardown of others' calls; SIP-layer teardown (BYE spoofing) possible without SIP auth. *(prior residual risk, §4 DoS)* | With REGISTER authenticated, an unauthenticated peer can no longer claim an extension's *registration* binding, which raises the bar for impersonating it. Raises BYE-spoofing from "trivial on open AP" to "requires the registered contact or live-session knowledge." | INVITE/BYE are not themselves digest-challenged in M1 (only REGISTER is — see S-3 scope note), so an attacker who can sniff the link (open AP) still observes dialog identifiers (Call-ID/tags) and could attempt in-dialog injection; digest authenticates the *registration*, not every in-dialog request. The link fix (WPA2) closes the observation channel; per-request INVITE auth (`407`) is the tracked follow-up. Tracked alongside S-3. |
+
+### 9.2 New threats introduced by Learn mode
+
+| ID | Threat | Mitigation | Residual risk |
+|----|--------|-----------|---------------|
+| S-4 | **Learn-mode TOFU adoption window** — while the registrar is in `learn`, an **unknown MAC** that REGISTERs an unclaimed extension is adopted **without verifying** any credential (trust-on-first-use). A stranger on the segment can race to claim an unclaimed extension before the legitimate phone does. | The window is **bounded, admin-initiated, and not a default**: entering `learn` is an explicit action, re-opening is admin-gated, and the operator verifies the adopted roster (MAC · ext · state) before securing (see [LEARN_MODE.md](LEARN_MODE.md) §5). Already-secured devices are digest-enforced even during the window — TOFU applies only to *unknown* MACs. The intended posture is to run the window on a **trusted/WPA2 link**. | **If the window is left open, this is functionally an open registrar for any unclaimed extension.** On an open AP a proximate attacker can both observe the cutover and race a claim. The control is procedural (bound the window, watch the roster, prefer an encrypted link), not cryptographic. **Honest framing:** Learn mode is a deliberate, temporary weakening to enable low-friction cutover — it must not be run as a steady state. |
+| E-3 | **MAC-based extension↔MAC lock is trust-the-LAN, not cryptographic** — once an extension is secured, a different MAC claiming it is rejected (`403`/`401`). The MAC is learned from the **ARP table**, and ARP/MAC are spoofable on a hostile L2. | The lock defeats accidental collisions, duplicate-extension misconfig, and casual impersonation on a trusted segment. It composes with digest (a rogue must *also* present a valid digest for a secured extension), so it is defense-in-depth, not the sole gate. | **The lock raises the bar but is not a security boundary on a hostile L2** — an attacker who can spoof a MAC and who knows the secret defeats it. **The real boundary is WPA2 / a trusted LAN** (gating association). State this plainly to operators: MAC-lock ≠ cryptographic device identity. ARP first-packet misses (§Learn-mode timing) also mean the lock binds a beat after first contact, not instantaneously. |
+
+### 9.3 Secret-at-rest (the digest credential store)
+
+| ID | Threat | Mitigation | Residual risk |
+|----|--------|-----------|---------------|
+| I-6 | **Per-extension digest secret recoverable from flash.** Unlike the admin PIN (one-way salted/iterated SHA-256, I-5), digest auth requires the server to **recompute** the response, so the secret store holds **HA1 = MD5(ext:realm:secret)** — a *recoverable-equivalent bearer credential*, not a one-way hash. Anyone who can read HA1 can authenticate as that extension (HA1 is directly usable in the digest computation; the cleartext secret is not even required). | HA1 is never returned over HTTP and never logged. It lives in a **separate NVS store** from `AdminAuth` (mirrors the `prov` per-MAC layout, [PROVISIONING.md](PROVISIONING.md) §5). Offline recovery requires a **physical NVS read** (same precondition as I-3/I-5). | **HA1 is a bearer credential at rest — weaker at-rest than the one-way admin hash by necessity of the protocol.** This *pairs directly with the existing flash-encryption / Secure Boot v2 item* (§7 P2, T-4/I-3/I-5): encrypting NVS at rest is the durable fix and the secret store inherits it. Until flash encryption lands, a physical attacker who reads NVS obtains usable extension credentials. Note for the trunk track ([FEATURE_ROADMAP.md](FEATURE_ROADMAP.md) §7): upstream trunk secrets land in the same store and inherit the same at-rest exposure. |
+
+### 9.4 Registrar-mode transitions
+
+| ID | Threat | Mitigation | Residual risk |
+|----|--------|-----------|---------------|
+| T-6 | **Silent registrar downgrade** — a `secure` → `learn`/`open` transition re-opens the registrar (re-enabling TOFU adoption / disabling digest); if it could happen silently or via an unauthenticated path it would erase the whole auth gain. | The registrar mode is an **NVS-backed runtime setting changed only by an explicit admin action** (onboarding wizard / Security screen), gated by the same admin-auth session as other mutating config (S-1/E-1). **No silent downgrade**; the transition is an auditable event. Mode is read at REGISTER time, so a downgrade takes effect deliberately, not by drift. | A physical/flash attacker who can rewrite NVS (T-4) can flip the mode directly — same root cause and same durable fix (flash encryption + Secure Boot, §7 P2). Audit-trail depth is limited by R-1 (no tamper-evident log) — a downgrade is logged to console but not tamper-evidently. |
+
+### 9.5 Net assessment
+
+Digest auth **retires the long-standing S-3/D-2 SIP-layer gap** and is the prerequisite for
+closing the open registrar (and for the upstream-trunk track, [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md)
+§7, where every commercial fabric challenges credentials). It is a real, link-independent
+control. The **Learn-mode adoption path trades a bounded window of trust-on-first-use for a
+hand-free fleet cutover** — honest, useful, and *temporary*: it must be run admin-initiated,
+short, and ideally on an encrypted link, then closed. The **MAC-based lock and the HA1 secret
+store both lean on the LAN trust boundary** — the lock is spoofable on a hostile L2 and HA1 is
+a bearer credential at rest. Neither changes the headline conclusion of §6/§8: **WPA2 on the
+SoftAP** (gates association, encrypts the link) and **Secure Boot v2 + flash encryption**
+(protects HA1 and the mode setting at rest) remain the two highest-leverage hardenings, and
+the new auth surface composes with — rather than replaces — them.

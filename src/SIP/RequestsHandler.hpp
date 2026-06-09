@@ -6,6 +6,8 @@
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 #include <lwip/sockets.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #elif defined(__linux__)
 #include <netinet/in.h>
 #elif defined _WIN32 || defined _WIN64
@@ -14,6 +16,7 @@
 
 #include <functional>
 #include <unordered_map>
+#include <string>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -91,6 +94,53 @@ public:
 	void setRingGroup(const std::string& groupExt, const std::string& members, const std::string& mode);
 	std::vector<std::tuple<std::string, std::string, std::string>> getRingGroups();
 
+	// ── Admin extension (Task 2B) ─────────────────────────────────────────────────
+	// NVS-persisted extension identity for the administrative endpoint.
+	// Default "101". Loaded from NVS namespace "pbxcfg", key "admin_ext" at boot.
+	std::string getAdminExt() const;
+
+	// ── Registrar mode (STAGE 2) ──────────────────────────────────────────────────
+	// Runtime registrar policy, replacing the compile-time POCKETDIAL_OPEN_REGISTRAR
+	// gate. NVS-persisted (namespace "pbxcfg", key "reg_mode"); the compile-time
+	// symbol now only seeds the DEFAULT at boot. Thread-safe (mirror setDnd): setter
+	// takes _mutex + refreshes the snapshot; getter reads an atomic so the SIP hot
+	// path (onRegister) never locks just to branch on the mode.
+	enum class RegistrarMode : uint8_t
+	{
+		Open   = 0,   // standalone: accept every REGISTER, no challenge (legacy)
+		Learn  = 1,   // TOFU + MAC-lock: adopt unknown devices, enforce secured ones
+		Secure = 2,   // require digest auth for every provisioned extension
+	};
+	void setRegistrarMode(RegistrarMode mode);
+	RegistrarMode getRegistrarMode() const;
+
+	// ── Device registry (STAGE 2: Learn-mode adoption) ────────────────────────────
+	// Adopted-device lifecycle for the TUI. A device is keyed by its 12-hex MAC and
+	// remembers the extension it registered as and whether it has been promoted from
+	// first-seen (Learned) to digest-enforced (Secured). All accessors are
+	// thread-safe (snapshot mutex) and NVS-persisted, mirroring forwards/groups.
+	enum class DeviceState : uint8_t
+	{
+		Learned = 0,   // TOFU: seen + accepted, not yet locked to digest auth
+		Secured = 1,   // promoted: MAC-locked + digest-enforced for its extension
+	};
+	struct AdoptedDevice
+	{
+		std::string mac;         // 12 lowercase hex chars
+		std::string extension;   // the AOR it last registered as
+		DeviceState state = DeviceState::Learned;
+		bool online = false;     // currently has a live registration binding
+	};
+	// Snapshot of all adopted devices for the dashboard/TUI (thread-safe).
+	std::vector<AdoptedDevice> getAdoptedDevices();
+	// Promote a device to Secured (MAC-locked + digest-enforced). Accepts either a
+	// 12-hex MAC or an extension (resolved to the device currently bound to it).
+	// Returns false if no such device is known. Thread-safe + persisted.
+	bool secureDevice(const std::string& macOrExt);
+	// Forget a device entirely (drops the adoption record; a later REGISTER re-learns
+	// it in Learn mode). Accepts a MAC or an extension. Thread-safe + persisted.
+	bool forgetDevice(const std::string& macOrExt);
+
 private:
 	void initHandlers();
 
@@ -109,6 +159,13 @@ private:
 	void onAck(std::shared_ptr<SipMessage> data);
 	void onRefer(std::shared_ptr<SipMessage> data);   // blind transfer (RFC 3515)
 	void onMessage(std::shared_ptr<SipMessage> data); // inbound MESSAGE (RFC 3428): ack 200 OK
+
+	// ── DTMF SIP INFO handler (Task 2C) ──────────────────────────────────────────
+	// Invoked from handle() when a SIP INFO arrives carrying
+	// Content-Type: application/dtmf-relay. Parses the Signal= digit, updates the
+	// per-Call-ID accumulator, and dispatches CLASS feature code actions.
+	// Called from the single-threaded SIP handler path — no additional mutex needed.
+	void onDtmfInfo(std::shared_ptr<SipMessage> data);
 
 	// ── Register beep (signaling-only intercom tone) ─────────────────────────────
 	// On a NEW registration, send the registering phone a brief auto-answer INVITE so
@@ -223,6 +280,15 @@ private:
 	std::optional<std::shared_ptr<SipClient>> findClientByAddress(const sockaddr_in& addr);
 	std::shared_ptr<SipMessage> buildOptionsPing(const std::shared_ptr<SipClient>& client);
 
+	// ── Outbound SIP MESSAGE (STAGE 2) ────────────────────────────────────────────
+	// Originate a one-shot SIP MESSAGE (RFC 3428, Content-Type text/plain) to a
+	// registered extension — e.g. to notify a phone/operator of a freshly assigned
+	// secret. Mirrors the register-beep UAC enqueue (build + _outbox), best-effort:
+	// returns false (no enqueue) if `ext` is not currently registered. The body is
+	// length-bounded to keep the message in a single UDP datagram. Thread-safe: takes
+	// _mutex. Safe to call off the SIP thread (the TUI/admin path).
+	bool sendMessageTo(const std::string& ext, const std::string& text);
+
 	// Broadcast / all-page extension (Issue #37). All assume the caller holds _mutex.
 	void startPaging(std::shared_ptr<SipMessage> invite, std::shared_ptr<SipClient> caller);
 	void handlePagingAnswer(const std::shared_ptr<Session>& session, std::shared_ptr<SipMessage> data);
@@ -274,6 +340,9 @@ private:
 		std::vector<std::tuple<std::string, std::string, std::string, std::string>> forwards;
 		// Ring/hunt groups: {groupExt, "ringall"|"hunt", "m1,m2,..."}.
 		std::vector<std::tuple<std::string, std::string, std::string>> ringGroups;
+		// Adopted devices (STAGE 2): {mac, ext, state, online}. Mirrored from _devices
+		// under _mutex; copied out for the TUI under _snapshotMutex.
+		std::vector<AdoptedDevice> devices;
 		uint64_t packetsProcessed = 0;
 		uint64_t packetsDropped = 0;
 	};
@@ -304,6 +373,54 @@ private:
 	// POCKETDIAL_MAX_CLIENTS groups; each member list is bounded by splitMembers().
 	// Guarded by _mutex; mirrored into the snapshot and persisted to NVS.
 	std::unordered_map<std::string, pbx::RingGroup> _ringGroups;
+
+	// ── Registrar mode (STAGE 2) ──────────────────────────────────────────────────
+	// Atomic so onRegister() can read the policy without taking _mutex (it already
+	// holds _mutex via handle(), but keeping this atomic also lets getRegistrarMode()
+	// be lock-free for the dashboard). Seeded from POCKETDIAL_OPEN_REGISTRAR at boot,
+	// then overridden by the persisted NVS value if present.
+#ifdef POCKETDIAL_OPEN_REGISTRAR
+	std::atomic<RegistrarMode> _registrarMode{RegistrarMode::Open};
+#else
+	std::atomic<RegistrarMode> _registrarMode{RegistrarMode::Secure};
+#endif
+	void loadRegistrarMode();             // boot-time reload from NVS; caller holds _mutex
+	void persistRegistrarMode();          // write-through after a mode change; holds _mutex
+
+	// ── Device registry (STAGE 2: Learn-mode adoption) ────────────────────────────
+	// Adopted devices keyed by 12-hex MAC. Bounded by POCKETDIAL_MAX_CLIENTS (a flood
+	// of distinct MACs cannot grow the heap without limit; new keys past the cap are
+	// dropped, mirroring _dnd/_forwards). Guarded by _mutex; mirrored into the
+	// snapshot and persisted to NVS (namespace "pbxcfg", key "devices").
+	struct DeviceRecord
+	{
+		std::string extension;
+		DeviceState state = DeviceState::Learned;
+	};
+	std::unordered_map<std::string, DeviceRecord> _devices;   // mac -> record
+	void loadDevices();                   // boot-time reload; caller holds _mutex
+	void persistDevices();                // write-through after a mutation; holds _mutex
+	void refreshDeviceSnapshot();         // mirror _devices into _snapshot; holds both mutexes
+
+	// Learn-mode REGISTER admission. Caller holds _mutex. Resolves the source MAC,
+	// applies TOFU + MAC-lock, and returns the digest decision. On a first-packet
+	// ARP miss it returns Accept (deferring the lock to the next REGISTER). May set
+	// `outRejectReason` when returning Reject. Records/updates the adoption entry.
+	enum class AuthDecision { Accept, Challenge, Reject };
+	AuthDecision admitLearn(const std::shared_ptr<SipMessage>& data,
+		const std::string& ext, std::string& outRejectReason);
+	// Secure-mode REGISTER admission: challenge + verify digest for `ext`. Caller
+	// holds _mutex. Enqueues the 401 (with WWW-Authenticate) itself when challenging.
+	AuthDecision admitSecure(const std::shared_ptr<SipMessage>& data,
+		const std::string& ext, std::string& outRejectReason);
+	// Emit a 401 Unauthorized with a fresh WWW-Authenticate challenge for `data`
+	// into _outbox. `stale` answers an expired-but-valid nonce. Caller holds _mutex.
+	void sendChallenge(const std::shared_ptr<SipMessage>& data, bool stale);
+	// Emit a 403 Forbidden with a reason phrase into _outbox. Caller holds _mutex.
+	void sendForbidden(const std::shared_ptr<SipMessage>& data, const std::string& reason);
+	// Mark a device record online/offline in the snapshot after a (de)registration.
+	// Caller holds _mutex.
+	void markDeviceOnline(const std::string& mac, bool online);
 
 	// NVS persistence for _forwards / _ringGroups. No-ops on host (the maps are the
 	// store); on ESP they read/write the "pbxcfg" NVS namespace. Caller holds _mutex.
@@ -338,6 +455,28 @@ private:
 	std::chrono::steady_clock::time_point _lastTick{};
 
 	std::vector<std::pair<bool, std::string>> _logQueue;
+
+	// ── Admin extension (Task 2B) ─────────────────────────────────────────────────
+	// NVS-persisted extension identity for the administrative endpoint.
+	// Default "101". Loaded from NVS namespace "pbxcfg", key "admin_ext" at boot.
+	std::string _adminExt{"101"};
+	void loadAdminExt();
+	void saveAdminExt(const std::string& ext);
+
+	// ── DTMF digit-collection state machine (Task 2C) ────────────────────────────
+	// Per-Call-ID accumulator. Accessed only from the single-threaded UDP receiver
+	// task (the same path that calls handle()), so no additional mutex is needed.
+	struct DtmfAccum
+	{
+		std::string digits;          // accumulated digit string
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+		TickType_t  lastTick{0};     // xTaskGetTickCount() of last digit
+#else
+		uint32_t    lastTick{0};     // monotonic ms counter on host
+#endif
+		static constexpr uint32_t TIMEOUT_MS = 5000;
+	};
+	std::unordered_map<std::string, DtmfAccum> _dtmfState;
 };
 
 #endif

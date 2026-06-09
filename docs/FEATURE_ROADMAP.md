@@ -1,6 +1,6 @@
 # pocket-dial — Technical Feature Roadmap
 
-**Status:** Living document | **Last updated:** 2026-06-04 | **Scope:** Engineering / product-capability only
+**Status:** Living document | **Last updated:** 2026-06-09 | **Scope:** Engineering / product-capability only
 
 This is a prioritized **engineering** roadmap for pocket-dial: what exists, what is
 landing now, and what is worth building next. It is grounded in the current source tree
@@ -41,7 +41,9 @@ Cross-references:
 | Capacity model | Compile-time pools `POCKETDIAL_MAX_CLIENTS/MAX_SESSIONS/MSG_POOL`; graceful `503` on exhaustion; Pocket/Office/Rack tiers | `src/SIP/PoolConfig.hpp`, [SCALING.md](SCALING.md) |
 | Security (signalling) | Per-source-IP token-bucket rate limit, optional CIDR allowlist, AOR input whitelist, bounded parser (header/body boundary) | `allowPacket`, `ipAllowed`, `isValidAor`, `findHeader` |
 | Security (HTTP) | Same-origin/CSRF check, 16 KB body cap, `SO_RCVTIMEO`, no wildcard CORS | `ARCHITECTURE.md` §5 |
-| Dev / debug | Desktop (Linux/Windows) host build & CI smoke harness; Yealink Action-URI test controller | `main.cpp`, `scratch/yealink_controller.py` |
+| Dev / debug | Desktop (Linux/Windows) host build & CI smoke harness; SIP load tester + liveness/SSH/HTTP smoke scripts | `main.cpp`, `tests/load/sip_stress.py`, `.smoke/`, `tests/http/test_api.sh` |
+| **Config over SSH** | **SSH "sysop terminal"** — wolfSSH on ESP-IDF v6 + an ANSI/TUI hub (banner → System Monitor · Network · PBX Config · Security · Reports/CDR · About). Ring groups, call-forward, and DND are configurable over SSH. Hardware-verified end-to-end. | `src/Helpers/Tui.cpp`, `src/Helpers/SshServer.cpp`, `cmake/patch_wolfssl.py`, `docs/design/` |
+| **PBX call features** | CDR ring, per-extension **DND**, **call-forward** (CFU/CFB/CFNA), **ring groups** (ring-all / hunt), **blind transfer** (REFER), DTMF star-codes (`*60/*80/*72/*73/*69/*11`) | `src/SIP/RequestsHandler.cpp`, `CallDetailRecord.hpp`, `PbxConfig.hpp` |
 
 ---
 
@@ -57,9 +59,10 @@ Cross-references:
 | 2 | **Zero-touch provisioning** — manual-URL Yealink `.cfg` MVP design (NVS `prov` map, per-MAC token, provisioning window) | Design complete, build-ready, **no code merged** | [PROVISIONING.md](PROVISIONING.md) |
 | 2 | **RTP design exploration** | Open question — see Non-Goals §6; media-in-path features remain explicitly out of the fast-path mandate | [SCALING.md](SCALING.md) §1 |
 
-> **Note on CDR / DND:** neither a Call Detail Record store nor a Do-Not-Disturb path
-> exists in the tree today (`RequestsHandler` has no CDR ring buffer and no per-extension
-> DND state). Both are proposed below (P1) rather than reported as in-progress.
+> **Update (2026-06-09):** several items previously listed as *proposed* below have since
+> shipped and now appear in §1 — CDR ring, per-extension DND, call-forward (CFU/CFB/CFNA),
+> ring/hunt groups, and blind transfer (REFER) — all surfaced in the new SSH "sysop terminal."
+> Treat their backlog rows in §3.1 as **done** unless a sub-point says otherwise.
 
 > **Known cross-cutting hazard (flagged in [PROVISIONING.md](PROVISIONING.md) §3.3):** SIP
 > auth (P0 below) depends on the per-MAC secret store provisioning writes, and provisioning
@@ -192,10 +195,16 @@ static-pool architecture, not for any other reason.
 | **On-MCU transcoding** | No DSP budget. The engine deliberately *rewrites SDP to G.711 (`0 8 101`)* and forces phones via provisioning rather than transcoding; that is the design, not a gap. |
 | **Wideband / Opus / G.722 media negotiation** | The interop strategy is to *lock* to G.711; supporting wideband would reintroduce the codec-mismatch failures `enforceG711()` exists to prevent. |
 | **TLS as the primary transport security** | On a LAN appliance, self-signed certs trigger browser warnings, cost MCU RAM/CPU, and only protect the dashboard (not SIP/RTP). WPA2 is the better lever ([THREAT_MODEL.md](THREAT_MODEL.md) §6). HTTPS is a documented *optional add-on* only. |
-| **WAN / Internet exposure, NAT traversal (STUN/ICE/TURN)** | pocket-dial is a single-L2-segment appliance; media is P2P on one subnet. NAT traversal adds latency and failure modes for a scenario the product does not target ([PROVISIONING.md](PROVISIONING.md) §2.3). |
+| **WebRTC NAT traversal (ICE/TURN) · TURN media relay on-MCU** | ICE/TURN are peer-mesh/WebRTC tools, and a TURN *server* would put N relayed media streams on the MCU. Out of scope. **Note:** trunking *up* to one upstream provider (§7) needs only `rport`/symmetric-RTP NAT handling — **not** ICE/TURN — so the gateway exploration does not reintroduce them. |
 | **Cloud control plane / remote management** | The device is intentionally self-contained with no cloud dependency; control is local-only (see threat model trust boundaries). |
 | **Unbounded dynamic allocation for "scale"** | Capacity is set by static pools by design; "scale up" means picking a tier (or a wired board), not removing the pre-allocation that guarantees a fragmentation-free hot path ([SCALING.md](SCALING.md) §5). |
 | **DHCP Option 43 multi-vendor provisioning** | Brittle per-vendor TLV encoding; rejected in favor of an Option-66 `dhcpserver` fork ([PROVISIONING.md](PROVISIONING.md) §1.1). |
+
+> **Exploration caveat (§7).** The *edge-gateway / upstream-trunk* track deliberately crosses
+> the "server never touches RTP" line **for trunk calls only** — the box becomes a B2BUA that
+> bridges one upstream leg to one extension leg (a few G.711 streams; no transcoding/mixing).
+> A conscious, bounded exception to the table above, not a removal of the invariant for the
+> LAN/registrar path.
 
 ---
 
@@ -213,3 +222,40 @@ static-pool architecture, not for any other reason.
 
 (Config import/export is the strongest P0 *platform* item and the natural fourth, de-risking
 all later config growth.)
+
+---
+
+## 7. Strategic exploration: edge gateway / upstream SIP trunk (B2BUA)
+
+> **Status:** direction under active exploration (not yet built). This track consciously extends
+> pocket-dial from a *LAN-only signalling registrar* into a small **SIP edge gateway / mini-SBC**
+> that trunks **up to a single commercial softswitch / CPaaS fabric** (and through it to the PSTN),
+> bridging local extensions to that upstream. It answers the "how far can this hardware go" question
+> concretely. Committed docs stay **vendor-neutral** — the capability, not the brand.
+
+**Topology.** `local phones (LAN) ↔ pocket-dial (B2BUA edge) ↔ SIP trunk ↔ upstream softswitch / CPaaS ↔ PSTN`.
+pocket-dial becomes a back-to-back UA: it registers (or static-trunks) to **one** provider and bridges
+each external call between the trunk leg and the extension leg.
+
+**What it needs** (all bounded; fits the flash budget — the SSH-terminal build is ~1.96 MB of the 6 MB slot, ~4 MB free):
+
+| Pri | Capability | Why | Cost / constraint |
+|-----|-----------|-----|-------------------|
+| **P0** | **SIP digest auth** — REGISTER `401` shipped (RFC 2617 MD5); INVITE `407` + RFC 8760 SHA-256 are the remaining targets | Every commercial fabric challenges credentials — no auth, no trunk. Also closes the open registrar (already P0 in §3.3). | ~tens of KB; read-only credential callback, no new lock |
+| **P0** | **Outbound registration / static trunk** | How the box authenticates *to* the upstream (creds in NVS, re-REGISTER on expiry, outbound proxy / `Route`) | small; one outbound UAC dialog |
+| **P0** | **NAT-for-trunks**: `rport` (RFC 3581), symmetric RTP / comedia latching, Contact/Via rewrite, OPTIONS keepalive | How a SIP trunk traverses the office NAT — the correct tool, **not** ICE/TURN | small; keepalive OPTIONS already exists |
+| **P1** | **B2BUA media bridge** (trunk leg ↔ extension leg) | The two legs are different RTP domains, so the box must relay media for trunk calls — a bounded, conscious exception to the P2P invariant (§5) | a few concurrent **G.711** relays (no transcode); sized against CPU, not flash |
+| **P1** | **TLS/SIPS (signalling) + SRTP (media)** | Commercial fabrics commonly require encrypted trunks | real add, but **wolfSSL is already linked** (the crypto is in the binary); software AES for a handful of streams is feasible on the S3 |
+| **P2** | **Upstream call-control / programmatic API** | Beyond a raw trunk: drive call control through the upstream platform's API (click-to-dial, programmable routing, presence) for richer telephony | HTTP(S) client work; orthogonal to the SIP path |
+
+**Still out, even here:** ICE/TURN (WebRTC/peer-mesh, not trunking), on-MCU mixing/transcoding, and any
+*inbound* public exposure — the box trusts **one outbound** upstream, a far safer posture than facing the
+SIP-scanning internet.
+
+**Real constraints (not flash):** B2BUA media-path RAM/CPU for the concurrent G.711 relays; SRTP throughput;
+and credential security (trunk secrets in NVS → pairs with the §3.3 flash-encryption work) plus an outbound
+TLS trust anchor.
+
+**Natural build order:** digest auth → outbound trunk/registration → B2BUA G.711 bridge → TLS/SRTP →
+(optional) upstream call-control API. The SSH terminal grows a **Trunk / PSTN** surface alongside the
+existing tabs.

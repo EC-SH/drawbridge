@@ -31,9 +31,20 @@
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "esp_eth.h"      // pulls in esp_eth_mac_esp.h (internal EMAC) + esp_eth_phy.h (LAN87xx)
+#include "esp_idf_version.h"
+#include "esp_eth.h"      // internal EMAC (esp_eth_mac_esp.h) + generic PHY (esp_eth_phy.h)
+// LAN87xx PHY driver headers: ESP-IDF v6.0 removed the chip-specific PHY drivers
+// (esp_eth_phy_new_lan87xx & friends) from the core esp_eth component and moved them
+// to standalone managed components — here the `espressif/lan87xx` package, which
+// ships this dedicated header. On v5.x esp_eth.h itself declared
+// esp_eth_phy_new_lan87xx and this header does not exist, so the include (and the
+// managed-component dependency in idf_component.yml) is gated to v6.0+.
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#include "esp_eth_phy_lan87xx.h"
+#endif
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_mac.h"      // esp_read_mac, ESP_MAC_ETH
 #include "esp_timer.h"    // esp_timer_get_time
 
@@ -45,6 +56,8 @@
 #include "SipServer.hpp"
 #include "HttpServer.hpp"
 #include "OtaUpdater.hpp"
+#include "AdminAuth.hpp"
+#include "LogQueue.hpp"
 
 // ── Tag for ESP_LOG ────────────────────────────────────────────────────────
 static const char* TAG = "SipServerLAN8720";
@@ -70,6 +83,9 @@ static const char* TAG = "SipServerLAN8720";
 
 // ── SIP configuration ─────────────────────────────────────────────────────
 #define SIP_PORT          5060
+
+// ── Topology constant ─────────────────────────────────────────────────────
+#define TOPOLOGY_INFRA  2
 
 // ── Event group bits ──────────────────────────────────────────────────────
 #define ETH_CONNECTED_BIT BIT0
@@ -152,8 +168,11 @@ static esp_eth_handle_t eth_init_lan8720(void)
     // NOTE: GPIO0 is also a boot-strapping pin; driving the clock out of it can
     // interfere with auto-download mode. If flashing becomes flaky, hold the
     // BOOT button (or break the clock) during the esptool sync.
+    // v6: the EMAC_APPL_CLK_OUT_GPIO enum is gone — clock_config.rmii.clock_gpio is
+    // now a plain int GPIO number (see eth_mac_clock_config_t in esp_eth_mac_esp.h).
+    // GPIO0 is the only RMII CLK-OUT capable pad on the classic ESP32.
     emac_cfg.clock_config.rmii.clock_mode = EMAC_CLK_OUT;
-    emac_cfg.clock_config.rmii.clock_gpio = EMAC_APPL_CLK_OUT_GPIO;  // GPIO0
+    emac_cfg.clock_config.rmii.clock_gpio = GPIO_NUM_0;  // 50 MHz RMII ref clock out on GPIO0
 
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
     esp_eth_mac_t* mac = esp_eth_mac_new_esp32(&emac_cfg, &mac_config);
@@ -242,11 +261,20 @@ static void http_server_task(void* pvParameters)
     vTaskDelete(nullptr);
 }
 
+// ── Log drain task (Task 1B) ──────────────────────────────────────────────────
+static void log_drain_task(void* /*arg*/)
+{
+    while (1) {
+        LogQueue::drainToUart();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 // ── app_main ──────────────────────────────────────────────────────────────
 
 extern "C" void app_main(void)
 {
-    // ── NVS (required by some drivers) ──────────────────────────────────
+    // ── NVS init (keep ESP_ERROR_CHECK here — unrecoverable without flash) ──
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
@@ -255,7 +283,14 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    // ── Task 1B: install non-blocking log queue + drain task ────────────────
+    LogQueue::create();
+    xTaskCreatePinnedToCore(log_drain_task, "log_drain", 2048, nullptr, 1, nullptr, 0);
+
     // ── Networking stack ────────────────────────────────────────────────
+    // netif + default event loop are non-retryable boot prerequisites; abort on failure
+    // (matching the display build) rather than logging and then crashing deeper on an
+    // uninitialized stack. UdpServer's socket back-off is the recoverable-retry layer.
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -303,9 +338,57 @@ extern "C" void app_main(void)
         return;
     }
 
-    // ── Launch SIP server on Core 1 ─────────────────────────────────────
-    xTaskCreatePinnedToCore(&sip_server_task, "sip_server", 8192, nullptr, 5, nullptr, 1);
+    // ── Task 1D: INFRA mode — start DHCP server on Ethernet netif if requested
+    {
+        uint8_t topology_mode = 0;
+        nvs_handle_t nvs_h;
+        if (nvs_open("storage", NVS_READONLY, &nvs_h) == ESP_OK) {
+            nvs_get_u8(nvs_h, "wifi_mode", &topology_mode);
+            nvs_close(nvs_h);
+        }
+        if (topology_mode == TOPOLOGY_INFRA) {
+            esp_err_t dhcps_err = esp_netif_dhcps_start(s_eth_netif);
+            if (dhcps_err != ESP_OK && dhcps_err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+                ESP_LOGW(TAG, "dhcps_start on eth netif returned %d", dhcps_err);
+            } else {
+                ESP_LOGI(TAG, "INFRA: DHCP server started on Ethernet netif");
+            }
+        }
+    }
 
-    // ── Launch HTTP dashboard on Core 0 ─────────────────────────────────
+    // ── Task 1C: provisioning gate ───────────────────────────────────────────
+    bool is_provisioned = false;
+    {
+        nvs_handle_t nvs_h;
+        if (nvs_open("storage", NVS_READONLY, &nvs_h) == ESP_OK) {
+            uint8_t flag = 0;
+            if (nvs_get_u8(nvs_h, "provisioned", &flag) == ESP_OK && flag != 0) {
+                is_provisioned = true;
+            }
+            nvs_close(nvs_h);
+        }
+    }
+
+    // ── Launch HTTP dashboard on Core 0 (always — needed to provision) ─────────
     xTaskCreatePinnedToCore(&http_server_task, "http_dashboard", 8192, nullptr, 4, nullptr, 0);
+
+    if (!is_provisioned) {
+        ESP_LOGW(TAG, "[boot] device unprovisioned — SIP stack held dark until credential committed");
+
+        while (!AdminAuth::credentialIsSet()) {
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            ESP_LOGI(TAG, "[boot] waiting for admin credential...");
+        }
+
+        nvs_handle_t nvs_h;
+        if (nvs_open("storage", NVS_READWRITE, &nvs_h) == ESP_OK) {
+            nvs_set_u8(nvs_h, "provisioned", 1);
+            nvs_commit(nvs_h);
+            nvs_close(nvs_h);
+        }
+        ESP_LOGI(TAG, "[boot] credential set — unblocking SIP stack");
+    }
+
+    // ── Launch SIP server on Core 1 (gated on provisioning) ──────────────────
+    xTaskCreatePinnedToCore(&sip_server_task, "sip_server", 8192, nullptr, 5, nullptr, 1);
 }

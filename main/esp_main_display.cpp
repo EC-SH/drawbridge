@@ -38,6 +38,7 @@
 #include "OtaUpdater.hpp"
 #include "DnsServer.hpp"
 #include "IPHelper.hpp"
+#include "SshServer.hpp"
 #include "host_compat.h"
 
 static const char *TAG = "main_display";
@@ -54,8 +55,12 @@ static const char *TAG = "main_display";
 
 #define TOUCH_SDA   4
 #define TOUCH_SCL   8
-#define TOUCH_RST   12
-#define TOUCH_INT   11
+// NOTE: the JC3248W535's AXS15231B touch controller shares the display silicon and
+// is read over I2C only — it has NO dedicated INT/RST routed to a usable GPIO. The
+// reference board map (esp-idf-jc3248w535-axs15231b/main/board.h) defines neither,
+// and GPIO 11/12 (previously mis-assigned here as TOUCH_INT/TOUCH_RST) are actually
+// the microSD CMD/CLK lines on this board. We therefore drive touch in polled mode
+// (int/rst = GPIO_NUM_NC); see hardware_touch_init().
 
 // Onboarding credentials
 #define ONBOARDING_SSID "My-Ap"
@@ -101,6 +106,13 @@ static lv_color_t       *s_band_buf       = NULL;  // internal DMA bounce (320 x
 static std::string g_localIp = "192.168.4.1";
 static int g_stationNum = 0;
 static bool g_setupComplete = false;
+
+// Cached operational Wi-Fi config, read once from NVS at boot (Fix #7). wifi_mode only
+// changes via a topology switch, which reboots — so these never go stale at runtime.
+// system_status_task uses these instead of re-opening NVS every tick under the LVGL
+// mutex (flash I/O held under s_lvgl_mux stalls the render path / risks TE-vsync misses).
+static uint8_t g_wifiMode      = 0;
+static char    g_wifiSsid[33]  = {0};
 
 // Captive-portal decay: if no one confirms config within this window, the device "decays"
 // into open Standalone AP mode so it's a usable PBX unattended. The web "I'm configuring"
@@ -258,8 +270,13 @@ static esp_lcd_touch_handle_t hardware_touch_init() {
     esp_lcd_touch_config_t touch_config = {};
     touch_config.x_max = 320;
     touch_config.y_max = 480;
-    touch_config.rst_gpio_num = (gpio_num_t)TOUCH_RST;
-    touch_config.int_gpio_num = (gpio_num_t)TOUCH_INT;
+    // No dedicated touch INT/RST GPIO on the JC3248W535 (GPIO 11/12 are the SD CMD/CLK
+    // lines, not touch). NC => the driver polls coordinates over I2C, matching the
+    // known-good reference. Driving the SD pins as touch INT/RST broke nothing visibly
+    // because read_data polls anyway, but it mis-claimed shared pins and could leave the
+    // panel waiting on an interrupt that never represents a real touch.
+    touch_config.rst_gpio_num = GPIO_NUM_NC;
+    touch_config.int_gpio_num = GPIO_NUM_NC;
     touch_config.flags.swap_xy = 0;
     touch_config.flags.mirror_x = 0;
     touch_config.flags.mirror_y = 0;
@@ -378,6 +395,11 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
 static void sip_server_task(void *pvParameters) {
     ESP_LOGI("SipTask", "Starting SipServer engine on Core 0 IP %s:%d", g_localIp.c_str(), 5060);
     g_sipServer = new SipServer(g_localIp, 5060);
+    // Plumb the live registrar into the SSH sysop-terminal TUI so its hub status
+    // line + title-bar clock show real extension/call counts (thread-safe: the
+    // handler's dashboard getters snapshot-copy under their own mutex). Attaching
+    // a raw pointer is safe — g_sipServer lives for the process lifetime.
+    SshServer::instance().attachHandler(&g_sipServer->getHandler());
     while (1) {
         if (g_sipServer) {
             g_sipServer->getHandler().tick();
@@ -429,62 +451,83 @@ static void system_status_task(void *pvParameters) {
             int clientCount = g_sipServer ? g_sipServer->getHandler().getClientCount() : 0;
             int sessionCount = g_sipServer ? g_sipServer->getHandler().getSessionCount() : 0;
 
-            // ── Build the switchboard jack/patch snapshot from the registrar dashboard API ──
-            // All getters snapshot-copy under RequestsHandler's own _snapshotMutex; we never
-            // block the SIP core here. Everything is bounded by the registrar pools.
+            // Free-heap % for the wallboard vitals line (internal heap; PSRAM excluded so
+            // the figure reflects the constrained pool that actually matters for stability).
+            int freeHeapPct = -1;
+            {
+                size_t freeI  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+                size_t totalI = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+                if (totalI > 0) freeHeapPct = (int)((freeI * 100) / totalI);
+            }
+
+            // ── Build the wallboard snapshot (live calls + roster + DND) from the registrar
+            // dashboard API ── All getters snapshot-copy under RequestsHandler's own
+            // _snapshotMutex; we never block the SIP core here. Everything is bounded by the
+            // registrar pools (32 clients / 8 sessions).
             UiBoardSnapshot board{};
-            board.jackCount = 0;
-            board.patchCount = 0;
+            board.callCount = 0;
+            board.extCount = 0;
+            board.dndCount = 0;
+            board.dndOverflow = 0;
             if (g_sipServer) {
                 RequestsHandler& h = g_sipServer->getHandler();
                 auto clients  = h.getActiveClients();   // {ext, ip:port}
                 auto sessions = h.getActiveSessions();   // {a, b, stateStr, durationSec}
                 auto dndList  = h.getDndExtensions();    // {ext...}
 
-                // Fast-membership sets for in-call / DND derivation. Bounded by the pools.
-                std::unordered_set<std::string> inCall;
-                for (const auto& s : sessions) {
-                    const std::string& a = std::get<0>(s);
-                    const std::string& b = std::get<1>(s);
-                    const std::string& st = std::get<2>(s);
-                    // Only "live" sessions light a lamp in-call; teardown states don't.
-                    if (st == "Connected" || st == "Invited") {
-                        if (!a.empty() && a != "?") inCall.insert(a);
-                        if (!b.empty() && b != "?") inCall.insert(b);
-                    }
-                }
+                // DND membership set for roster flags + the chip list.
                 std::unordered_set<std::string> dnd(dndList.begin(), dndList.end());
 
-                // One jack per registered client (bounded to UI_MAX_JACKS).
-                for (const auto& c : clients) {
-                    if (board.jackCount >= UI_MAX_JACKS) break;
-                    UiJack& j = board.jacks[board.jackCount];
-                    strncpy(j.ext, c.first.c_str(), sizeof(j.ext) - 1);
-                    j.ext[sizeof(j.ext) - 1] = '\0';
-                    if (inCall.count(c.first))     j.state = UI_JACK_INCALL;
-                    else if (dnd.count(c.first))   j.state = UI_JACK_DND;
-                    else                           j.state = UI_JACK_IDLE;
-                    board.jackCount++;
+                // Live calls: only "live" sessions (Connected=active glow, Invited=ringing)
+                // light a row; teardown states (Bye/Cancel/Busy/Unavailable) don't. Bounded
+                // to UI_MAX_CALLS. Also collect the in-call extension set for roster flags.
+                std::unordered_set<std::string> inCall;
+                for (const auto& s : sessions) {
+                    const std::string& a  = std::get<0>(s);
+                    const std::string& b  = std::get<1>(s);
+                    const std::string& st = std::get<2>(s);
+                    int dur = std::get<3>(s);
+                    bool active  = (st == "Connected");
+                    bool ringing = (st == "Invited");
+                    if (!active && !ringing) continue;
+                    if (!a.empty() && a != "?") inCall.insert(a);
+                    if (!b.empty() && b != "?") inCall.insert(b);
+                    if (board.callCount < UI_MAX_CALLS) {
+                        UiCall& c = board.calls[board.callCount];
+                        strncpy(c.a, a.c_str(), sizeof(c.a) - 1); c.a[sizeof(c.a) - 1] = '\0';
+                        strncpy(c.b, b.c_str(), sizeof(c.b) - 1); c.b[sizeof(c.b) - 1] = '\0';
+                        c.state = active ? UI_CALL_ACTIVE : UI_CALL_RINGING;
+                        c.durationSec = dur;
+                        board.callCount++;
+                    }
                 }
 
-                // Patch cords from live sessions (bounded to UI_MAX_PATCHES).
-                for (const auto& s : sessions) {
-                    if (board.patchCount >= UI_MAX_PATCHES) break;
-                    const std::string& st = std::get<2>(s);
-                    if (st != "Connected" && st != "Invited") continue;
-                    UiPatch& p = board.patches[board.patchCount];
-                    strncpy(p.a, std::get<0>(s).c_str(), sizeof(p.a) - 1);
-                    p.a[sizeof(p.a) - 1] = '\0';
-                    strncpy(p.b, std::get<1>(s).c_str(), sizeof(p.b) - 1);
-                    p.b[sizeof(p.b) - 1] = '\0';
-                    strncpy(p.state, st.c_str(), sizeof(p.state) - 1);
-                    p.state[sizeof(p.state) - 1] = '\0';
-                    board.patchCount++;
+                // Roster: one entry per registered client (bounded to UI_MAX_EXTENSIONS),
+                // tagged with its in-call / DND flags.
+                for (const auto& c : clients) {
+                    if (board.extCount >= UI_MAX_EXTENSIONS) break;
+                    UiExt& e = board.exts[board.extCount];
+                    strncpy(e.ext, c.first.c_str(), sizeof(e.ext) - 1);
+                    e.ext[sizeof(e.ext) - 1] = '\0';
+                    e.inCall = inCall.count(c.first) > 0;
+                    e.dnd    = dnd.count(c.first) > 0;
+                    board.extCount++;
+                }
+
+                // DND chips (bounded to UI_MAX_DND_CHIPS; the rest become "+N").
+                for (const auto& ext : dndList) {
+                    if (board.dndCount < UI_MAX_DND_CHIPS) {
+                        strncpy(board.dnd[board.dndCount], ext.c_str(), sizeof(board.dnd[0]) - 1);
+                        board.dnd[board.dndCount][sizeof(board.dnd[0]) - 1] = '\0';
+                        board.dndCount++;
+                    } else {
+                        board.dndOverflow++;
+                    }
                 }
             }
 
             if (lvgl_lock(100)) {
-                ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount);
+                ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount, freeHeapPct);
                 ui_update_board(board);
                 lvgl_unlock();
             }
@@ -687,6 +730,27 @@ extern "C" void app_main(void) {
         wifi_mode = 0;
     }
 
+    // Cache the operational config for system_status_task (Fix #7 — see globals above).
+    g_wifiMode = wifi_mode;
+    strncpy(g_wifiSsid, saved_ssid, sizeof(g_wifiSsid) - 1);
+    g_wifiSsid[sizeof(g_wifiSsid) - 1] = '\0';
+
+    // Initialize WiFi driver before any wifi_init_softap / wifi_init_sta calls below
+    {
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        esp_wifi_set_ps(WIFI_PS_NONE);
+    }
+
+    // Onboarding model: "up usable, secure later" — the device is NEVER held dark
+    // waiting for an admin credential. It boots straight into its normal network role
+    // below (STATION if WiFi is saved, else the captive WiFi-onboarding portal, else
+    // Standalone AP), so the operator can connect WiFi, reach the dashboard, and SSH in
+    // before optionally setting a PIN. "Secured" is the runtime property
+    // AdminAuth::isProvisioned(); the dashboard's sensitive endpoints and the on-device
+    // sensitive actions self-gate on it once a PIN exists. Setting a PIN is offered (a
+    // dismissible prompt + the Perimeter screen), not forced.
+
     // Consume the one-shot decay flag. If last boot's captive portal timed out, come up in
     // transient Standalone AP this once WITHOUT persisting it, so a later power cycle still
     // returns to the captive portal (decay is never a saved boot target).
@@ -700,14 +764,6 @@ extern "C" void app_main(void) {
     }
 
     ESP_LOGI(TAG, "Persisted Network settings: Mode=%d, SSID=%s, decayed=%d", wifi_mode, saved_ssid, decayed);
-
-    // Initialize base WiFi configuration
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    // Disable modem-sleep power save: it adds escalating latency (tens of ms, climbing
-    // between DTIM beacons) that made the web dashboard feel unreachable. Keep the radio
-    // hot so HTTP/SIP stay responsive.
-    esp_wifi_set_ps(WIFI_PS_NONE);
 
     // Boot priority: explicit Standalone (or a transient decay) -> Standalone AP;
     // else saved STATION creds -> try to join as client (fall back to captive portal);
@@ -764,6 +820,27 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "Captive onboarding active at http://192.168.4.1/ or pocketdial.local (decays in %ds)", CAPTIVE_DECAY_SECONDS);
         xTaskCreatePinnedToCore(&captive_decay_task, "decay_task", 3072, NULL, 3, NULL, 0);
     }
+
+    // ── SSH / esp_console engine (Ticket 2) ─────────────────────────────────
+    // Available in EVERY network role — operational STATION/Standalone AND during
+    // captive onboarding — so the operator can reach SSH before securing the device.
+    // All paths have a live netif/IP by here. start() reads ssh_enabled from NVS and
+    // fails closed.
+    //
+    // Plumb the real network identity into the SSH sysop-terminal TUI so its banner
+    // ADDR shows the live IP (not 0.0.0.0) and the hub status tail names the real
+    // network role (STATION / AP / SETUP) instead of a hardcoded "AP mode". g_localIp
+    // is set in every branch above (STATION: DHCP lease; Standalone/captive:
+    // 192.168.4.1); the captive-portal path runs with wifi_mode 0 → SETUP. We pass
+    // an effective mode so a decay/standalone fallback reads AP even if wifi_mode
+    // was 0 in NVS.
+    {
+        uint8_t effMode = go_captive ? 0          // captive onboarding → SETUP
+                        : go_standalone ? 2        // own hotspot → AP
+                        : 1;                       // joined an AP → STATION
+        SshServer::instance().setNetInfo(g_localIp.c_str(), effMode, g_wifiSsid);
+    }
+    SshServer::instance().start();
 
     // 5. Spin up periodic status and battery updater task
     xTaskCreatePinnedToCore(&system_status_task, "status_task", 4096, NULL, 3, NULL, 0);

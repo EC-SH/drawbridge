@@ -2,6 +2,11 @@
 #include <thread>
 #include <cstring>
 
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#include "esp_log.h"
+static const char* UDP_TAG = "UdpServer";
+#endif
+
 // Issue #49: RequestsHandler::handle() runs inline in udp_receiver_task, so this
 // task IS the SIP signaling control plane and must share a core with the rest of
 // the SIP engine. The SoftAP (esp_main.cpp) and Ethernet (esp_main_eth.cpp) builds
@@ -13,9 +18,61 @@
 #define POCKETDIAL_UDP_RX_CORE 1
 #endif
 
-UdpServer::UdpServer(std::string ip, int port, OnNewMessageEvent event) : _ip(std::move(ip)), _port(port), _onNewMessageEvent(event), _keepRunning(false)
+// ── openSocket ────────────────────────────────────────────────────────────────
+// On ESP: retries indefinitely with exponential back-off (500 ms → 30 s cap).
+// Never throws, never calls esp_restart() — the caller can spin safely.
+// On other platforms: throws std::runtime_error on the first failure (original
+// behaviour preserved for host/desktop builds).
+bool UdpServer::openSocket()
 {
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	uint32_t backoffMs = kBackoffInitialMs;
 
+	while (true)
+	{
+		// Close any previously-opened (failed) socket before retrying.
+		if (_sockfd >= 0)
+		{
+			close(_sockfd);
+			_sockfd = -1;
+		}
+
+		_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+		if (_sockfd < 0)
+		{
+			ESP_LOGE(UDP_TAG, "socket() failed (errno %d) — retrying in %u ms", errno, backoffMs);
+			vTaskDelay(pdMS_TO_TICKS(backoffMs));
+			backoffMs = (backoffMs * 2 > kBackoffMaxMs) ? kBackoffMaxMs : backoffMs * 2;
+			continue;
+		}
+
+		// Receive timeout so receiveLoop() isn't stuck forever when we shut down.
+		struct timeval tv;
+		tv.tv_sec  = 0;
+		tv.tv_usec = 500000; // 500 ms
+		setsockopt(_sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+		_servaddr = {};
+		_servaddr.sin_family      = AF_INET;
+		_servaddr.sin_addr.s_addr = inet_addr(_ip.c_str());
+		_servaddr.sin_port        = htons(_port);
+
+		if (bind(_sockfd, reinterpret_cast<const struct sockaddr*>(&_servaddr), sizeof(_servaddr)) < 0)
+		{
+			ESP_LOGE(UDP_TAG, "bind() failed on %s:%d (errno %d) — retrying in %u ms",
+			         _ip.c_str(), _port, errno, backoffMs);
+			close(_sockfd);
+			_sockfd = -1;
+			vTaskDelay(pdMS_TO_TICKS(backoffMs));
+			backoffMs = (backoffMs * 2 > kBackoffMaxMs) ? kBackoffMaxMs : backoffMs * 2;
+			continue;
+		}
+
+		ESP_LOGI(UDP_TAG, "UDP socket bound on %s:%d", _ip.c_str(), _port);
+		return true;
+	}
+#else
+	// ── Non-ESP (host / Windows / Linux desktop) ──────────────────────────
 #if defined _WIN32 || defined _WIN64
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
@@ -24,29 +81,41 @@ UdpServer::UdpServer(std::string ip, int port, OnNewMessageEvent event) : _ip(st
 	}
 #endif
 
-	if ((_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+	if ((_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+	{
 		throw std::runtime_error("socket creation failed");
 	}
 
 #if defined _WIN32 || defined _WIN64
-	DWORD timeout = 500; // 500ms timeout
+	DWORD timeout = 500;
 	setsockopt(_sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 #else
 	struct timeval tv;
-	tv.tv_sec = 0;
-	tv.tv_usec = 500000; // 500ms timeout
+	tv.tv_sec  = 0;
+	tv.tv_usec = 500000;
 	setsockopt(_sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
 
 	_servaddr = {};
-	_servaddr.sin_family = AF_INET;
+	_servaddr.sin_family      = AF_INET;
 	_servaddr.sin_addr.s_addr = inet_addr(_ip.c_str());
-	_servaddr.sin_port = htons(port);
+	_servaddr.sin_port        = htons(_port);
 
 	if (bind(_sockfd, reinterpret_cast<const struct sockaddr*>(&_servaddr), sizeof(_servaddr)) < 0)
 	{
 		throw std::runtime_error("bind failed");
 	}
+	return true;
+#endif
+}
+
+// ── Constructor ───────────────────────────────────────────────────────────────
+UdpServer::UdpServer(std::string ip, int port, OnNewMessageEvent event)
+    : _ip(std::move(ip)), _port(port), _onNewMessageEvent(event), _keepRunning(false)
+{
+	// openSocket() handles WSAStartup on Windows and the recv-timeout setsockopt.
+	// On ESP it retries with back-off; on desktop it may throw.
+	openSocket();
 }
 
 UdpServer::~UdpServer()
@@ -123,12 +192,16 @@ int UdpServer::send(const struct sockaddr_in& address, const std::string& buffer
 void UdpServer::closeServer()
 {
 	_keepRunning = false;
-	shutdown(_sockfd, 2);
+	if (_sockfd >= 0)
+	{
+		shutdown(_sockfd, 2);
 #if defined(__linux__) || defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
-	close(_sockfd);
+		close(_sockfd);
 #elif defined _WIN32 || defined _WIN64
-	closesocket(_sockfd);
+		closesocket(_sockfd);
 #endif
+		_sockfd = -1;
+	}
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	// Block until receiveLoop() has fully exited before returning, so the

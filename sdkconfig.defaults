@@ -66,3 +66,11 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # while SIP, on a properly-sized FreeRTOS task, kept working). Give std::thread
 # tasks a realistic stack.
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
+
+# wolfSSL (display/SSH build only). The wolfSSL ESP component emits a #warning
+# "RSA may be difficult with less than 10KB Stack" when CONFIG_ESP_MAIN_TASK_STACK_SIZE
+# < 10500. Under IDF v6.0.1's -Werror=cpp a #warning is a hard error. The wolfSSH
+# server runs in its own 24KB task (not the main task) and uses ECC, not RSA, so the
+# warning is irrelevant here — suppress it via the wolfSSL-provided Kconfig escape hatch.
+# (Harmless/ignored for non-display builds that don't link wolfSSL.)
+CONFIG_ESP_WOLFSSL_NO_STACK_SIZE_BUILD_WARNING=y

@@ -69,6 +69,14 @@ namespace AdminAuth
 	// lockout state. Used by factory-reset so the device returns to the
 	// unprovisioned/open state.
 	void clearCredential();
+
+	// True iff the NVS key "admin_hash" in namespace "storage" is non-empty.
+	// Intended for the boot provisioning gate in app_main() — called before
+	// the RTOS scheduler has spawned real-time tasks, so it may block briefly
+	// on NVS I/O without issue.
+	// On non-ESP (host) builds this delegates to isProvisioned() so the host
+	// unit tests exercise the same code path.
+	bool credentialIsSet();
 }
 
 #endif // ADMIN_AUTH_HPP

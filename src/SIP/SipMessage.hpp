@@ -62,6 +62,9 @@ public:
 	std::string_view getContact() const;
 	std::string_view getContactNumber() const;
 	std::string_view getContentLength() const;
+	// Full `Authorization:` request-header line (or empty if absent). The value
+	// is fed to SipDigest::parseAuthorization, which tolerates the header name.
+	std::string_view getAuthorization() const;
 	sockaddr_in getSource() const;
 	std::optional<PocketDial::SipStatusInfo> getStatusInfo() const { return _statusInfo; }
 
@@ -90,6 +93,7 @@ protected:
 	std::string_view _contact;
 	std::string_view _contactNumber;
 	std::string_view _contentLength;
+	std::string_view _authorization;
 	std::string _messageStr;
 	bool _hasSdp = false;
 	std::optional<PocketDial::SipStatusInfo> _statusInfo;
