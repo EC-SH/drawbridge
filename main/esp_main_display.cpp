@@ -395,6 +395,11 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
 static void sip_server_task(void *pvParameters) {
     ESP_LOGI("SipTask", "Starting SipServer engine on Core 0 IP %s:%d", g_localIp.c_str(), 5060);
     g_sipServer = new SipServer(g_localIp, 5060);
+    // Plumb the live registrar into the SSH sysop-terminal TUI so its hub status
+    // line + title-bar clock show real extension/call counts (thread-safe: the
+    // handler's dashboard getters snapshot-copy under their own mutex). Attaching
+    // a raw pointer is safe — g_sipServer lives for the process lifetime.
+    SshServer::instance().attachHandler(&g_sipServer->getHandler());
     while (1) {
         if (g_sipServer) {
             g_sipServer->getHandler().tick();
@@ -726,12 +731,10 @@ extern "C" void app_main(void) {
     char saved_ssid[33] = {0};
     char saved_pass[64] = {0};
 
-    uint8_t provisioned = 0;
     nvs_handle_t nvs_handle;
     if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
         if (nvs_get_u8(nvs_handle, "wifi_mode", &wifi_mode) != ESP_OK) wifi_mode = 0;
         if (nvs_get_u8(nvs_handle, "decayed", &decayed)     != ESP_OK) decayed   = 0;
-        if (nvs_get_u8(nvs_handle, "provisioned", &provisioned) != ESP_OK) provisioned = 0;
         size_t size = sizeof(saved_ssid);
         if (nvs_get_str(nvs_handle, "wifi_ssid", saved_ssid, &size) != ESP_OK) saved_ssid[0] = '\0';
         size = sizeof(saved_pass);
@@ -753,18 +756,14 @@ extern "C" void app_main(void) {
         esp_wifi_set_ps(WIFI_PS_NONE);
     }
 
-    // ── Provisioning gate: unprovisioned device boots to setup screen, SIP held dark ──
-    if (!provisioned) {
-        ESP_LOGW(TAG, "[boot] device unprovisioned — directing to provisioning flow (SIP held dark)");
-        // Bring up minimal open AP so the setup screen is accessible (no credentials needed)
-        wifi_init_softap("POCKET-DIAL-SETUP", "", true);
-        g_localIp = "192.168.4.1";
-        if (lvgl_lock(-1)) { ui_navigate_to(SCREEN_PROVISIONING); lvgl_unlock(); }
-        // Status task starts so the screen can update; SIP/HTTP tasks are NOT started.
-        xTaskCreatePinnedToCore(&system_status_task, "status_task", 4096, NULL, 3, NULL, 0);
-        // Spin here — the provisioning screen's topology button writes provisioned=1 and reboots.
-        while (true) { vTaskDelay(pdMS_TO_TICKS(1000)); }
-    }
+    // Onboarding model: "up usable, secure later" — the device is NEVER held dark
+    // waiting for an admin credential. It boots straight into its normal network role
+    // below (STATION if WiFi is saved, else the captive WiFi-onboarding portal, else
+    // Standalone AP), so the operator can connect WiFi, reach the dashboard, and SSH in
+    // before optionally setting a PIN. "Secured" is the runtime property
+    // AdminAuth::isProvisioned(); the dashboard's sensitive endpoints and the on-device
+    // sensitive actions self-gate on it once a PIN exists. Setting a PIN is offered (a
+    // dismissible prompt + the Perimeter screen), not forced.
 
     // Consume the one-shot decay flag. If last boot's captive portal timed out, come up in
     // transient Standalone AP this once WITHOUT persisting it, so a later power cycle still
@@ -837,14 +836,25 @@ extern "C" void app_main(void) {
     }
 
     // ── SSH / esp_console engine (Ticket 2) ─────────────────────────────────
-    // Start only when the device is fully operational (SIP up); never on the captive
-    // onboarding path. start() reads ssh_enabled from NVS internally and fails closed.
-    // Without the wolfSSH managed component this runs in STUB mode: the esp_console
-    // command registry is populated and the listen task idles — there is no TCP SSH
-    // transport until wolfssh is added and POCKETDIAL_HAS_WOLFSSH is defined.
-    if (g_setupComplete) {
-        SshServer::instance().start();
+    // Available in EVERY network role — operational STATION/Standalone AND during
+    // captive onboarding — so the operator can reach SSH before securing the device.
+    // All paths have a live netif/IP by here. start() reads ssh_enabled from NVS and
+    // fails closed.
+    //
+    // Plumb the real network identity into the SSH sysop-terminal TUI so its banner
+    // ADDR shows the live IP (not 0.0.0.0) and the hub status tail names the real
+    // network role (STATION / AP / SETUP) instead of a hardcoded "AP mode". g_localIp
+    // is set in every branch above (STATION: DHCP lease; Standalone/captive:
+    // 192.168.4.1); the captive-portal path runs with wifi_mode 0 → SETUP. We pass
+    // an effective mode so a decay/standalone fallback reads AP even if wifi_mode
+    // was 0 in NVS.
+    {
+        uint8_t effMode = go_captive ? 0          // captive onboarding → SETUP
+                        : go_standalone ? 2        // own hotspot → AP
+                        : 1;                       // joined an AP → STATION
+        SshServer::instance().setNetInfo(g_localIp.c_str(), effMode, g_wifiSsid);
     }
+    SshServer::instance().start();
 
     // 5. Spin up periodic status and battery updater task
     xTaskCreatePinnedToCore(&system_status_task, "status_task", 4096, NULL, 3, NULL, 0);

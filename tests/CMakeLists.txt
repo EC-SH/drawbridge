@@ -20,6 +20,12 @@ add_executable(sip_parser_tests
     SipStatus_test.cpp
     Pbx_test.cpp
     Rtp_test.cpp
+    Tui_test.cpp
+    # The ANSI sysop-terminal renderer is transport-agnostic and host-compilable
+    # (no wolfSSH, no ESP — only an esp_timer guard, behind ESP_PLATFORM). It links
+    # cleanly into the host test binary so the banner/hub/mono-fallback render is
+    # asserted on the desktop.
+    ../src/Helpers/Tui.cpp
     ../src/SIP/SipMessage.cpp
     ../src/SIP/SipStatus.cpp
     # Media beachhead (RTP sender + 440 media extension). RtpSender.cpp compiles to

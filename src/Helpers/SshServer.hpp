@@ -21,6 +21,13 @@
 //   compile time.
 
 #include <string>
+#include <cstdint>
+#include <atomic>
+
+// Forward-declared so the header never drags the full SIP engine into non-display
+// builds. The TUI session reads live registrar stats through this pointer when one
+// is attached (attachHandler), else it falls back to zeros with a correct spine.
+class RequestsHandler;
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 #include "esp_console.h"
@@ -64,6 +71,55 @@ public:
     // Wraps esp_console_cmd_register() on device; no-op on host.
     void registerCommand(const esp_console_cmd_t* cmd);
 
+    // Terminal geometry of the active SSH session, captured from the client's
+    // pty-req (RFC 4254 §6.2). The upcoming ANSI TUI reads these to size itself.
+    // Defaults to a sane 80x24 until a pty-req sets them; 0 is never reported.
+    // Valid for the duration of a session; reset to the defaults between sessions.
+    uint16_t terminalCols() const { return _termCols; }
+    uint16_t terminalRows() const { return _termRows; }
+    // True once a pty-req has been seen on the current session (the client is a
+    // real terminal, so the TUI may use cursor control / raw-mode sequences).
+    bool     hasPty()       const { return _hasPty; }
+
+    // Wire the live SIP registrar so the TUI's hub status line / title-bar clock
+    // reflect reality. Called once from app_main after the SipServer is created
+    // (SshServer::instance().attachHandler(&server.getHandler())). Storing a raw
+    // pointer is safe: the SipServer outlives the SSH session task for the life of
+    // the process. Thread-safe to read — RequestsHandler's dashboard getters
+    // snapshot-copy under their own mutex. Pass nullptr to detach.
+    // _handler is written by the SIP task (attachHandler, once at boot) and read by
+    // the SSH task (handler(), every TUI snapshot). Make the cross-task hand-off
+    // explicit with an atomic: release on store, acquire on load, so the SSH task
+    // sees a fully-constructed RequestsHandler. Zero cost on this target (a plain
+    // aligned pointer load/store); the `if (h)` guards already cover the pre-attach
+    // nullptr window.
+    void attachHandler(RequestsHandler* h)
+    {
+        _handler.store(h, std::memory_order_release);
+    }
+    RequestsHandler* handler() const
+    {
+        return _handler.load(std::memory_order_acquire);
+    }
+
+    // Wire the live network identity so the TUI banner ADDR + hub network-mode tag
+    // show reality instead of the 0.0.0.0 / "AP mode" defaults. Called once from
+    // app_main after the netif has an IP (the display main already logs
+    // "Local IP is: ..."). `wifiMode` is the NVS 'storage'/'wifi_mode' value:
+    //   1 = STATION (joined an existing AP, DHCP client)
+    //   2 = standalone SoftAP (own hotspot)
+    //   0 = captive-portal SETUP (onboarding AP)
+    // `ssid` is the joined/served SSID (may be empty/nullptr → unset). Plain copies
+    // under a tiny mutex-free contract: written once at boot, read on the SSH task;
+    // the strings are stable for the process lifetime. Passing nullptr leaves a
+    // field unchanged-from-default. Falls back to the LiveStats defaults if never
+    // called (a non-display build that never plumbs this stays correct, just 0.0.0.0).
+    void setNetInfo(const char* ip, uint8_t wifiMode, const char* ssid);
+    const std::string& netIp()   const { return _netIp; }
+    uint8_t            netMode() const { return _netMode; }
+    const std::string& netSsid() const { return _netSsid; }
+    bool               netInfoSet() const { return _netInfoSet; }
+
 private:
     SshServer() = default;
     ~SshServer() = default;
@@ -84,6 +140,22 @@ private:
 
     bool _consoleInitialized{false};
     bool _enabled{true};
+
+    // Active-session terminal geometry (see terminalCols()/terminalRows()).
+    uint16_t _termCols{80};
+    uint16_t _termRows{24};
+    bool     _hasPty{false};
+
+    // Live SIP registrar for the TUI (see attachHandler()). nullptr until wired.
+    // Atomic: written by the SIP task, read by the SSH task (acquire/release).
+    std::atomic<RequestsHandler*> _handler{nullptr};
+
+    // Live network identity for the TUI (see setNetInfo()). Defaults mirror the
+    // LiveStats defaults so an unset state still renders a correct spine.
+    std::string _netIp{"0.0.0.0"};
+    std::string _netSsid;
+    uint8_t     _netMode{0};        // 0=SETUP/captive, 1=STATION, 2=AP (standalone)
+    bool        _netInfoSet{false}; // true once setNetInfo() has run
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
     TaskHandle_t _taskHandle{nullptr};
