@@ -104,6 +104,35 @@ public:
         std::string sinceClock  = "";      // uptime HH:MM:SS when the session opened
     };
 
+    // ── [4]/[D] REGISTRAR · DEVICES surface (STAGE 3: digest auth + Learn mode) ──
+    // The registrar admission policy (RequestsHandler::RegistrarMode) surfaced to the
+    // operator as a plain word + helper copy. Mirrors the SIP enum value range so the
+    // setter round-trips without the renderer pulling in the SIP header.
+    enum class RegMode { Open = 0, Learn = 1, Secure = 2 };
+
+    // One adopted-device row (RequestsHandler::AdoptedDevice) flattened for the screen.
+    // `secured` folds the SipSecretStore state (the device's extension can digest-auth);
+    // `online` is the live registration binding. The screen renders these as the chip
+    // lexicon: ● ONLINE / ◐ LEARNED / ◆ SECURED — glyph+LABEL, never colour alone.
+    struct DeviceRow
+    {
+        std::string mac;          // 12 lowercase hex chars ("aabbccddeeff")
+        std::string ext;          // the AOR it last registered as ("101")
+        bool        secured = false;  // promoted to MAC-lock + digest-enforced
+        bool        online  = false;  // currently has a live registration binding
+    };
+
+    // The [4]/[D] REGISTRAR snapshot the screen reads: the current admission mode plus
+    // the adopted-device roster. Copies taken off the SIP thread (SshServer fills it
+    // from RequestsHandler::getRegistrarMode + getAdoptedDevices) so reading never
+    // blocks signaling. Absent provider → Open mode + empty list (an honest panel).
+    struct RegistrarInfo
+    {
+        RegMode                mode = RegMode::Open;
+        std::vector<DeviceRow> devices;
+        std::string            realm = "pocketdial";  // digest realm (informational)
+    };
+
     // ── [3] PBX CONFIG snapshot (tui-style §3.5-§3.9) ─────────────────────────
     // The whole config surface the five tabs read, snapshotted off the SIP thread
     // (SshServer fills it from RequestsHandler's thread-safe getters). Plain value
@@ -128,6 +157,10 @@ public:
         std::string cfb;           // CFB (busy)
         std::string cfna;          // CFNA (no-answer)
         std::string ringGroup;     // group this ext belongs to (for §3.5 FWD column), "" = none
+        // SIP digest credential state (STAGE 3): true iff the SipSecretStore holds an
+        // HA1 for this extension (it can authenticate). Drives the ◆ SECURED / · none
+        // chip in the Extensions tab. Plumbed from SipSecretStore::hasSecret(ext).
+        bool        secured = false;
     };
 
     // One ring/hunt group row (tui-style §3.6). `members` are the stored member
@@ -230,6 +263,25 @@ public:
                                                      const std::string& membersCsv,
                                                      const std::string& mode)>;
 
+    // ── [4]/[D] REGISTRAR · DEVICES providers + action callbacks (STAGE 3) ────
+    // The registrar snapshot the Devices screen reads. Fetched only while that screen
+    // (or the Extensions tab's secret state) is active. Absent → Open + empty list.
+    using RegistrarFn = std::function<RegistrarInfo()>;
+    // Change the registrar admission mode ([4]/[D]/[M] picker). Wired to
+    // RequestsHandler::setRegistrarMode; host stub no-ops. Runtime + NVS-persisted.
+    using RegModeSetFn = std::function<void(RegMode mode)>;
+    // Assign/rotate a per-extension SIP secret (never echoed). Returns "" on success or
+    // a short operator-terse error to show inline. Wired to SipSecretStore::setSecret.
+    // An empty secret is rejected by the store (the modal also guards length locally).
+    using SecretSetFn = std::function<std::string(const std::string& ext,
+                                                  const std::string& secret)>;
+    // Promote a learned device to Secured (MAC-lock + digest-enforced). Accepts a MAC
+    // or an extension. Returns true on success. Wired to RequestsHandler::secureDevice.
+    using DeviceSecureFn = std::function<bool(const std::string& macOrExt)>;
+    // Forget a device entirely (guarded). Accepts a MAC or an extension. Returns true
+    // on success. Wired to RequestsHandler::forgetDevice. Host stub returns false.
+    using DeviceForgetFn = std::function<bool(const std::string& macOrExt)>;
+
     Tui() = default;
 
     // Wire the byte sink (transport send). Required before begin().
@@ -261,6 +313,21 @@ public:
     // Wire the [3]/Ring Groups create/edit/delete apply. Optional; absent → the
     // editor reports "not available on this build".
     void setRingGroupSetter(RingGroupSetFn r) { _ringGroupSet = std::move(r); }
+
+    // ── [4]/[D] REGISTRAR · DEVICES wiring (STAGE 3) ──────────────────────────
+    // Wire the registrar snapshot source. Optional; absent → Open mode + empty list
+    // (the screen still draws, just with no devices) with a correct spine.
+    void setRegistrarProvider(RegistrarFn r) { _registrar = std::move(r); }
+    // Wire the registrar mode-change action ([4]/[D]/[M]). Optional; absent → the
+    // mode picker reports "not available on this build" instead of mutating anything.
+    void setRegModeSetter(RegModeSetFn r) { _regModeSet = std::move(r); }
+    // Wire the assign/rotate-secret action ([4]/[D]/[A] and Extensions [S]). Optional;
+    // absent → the secret modal reports "not available on this build".
+    void setSecretSetter(SecretSetFn s) { _secretSet = std::move(s); }
+    // Wire the secure-device action ([4]/[D]/[S]). Optional; absent → the key no-ops.
+    void setDeviceSecurer(DeviceSecureFn d) { _deviceSecure = std::move(d); }
+    // Wire the forget-device action ([4]/[D]/[F], guarded). Optional; absent → no-op.
+    void setDeviceForgetter(DeviceForgetFn d) { _deviceForget = std::move(d); }
 
     // Terminal geometry from the pty-req (SshServer::terminalCols/Rows). The
     // renderer is authored at the 80×24 floor; larger terminals are letterboxed
@@ -322,7 +389,13 @@ public:
         Network, Security, Reports, About,
         ModeConfirm, FactoryConfirm, ChangePin, CdrDetail,
         PbxConfig, PbxAddMenu, PbxAddSingle, PbxAddRange,
-        PbxGroupEdit, PbxGroupDelete, PbxForwardEdit, PbxForwardPick, PbxIvrEdit
+        PbxGroupEdit, PbxGroupDelete, PbxForwardEdit, PbxForwardPick, PbxIvrEdit,
+        // STAGE 3 — registrar/devices surface + its modals:
+        //   Devices         — [4]/[D] registrar mode + adopted-device roster (§ new)
+        //   RegModePick     — [4]/[D]/[M] registrar mode chooser (Standalone/Learn/New)
+        //   SecretEntry     — [4]/[D]/[A] + Extensions [S] never-echoed secret modal
+        //   DeviceForget    — [4]/[D]/[F] guarded forget-device confirm
+        Devices, RegModePick, SecretEntry, DeviceForget
     };
 
     // The active PBX tab (tui-style §2.5 tab strip). Public so host tests can assert
@@ -411,6 +484,12 @@ private:
     void renderChangePin();               // [4]/[P] never-echoed PIN entry modal
     void renderCdrDetail();               // [5] Enter → CDR detail modal
 
+    // ── STAGE 3: registrar/devices surface + modals ───────────────────────────
+    void renderDevices();                 // [4]/[D] registrar mode + adopted devices
+    void renderRegModePick();             // [4]/[D]/[M] registrar mode chooser
+    void renderSecretEntry();             // never-echoed secret assign/rotate modal
+    void renderDeviceForget();            // [4]/[D]/[F] guarded forget confirm
+
     // ── [3] PBX CONFIG tabbed panel (B2b-4) ───────────────────────────────────
     void renderPbxConfig();               // dispatch to the active tab body
     void drawPbxTabStrip(int& bodyUsed);  // the shared tab strip + underline (§2.5)
@@ -450,6 +529,11 @@ private:
     void onKeyFactoryConfirm(Key k, unsigned char ch);
     void onKeyChangePin(Key k, unsigned char ch);
     void onKeyCdrDetail(Key k, unsigned char ch);
+    // ── STAGE 3: registrar/devices surface + modals ───────────────────────────
+    void onKeyDevices(Key k, unsigned char ch);
+    void onKeyRegModePick(Key k, unsigned char ch);
+    void onKeySecretEntry(Key k, unsigned char ch);
+    void onKeyDeviceForget(Key k, unsigned char ch);
     // [3] PBX CONFIG input handlers (one per screen, like the rest of the engine).
     void onKeyPbxConfig(Key k, unsigned char ch);
     void onKeyPbxAddMenu(Key k, unsigned char ch);
@@ -468,6 +552,7 @@ private:
     ReportsSnapshot reports() const;      // call provider or return an empty CDR view
     SecurityInfo    security() const;     // call provider or return safe defaults
     PbxConfigSnapshot pbxConfig() const;  // call provider or return an empty panel
+    RegistrarInfo   registrar() const;    // call provider or return Open + empty list
 
     // Build the forward-target picker list (every registered extension) plus the
     // trailing "(clear this forward)" option, from the current snapshot. Each entry
@@ -501,6 +586,12 @@ private:
     DndSetFn       _dndSet;
     ForwardSetFn   _forwardSet;
     RingGroupSetFn _ringGroupSet;
+    // STAGE 3 registrar/devices wiring.
+    RegistrarFn    _registrar;
+    RegModeSetFn   _regModeSet;
+    SecretSetFn    _secretSet;
+    DeviceSecureFn _deviceSecure;
+    DeviceForgetFn _deviceForget;
     bool     _running   = false;
     bool     _unicode   = true;
     bool     _color     = true;
@@ -625,4 +716,32 @@ private:
     // action radio focus is tracked so the layout is interactive/legible.
     char _ivrDigit = '1';
     int  _ivrAction = 0;             // 0=group 1=ext 2=prompt 3=unset (radio focus)
+
+    // ── STAGE 3: registrar/devices surface state ─────────────────────────────
+    // `_devSel`/`_devTop` are the device-roster selection cursor + page top, reused by
+    // the Devices screen exactly like _pbxSel/_pbxTop. `_regPickSel` is the registrar-
+    // mode chooser focus (0=Standalone 1=Learn 2=New). `_devForgetTarget` pins the
+    // forget victim BY MAC across the confirm + apply snapshots (same discipline as
+    // _grpDelName). `_devMsg` is the inline result line on the Devices screen.
+    int         _devSel = 0;
+    int         _devTop = 0;
+    static constexpr int kDevRows = 7;   // device rows visible in the body at once
+                                         // (7, so the always-reserved result row keeps
+                                         //  renderDevices within the 18-row body budget)
+    int         _regPickSel = 0;
+    std::string _devForgetTarget;        // MAC pinned at [F] time
+    std::string _devForgetExt;           // its extension (for the confirm copy)
+    std::string _devMsg;                 // inline result/guard line ("" = none)
+
+    // Never-echoed secret-entry modal state (shared by [4]/[D]/[A] and Extensions [S]).
+    // `_secretExt` is the target extension; `_secretBuf` the typed (never-echoed) chars;
+    // `_secretMsg` the inline result/validation line. `_secretReturn` is the screen to
+    // return to after Apply/Cancel (Devices or PbxConfig), so the modal is reusable.
+    std::string _secretExt;
+    std::string _secretBuf;
+    std::string _secretMsg;
+    Screen      _secretReturn = Screen::Devices;
+    // Secret-entry bounds (operator-set passwords; the store also validates).
+    static constexpr size_t kSecretMin = 6;
+    static constexpr size_t kSecretMax = 32;
 };

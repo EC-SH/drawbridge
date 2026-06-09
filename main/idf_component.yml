@@ -15,6 +15,17 @@ dependencies:
   # wolfSSH requires wolfSSL >= 5.7.4; 5.8.2 / 1.4.20 are the current registry releases.
   wolfssl/wolfssl: "^5.8.2"
   wolfssl/wolfssh: "^1.4.20"
+  # LAN8720 (LAN87xx-family) PHY driver. ESP-IDF v6.0 removed the chip-specific
+  # Ethernet PHY drivers from core esp_eth into standalone managed components; this
+  # provides esp_eth_phy_new_lan87xx() / esp_eth_phy_lan87xx.h for the classic-ESP32
+  # internal-EMAC LAN8720 transport (esp_main_eth_lan8720.cpp). Gated to idf>=6.0 (on
+  # v5.x esp_eth still ships the constructor) and to the esp32 target (the only one
+  # here with the internal EMAC + LAN8720 board).
+  espressif/lan87xx:
+    version: "^1.0.0"
+    rules:
+      - if: "idf_version >= 6.0.0"
+      - if: "target == esp32"
 
 
 

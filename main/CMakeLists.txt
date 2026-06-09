@@ -25,9 +25,16 @@ if(SIP_TRANSPORT STREQUAL "eth")
     message(STATUS "SipServer transport: W5500 Ethernet (PoE)")
 elseif(SIP_TRANSPORT STREQUAL "lan8720")
     # LilyGO T-Internet-COM: classic ESP32 internal EMAC + external LAN8720 PHY (RMII).
-    # Needs only esp_eth (internal EMAC is built in) + gpio for the PHY power pin.
+    # Internal EMAC is built into esp_eth; the PHY power pin needs gpio. IDF v6.0 moved
+    # the chip-specific PHY drivers out of esp_eth, so the LAN87xx driver now comes from
+    # the espressif/lan87xx managed component (see idf_component.yml). On v5.x esp_eth
+    # still ships esp_eth_phy_new_lan87xx, so the extra REQUIRES is only needed on v6+.
     set(MAIN_SRC "esp_main_eth_lan8720.cpp")
-    set(EXTRA_REQUIRES esp_eth ${IDF_V6_DRIVERS})
+    if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
+        set(EXTRA_REQUIRES esp_eth espressif__lan87xx ${IDF_V6_DRIVERS})
+    else()
+        set(EXTRA_REQUIRES esp_eth ${IDF_V6_DRIVERS})
+    endif()
     message(STATUS "SipServer transport: LAN8720 Ethernet (internal EMAC / RMII, classic ESP32)")
 elseif(SIP_TRANSPORT STREQUAL "display")
     set(MAIN_SRC "esp_main_display.cpp")
@@ -52,6 +59,9 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/Helpers/UdpServer.cpp"
                             "../src/Helpers/HttpServer.cpp"
                             "../src/Helpers/AdminAuth.cpp"
+                            "../src/Helpers/SipDigest.cpp"
+                            "../src/Helpers/SipSecretStore.cpp"
+                            "../src/Helpers/ArpLookup.cpp"
                             "../src/Helpers/SshServer.cpp"
                             "../src/Helpers/Tui.cpp"
                             "../src/Helpers/OtaUpdater.cpp"
@@ -64,6 +74,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipServer.cpp"
                             "../src/SIP/SipStatus.cpp"
                             "../src/SIP/RtpSender.cpp"
+                            "../src/SIP/RtpReceiver.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
                     REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update esp_driver_ledc console esp_timer ${EXTRA_REQUIRES}
                     PRIV_REQUIRES esp_wifi)

@@ -9,6 +9,7 @@
 // matches the pattern used across src/ (ESP_PLATFORM||ESP32||ARDUINO).
 
 #include "Tui.hpp"
+#include "SipSecretStore.hpp"   // single audited CSPRNG secret generator ([4]/[D]/[G])
 
 #include <algorithm>
 #include <cstdio>
@@ -219,6 +220,12 @@ Tui::PbxConfigSnapshot Tui::pbxConfig() const
 {
     if (_pbxConfig) return _pbxConfig();
     return PbxConfigSnapshot{}; // empty-but-honest panel (no rows, correct caps)
+}
+
+Tui::RegistrarInfo Tui::registrar() const
+{
+    if (_registrar) return _registrar();
+    return RegistrarInfo{};     // Open mode + empty device list (honest default)
 }
 
 // Build the §3.7.2 forward-target list: every registered extension, then an
@@ -947,6 +954,10 @@ void Tui::renderHelp()
         case Screen::Network:     mode = "NETWORK";  title = "Help \xc2\xb7 Network"; break;
         case Screen::Security:    mode = "SECURITY"; title = "Help \xc2\xb7 Security"; break;
         case Screen::ChangePin:   mode = "SECURITY"; title = "Help \xc2\xb7 Change PIN"; break;
+        case Screen::Devices:     mode = "SECURITY"; title = "Help \xc2\xb7 Registrar / Devices"; break;
+        case Screen::RegModePick: mode = "SECURITY"; title = "Help \xc2\xb7 Registrar mode"; break;
+        case Screen::SecretEntry: mode = "SECURITY"; title = "Help \xc2\xb7 SIP secret"; break;
+        case Screen::DeviceForget: mode = "SECURITY"; title = "Help \xc2\xb7 Forget device"; break;
         case Screen::Reports:     mode = "REPORTS";  title = "Help \xc2\xb7 Reports / Logs"; break;
         case Screen::CdrDetail:   mode = "REPORTS";  title = "Help \xc2\xb7 Call detail"; break;
         case Screen::About:       mode = "ABOUT";    title = "Help \xc2\xb7 About"; break;
@@ -1841,17 +1852,24 @@ void Tui::renderSecurity()
             body += col(Role::Text, rest);
             if (danger) body += col(Role::Alert, " [A!]");
         };
+        // Keep the action row ≤77 display cols (the body budget) — the verbose
+        // labels ("Change admin PIN" / "Registrar/Devices") summed to ~84 and broke
+        // the 80-col frame on hardware. Shortened; the keys and intent still read.
         body += " ";
-        act("[P]", " Change admin PIN", false);
-        body += "    ";
+        act("[P]", " Change PIN", false);
+        body += "  ";
         act("[K]", " SSH access", false);
-        body += "    ";
+        body += "  ";
+        act("[D]", " Registrar", false);
+        body += "  ";
         act("[X]", " Factory reset", true);
         emit(body);
     }
 
     for (int i = bodyUsed; i < 18; ++i) bodyBlank();
-    drawFooter("[P] PIN  [K] SSH  [X] Reset  [Esc] Back  [?] Help");
+    // Keep ≤58 cols (Phosphor theme-label budget) so the footer truncator never
+    // drops [?] Help: dropped the explicit "[Esc] Back" chip (Esc-to-back still works).
+    drawFooter("[P] PIN  [K] SSH  [D] Devices  [X] Reset  [?] Help");
     _lastClock = fmtClock(st.uptimeSec);
 }
 
@@ -2578,6 +2596,10 @@ void Tui::gotoScreen(Screen s)
         case Screen::PbxForwardEdit: renderPbxForwardEdit(); break;
         case Screen::PbxForwardPick: renderPbxForwardPick(); break;
         case Screen::PbxIvrEdit:     renderPbxIvrEdit();     break;
+        case Screen::Devices:        renderDevices();        break;
+        case Screen::RegModePick:    renderRegModePick();    break;
+        case Screen::SecretEntry:    renderSecretEntry();    break;
+        case Screen::DeviceForget:   renderDeviceForget();   break;
     }
 }
 
@@ -2640,6 +2662,10 @@ bool Tui::feed(const char* data, size_t len)
             case Screen::PbxForwardEdit: onKeyPbxForwardEdit(Key::Esc, 0); break;
             case Screen::PbxForwardPick: onKeyPbxForwardPick(Key::Esc, 0); break;
             case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(Key::Esc, 0); break;
+            case Screen::Devices:        onKeyDevices(Key::Esc, 0); break;
+            case Screen::RegModePick:    onKeyRegModePick(Key::Esc, 0); break;
+            case Screen::SecretEntry:    onKeySecretEntry(Key::Esc, 0); break;
+            case Screen::DeviceForget:   onKeyDeviceForget(Key::Esc, 0); break;
             case Screen::Banner:         gotoScreen(Screen::Hub); break;
             case Screen::Hub:            /* Esc = no-op at home */ break;
         }
@@ -2684,6 +2710,10 @@ bool Tui::feedByte(unsigned char c)
             case Screen::PbxForwardEdit: onKeyPbxForwardEdit(esc, 0); break;
             case Screen::PbxForwardPick: onKeyPbxForwardPick(esc, 0); break;
             case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(esc, 0); break;
+            case Screen::Devices:        onKeyDevices(esc, 0); break;
+            case Screen::RegModePick:    onKeyRegModePick(esc, 0); break;
+            case Screen::SecretEntry:    onKeySecretEntry(esc, 0); break;
+            case Screen::DeviceForget:   onKeyDeviceForget(esc, 0); break;
             case Screen::Hub:            onKeyHub(esc, 0); break;
             case Screen::Banner:         gotoScreen(Screen::Hub); break;
         }
@@ -2727,6 +2757,10 @@ bool Tui::feedByte(unsigned char c)
                 case Screen::PbxForwardEdit: onKeyPbxForwardEdit(k, 0); break;
                 case Screen::PbxForwardPick: onKeyPbxForwardPick(k, 0); break;
                 case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(k, 0); break;
+                case Screen::Devices:        onKeyDevices(k, 0); break;
+                case Screen::RegModePick:    onKeyRegModePick(k, 0); break;
+                case Screen::SecretEntry:    onKeySecretEntry(k, 0); break;
+                case Screen::DeviceForget:   onKeyDeviceForget(k, 0); break;
                 case Screen::Banner:         break;
             }
         }
@@ -2773,6 +2807,10 @@ bool Tui::feedByte(unsigned char c)
         case Screen::PbxForwardEdit: onKeyPbxForwardEdit(k, c); break;
         case Screen::PbxForwardPick: onKeyPbxForwardPick(k, c); break;
         case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(k, c); break;
+        case Screen::Devices:        onKeyDevices(k, c); break;
+        case Screen::RegModePick:    onKeyRegModePick(k, c); break;
+        case Screen::SecretEntry:    onKeySecretEntry(k, c); break;
+        case Screen::DeviceForget:   onKeyDeviceForget(k, c); break;
         case Screen::Banner:         break;   // handled above
     }
     return _running;
@@ -2996,6 +3034,10 @@ void Tui::onKeySecurity(Key k, unsigned char ch)
                 gotoScreen(Screen::Security);   // repaint with the new chip
                 return;
             }
+            case 'D': case 'd':
+                _devSel = 0; _devTop = 0; _devMsg.clear();
+                gotoScreen(Screen::Devices);
+                return;
             case 'X': case 'x':
                 _factoryStep = 0;               // start the double-confirm at step 1
                 gotoScreen(Screen::FactoryConfirm);
@@ -3141,6 +3183,586 @@ void Tui::onKeyAbout(Key k, unsigned char ch)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// [4]/[D] REGISTRAR · DEVICES — digest-auth admission mode + adopted-device roster
+// (STAGE 3). One screen surfaces the runtime RegistrarMode (Standalone/Learn/New) and
+// the getAdoptedDevices() list with the device-state lexicon (● ONLINE / ◐ LEARNED /
+// ◆ SECURED — glyph+LABEL, never colour alone). Actions: [M] change mode (a chooser),
+// [A] assign/rotate the selected device's SIP secret (never-echoed modal), [S] secure/
+// lock a learned device, [F] forget (guarded). All wired to RequestsHandler/SipSecret-
+// Store via the STAGE-2 accessors. Every framed row pads via dispWidth(); tabular
+// cells route through padCols().
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Map a RegMode → its operator-facing word + one-line description (shared by the
+// Devices header and the mode chooser so the copy never drifts).
+static const char* regModeWord(Tui::RegMode m)
+{
+    switch (m)
+    {
+        case Tui::RegMode::Open:   return "STANDALONE (open)";
+        case Tui::RegMode::Learn:  return "LEARN (adopt phones)";
+        case Tui::RegMode::Secure: return "NEW (secure)";
+    }
+    return "STANDALONE (open)";
+}
+static const char* regModeBlurb(Tui::RegMode m)
+{
+    switch (m)
+    {
+        case Tui::RegMode::Open:
+            return "Accept every REGISTER, no password. Fastest bring-up; trust the LAN.";
+        case Tui::RegMode::Learn:
+            return "Adopt unknown phones on sight, lock each to its MAC. Migrate live.";
+        case Tui::RegMode::Secure:
+            return "Require a SIP digest password for every provisioned extension.";
+    }
+    return "";
+}
+
+void Tui::renderDevices()
+{
+    LiveStats st = stats();
+    RegistrarInfo ri = registrar();
+    clearScreen();
+    hideCursor();
+    drawSpineTop("SECURITY", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    const std::string dot = _unicode ? "\xc2\xb7" : ".";
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(kCols - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto bodyRow = [&](const std::string& body) {
+        roled(Role::Border, v);
+        put(" ");
+        put(body);
+        int pad = (kCols - 2) - 1 - dispWidth(body);
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+    auto rule = [&](int n) {
+        std::string r = " ";
+        const char* H = glyph(Glyph::BoxH);
+        for (int i = 0; i < n; ++i) r += H;
+        bodyRow(col(Role::Border, r));
+    };
+
+    int bodyUsed = 0;
+    auto emit = [&](const std::string& body) { bodyRow(body); ++bodyUsed; };
+
+    // ── Mode block ──
+    emit(col(Role::Header, " REGISTRAR MODE"));
+    rule(14); ++bodyUsed;
+    {
+        std::string body = col(Role::Text, " Mode ......... ");
+        if (_color) body += std::string("\x1b[") + sgrFor(Role::Lamp) + "m";
+        body += glyph(Glyph::Active);   // ◆ accent
+        body += " ";
+        body += regModeWord(ri.mode);
+        if (_color) body += "\x1b[0m";
+        emit(body);
+    }
+    emit(col(Role::Dim, std::string(" ") + regModeBlurb(ri.mode)));
+    {
+        std::string body = col(Role::Text, " Realm ........ ");
+        body += col(Role::Text, ri.realm);
+        body += col(Role::Dim, "   (digest auth realm)");
+        emit(body);
+    }
+    bodyBlank(); ++bodyUsed;
+
+    // ── Adopted-device roster ──
+    emit(col(Role::Header, " ADOPTED DEVICES"));
+    // Column header: MAC(14) EXT(6) STATE(...).
+    emit(col(Role::Header, " MAC             EXT     STATE"));
+    {
+        const char* H = glyph(Glyph::BoxH);
+        std::string r = " ";
+        auto run = [&](int n) { for (int i = 0; i < n; ++i) r += H; };
+        run(14); r += "  "; run(5); r += "  "; run(18);
+        bodyRow(col(Role::Border, r)); ++bodyUsed;
+    }
+
+    int total = (int)ri.devices.size();
+    if (_devSel >= total) _devSel = total > 0 ? total - 1 : 0;
+    if (_devSel < 0) _devSel = 0;
+    if (_devSel < _devTop) _devTop = _devSel;
+    if (_devSel >= _devTop + kDevRows) _devTop = _devSel - kDevRows + 1;
+    if (_devTop < 0) _devTop = 0;
+
+    // Resolve a device row → its lexicon (glyph, role, label). Online beats the stored
+    // state for the live chip; the persisted Secured/Learned state is the base word.
+    auto devChip = [&](const DeviceRow& d, std::string& out, int& vis) {
+        Glyph g; Role r; const char* lbl;
+        if (d.secured)      { g = Glyph::Active;  r = Role::Lamp; lbl = "SECURED"; }   // ◆
+        else                { g = Glyph::Ringing; r = Role::Dim;  lbl = "LEARNED"; }   // ◐
+        if (_color) out += std::string("\x1b[") + sgrFor(r) + "m";
+        out += glyph(g); vis += _unicode ? 1 : (int)std::strlen(glyph(g));
+        out += " "; out += lbl; vis += 1 + (int)std::strlen(lbl);
+        if (_color) out += "\x1b[0m";
+        // Live ONLINE marker appended after the base state word.
+        out += "  "; vis += 2;
+        if (d.online)
+        {
+            if (_color) out += std::string("\x1b[") + sgrFor(Role::Lamp) + "m";
+            out += glyph(Glyph::Online); vis += _unicode ? 1 : (int)std::strlen(glyph(Glyph::Online));
+            out += " ONLINE"; vis += 7;
+            if (_color) out += "\x1b[0m";
+        }
+        else
+        {
+            out += col(Role::Dim, dot); vis += 1;
+        }
+    };
+
+    if (total == 0)
+    {
+        emit(col(Role::Dim, " (no devices adopted yet \xe2\x80\x94 set Learn mode and register a phone)"));
+        for (int i = 0; i < kDevRows - 1; ++i) { bodyBlank(); ++bodyUsed; }
+    }
+    else
+    {
+        for (int i = 0; i < kDevRows; ++i)
+        {
+            int idx = _devTop + i;
+            if (idx >= total) { bodyBlank(); ++bodyUsed; continue; }
+            const DeviceRow& d = ri.devices[idx];
+            bool sel = (idx == _devSel);
+
+            std::string grid;
+            grid += (sel ? (_unicode ? "\xe2\x96\xb8" : ">") : " ");   // ▸ selector
+            grid += " ";
+            grid += padCols(d.mac.empty() ? (_unicode ? "\xe2\x80\x94" : "-") : d.mac, 14) + "  ";
+            grid += padCols(d.ext.empty() ? (_unicode ? "\xe2\x80\x94" : "-") : d.ext, 5) + "  ";
+
+            if (sel && _color)
+            {
+                // One reverse span over the row (selection = position+▸, not colour).
+                std::string st2; int vis2 = 0;
+                // Plain (uncoloured) chip inside the reverse span.
+                const char* lbl = d.secured ? "SECURED" : "LEARNED";
+                const char* g   = d.secured ? glyph(Glyph::Active) : glyph(Glyph::Ringing);
+                st2 += g; st2 += " "; st2 += lbl; vis2 += (_unicode ? 1 : (int)std::strlen(g)) + 1 + (int)std::strlen(lbl);
+                st2 += "  "; vis2 += 2;
+                if (d.online) { st2 += std::string(glyph(Glyph::Online)) + " ONLINE"; vis2 += (_unicode ? 1 : 3) + 7; }
+                else          { st2 += dot; vis2 += 1; }
+                std::string line = "\x1b[7m" + grid + st2 + "\x1b[0m";
+                bodyRow(line); ++bodyUsed;
+            }
+            else
+            {
+                std::string line = col(Role::Text, grid);
+                std::string chip; int vis = 0; devChip(d, chip, vis);
+                line += chip;
+                bodyRow(line); ++bodyUsed;
+            }
+        }
+    }
+
+    // Headroom + inline result line.
+    {
+        char b[24]; std::snprintf(b, sizeof(b), "dev %d", total);
+        std::string body;
+        int gap = (kCols - 2) - 1 - (int)std::strlen(b) - 2;
+        if (gap < 1) gap = 1;
+        body += std::string((size_t)gap, ' ');
+        body += col(Role::Text, b);
+        bodyRow(body); ++bodyUsed;
+    }
+    // Always reserve the result row (blank when empty) so the body row count is
+    // stable at 18 whether or not a message is showing — a non-reserved row pushed
+    // the frame past the 24-line floor when _devMsg was set.
+    if (_devMsg.empty()) { bodyBlank(); ++bodyUsed; }
+    else                 { emit(col(Role::Text, " " + _devMsg)); }
+
+    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    drawFooter("[M] Mode  [A] Secret  [S] Secure  [F] Forget  [?] Help");
+    _lastClock = fmtClock(st.uptimeSec);
+}
+
+// ── [4]/[D]/[M] registrar mode chooser (Standalone / Learn / New) ──────────────
+void Tui::renderRegModePick()
+{
+    LiveStats st = stats();
+    RegistrarInfo ri = registrar();
+    clearScreen();
+    hideCursor();
+    drawSpineTop("SECURITY", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(kCols - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto bodyRow = [&](const std::string& body) {
+        roled(Role::Border, v);
+        put(" ");
+        put(body);
+        int pad = (kCols - 2) - 1 - dispWidth(body);
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+
+    int bodyUsed = 0;
+    auto emit = [&](const std::string& body) { bodyRow(body); ++bodyUsed; };
+
+    emit(col(Role::Header, " CHOOSE REGISTRAR MODE"));
+    {
+        std::string r = " ";
+        const char* H = glyph(Glyph::BoxH);
+        for (int i = 0; i < 21; ++i) r += H;
+        bodyRow(col(Role::Border, r)); ++bodyUsed;
+    }
+    emit(col(Role::Dim, " How new phones are admitted. Choose, then [Enter] to apply."));
+    bodyBlank(); ++bodyUsed;
+
+    auto option = [&](int idx, RegMode m) {
+        bool sel = (idx == _regPickSel);
+        bool cur = (m == ri.mode);
+        // Header line: ▸ <radio> WORD            (current)
+        std::string head;
+        head += (sel ? (_unicode ? "\xe2\x96\xb8" : ">") : " ");   // ▸ selector
+        head += " ";
+        head += (cur ? (_unicode ? "(\xe2\x97\x89)" : "(*)") : "( )");  // (◉) radio
+        head += " ";
+        head += regModeWord(m);
+        if (sel && _color)
+            bodyRow("\x1b[7m" + head + "\x1b[0m");
+        else
+            bodyRow(col(Role::Text, head));
+        ++bodyUsed;
+        // Description line (dim, indented under the option).
+        emit(col(Role::Dim, std::string("      ") + regModeBlurb(m)));
+        if (cur) { emit(col(Role::Dim, "      \xe2\x86\xb3 current mode")); }
+        bodyBlank(); ++bodyUsed;
+    };
+    option(0, RegMode::Open);
+    option(1, RegMode::Learn);
+    option(2, RegMode::Secure);
+
+    if (!_regModeSet)
+        emit(col(Role::Alert, " Mode change not available on this build."));
+
+    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    drawFooter(_unicode ? "[\xe2\x86\x91/\xe2\x86\x93] Choose  [Enter] Apply  [Esc] Cancel  [?] Help"
+                        : "[Up/Dn] Choose  [Enter] Apply  [Esc] Cancel  [?] Help");
+    _lastClock = fmtClock(st.uptimeSec);
+}
+
+// ── Never-echoed SIP secret assign/rotate modal (shared by Devices + Extensions) ─
+// Mirrors renderChangePin's centered box + bullet-rendered (never echoed) entry.
+void Tui::renderSecretEntry()
+{
+    LiveStats st = stats();
+    clearScreen();
+    hideCursor();
+    drawSpineTop(_secretReturn == Screen::PbxConfig ? "PBX CONFIG" : "SECURITY", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(kCols - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+
+    const int boxW = 56;
+    const int indent = (kCols - 2 - boxW) / 2;
+    const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
+    const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
+    const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
+    const std::string H = glyph(Glyph::BoxH);
+
+    auto frame = [&](bool top, bool sep, const char* title) {
+        roled(Role::Border, v);
+        put(std::string((size_t)indent, ' '));
+        if (_color) sgr(sgrFor(Role::Border));
+        if (sep) put(VR); else put(top ? TL : BL);
+        int used = 0;
+        if (top && title) { put(H); put(" "); put(title); put(" "); used = 1 + 1 + dispWidth(title) + 1; }
+        for (int i = 0; i < boxW - 2 - used; ++i) put(H);
+        if (sep) put(VL); else put(top ? TR : BR);
+        if (_color) put("\x1b[0m");
+        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto line = [&](const std::string& inner) {
+        roled(Role::Border, v);
+        put(std::string((size_t)indent, ' '));
+        roled(Role::Border, glyph(Glyph::BoxV));
+        put(" ");
+        put(inner);
+        int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
+        put(std::string((size_t)ipad, ' '));
+        roled(Role::Border, glyph(Glyph::BoxV));
+        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+
+    bodyBlank(); bodyBlank();
+    std::string title = "SIP secret \xc2\xb7 ext " + _secretExt;
+    frame(true, false, title.c_str());
+    // Split the note across two lines: the full string is 62 cols but the box inner
+    // is only 53 (boxW 56 − 2 frame − 1 lead), so a single line broke the rail.
+    line(col(Role::Dim, "Stored as HA1=MD5(ext:realm:secret)."));
+    line(col(Role::Dim, "Shown once \xe2\x80\x94 never again."));
+    line("");
+    // The never-echoed entry box (bullets, like the PIN modal). Stable 34-cell width.
+    {
+        std::string inner = col(Role::Text, "Secret ");
+        int dots = 8; inner += col(Role::Text, std::string((size_t)dots, '.'));
+        inner += " ";
+        std::string bul;
+        for (size_t i = 0; i < _secretBuf.size(); ++i) bul += _unicode ? "\xe2\x80\xa2" : "*";
+        std::string boxIn = std::string("[ ") + bul;
+        int padN = 32 - (int)_secretBuf.size(); if (padN < 0) padN = 0;
+        boxIn += std::string((size_t)padN, ' ');
+        boxIn += " ]";
+        if (_color) inner += "\x1b[7m";
+        inner += col(Role::Text, boxIn);
+        if (_color) inner += "\x1b[0m";
+        line(inner);
+    }
+    line("");
+    if (!_secretMsg.empty())
+        line(col(Role::Alert, _secretMsg));
+    else
+        line(col(Role::Dim, "6\xe2\x80\x93" "32 chars \xc2\xb7 never echoed \xc2\xb7 [G] generate one"));
+    line("");
+    {
+        std::string inner = "        ";
+        if (_color) inner += std::string("\x1b[") + sgrFor(Role::Text) + "m";
+        inner += "< Apply >";
+        if (_color) inner += "\x1b[0m";
+        inner += "        ";
+        if (_color) inner += std::string("\x1b[") + sgrFor(Role::Text) + "m";
+        inner += "[ Cancel ]";
+        if (_color) inner += "\x1b[0m";
+        line(inner);
+    }
+    frame(false, true, nullptr);
+    line(col(Role::Dim, "[G] Generate  [Enter] Apply  [Esc] Cancel  [?] Help"));
+    frame(false, false, nullptr);
+
+    // Body rows: 2 blank + frame + note(2) + blank + entry + blank + msg + blank +
+    // buttons + frame + key + frame = 14. Pad to 18.
+    for (int i = 14; i < 18; ++i) bodyBlank();
+    drawFooter("[G] Generate  [Enter] Apply  [Esc] Cancel  [?] Help");
+}
+
+// ── [4]/[D]/[F] guarded forget-device confirm (shared confirm box) ─────────────
+void Tui::renderDeviceForget()
+{
+    LiveStats st = stats();
+    clearScreen();
+    hideCursor();
+    drawSpineTop("SECURITY", st);
+
+    std::string l1 = "Forget device " + _devForgetTarget;
+    if (!_devForgetExt.empty()) l1 += " (ext " + _devForgetExt + ")?";
+    else                        l1 += "?";
+    std::vector<std::string> lines = {
+        l1,
+        "Drops its adoption record. In Learn mode the next",
+        "REGISTER re-learns it as a fresh, unsecured device."
+    };
+    std::string alert = std::string(glyph(Glyph::Alert)) + " ALERT   FORGET DEVICE";
+    drawConfirmBox("Confirm forget device", alert.c_str(), Role::Alert, lines,
+                   "< Forget >", "[ Keep ]", /*destructiveFocused=*/false,
+                   _unicode ? "[\xe2\x86\x90/\xe2\x86\x92] Choose   [Enter] Confirm   y/N   [Esc] Cancel"
+                            : "[</>] Choose   [Enter] Confirm   y/N   [Esc] Cancel");
+    drawFooter("[\xe2\x86\x90/\xe2\x86\x92] Choose  [Enter] Confirm  [Esc] Cancel");
+}
+
+// ── [4]/[D] Devices keys: [M] mode, [A] secret, [S] secure, [F] forget ─────────
+void Tui::onKeyDevices(Key k, unsigned char ch)
+{
+    if (k == Key::CtrlL) { gotoScreen(Screen::Devices); return; }
+    if (k == Key::Esc)   { gotoScreen(Screen::Security); return; }
+    if (k == Key::Up)    { if (_devSel > 0) --_devSel; _devMsg.clear(); gotoScreen(Screen::Devices); return; }
+    if (k == Key::Down)  { ++_devSel; _devMsg.clear(); gotoScreen(Screen::Devices); return; }   // clamped in render
+
+    if (k == Key::Char)
+    {
+        if (ch == '?') { gotoScreen(Screen::Help); return; }
+        if (ch == 'M' || ch == 'm')
+        {
+            // Seed the chooser focus from the live mode.
+            RegistrarInfo ri = registrar();
+            _regPickSel = (int)ri.mode;
+            gotoScreen(Screen::RegModePick);
+            return;
+        }
+        // The device-targeted verbs need a selected row.
+        RegistrarInfo ri = registrar();
+        if (_devSel < 0 || _devSel >= (int)ri.devices.size())
+        {
+            if (ch=='A'||ch=='a'||ch=='S'||ch=='s'||ch=='F'||ch=='f')
+            { _devMsg = "No device selected."; gotoScreen(Screen::Devices); }
+            return;
+        }
+        const DeviceRow& d = ri.devices[_devSel];
+        if (ch == 'A' || ch == 'a')
+        {
+            // Assign/rotate the SIP secret for this device's extension.
+            if (d.ext.empty()) { _devMsg = "Device has no extension to secure."; gotoScreen(Screen::Devices); return; }
+            _secretExt = d.ext; _secretBuf.clear(); _secretMsg.clear();
+            _secretReturn = Screen::Devices;
+            gotoScreen(Screen::SecretEntry);
+            return;
+        }
+        if (ch == 'S' || ch == 's')
+        {
+            if (d.secured) { _devMsg = "Device is already secured."; gotoScreen(Screen::Devices); return; }
+            if (!_deviceSecure) { _devMsg = "Secure not available on this build."; gotoScreen(Screen::Devices); return; }
+            bool ok = _deviceSecure(d.mac);
+            // A false here means the extension has no SIP secret yet (secureDevice
+            // refuses to lock a phone out of an unprovisioned extension).
+            _devMsg = ok ? ("Secured " + (d.ext.empty() ? d.mac : ("ext " + d.ext)) + ".")
+                         : ("Assign a SIP secret to ext " + (d.ext.empty() ? d.mac : d.ext) + " first ([A]).");
+            gotoScreen(Screen::Devices);
+            return;
+        }
+        if (ch == 'F' || ch == 'f')
+        {
+            // Pin the victim BY MAC now — the confirm render + the y-handler each re-read
+            // the live registrar, so the _devSel index alone could drift if the roster
+            // changed between snapshots.
+            _devForgetTarget = d.mac;
+            _devForgetExt    = d.ext;
+            gotoScreen(Screen::DeviceForget);
+            return;
+        }
+    }
+}
+
+// ── [4]/[D]/[M] registrar mode chooser keys ────────────────────────────────────
+void Tui::onKeyRegModePick(Key k, unsigned char ch)
+{
+    if (k == Key::CtrlL) { gotoScreen(Screen::RegModePick); return; }
+    if (k == Key::Esc)   { gotoScreen(Screen::Devices); return; }
+    if (k == Key::Up)    { if (_regPickSel > 0) --_regPickSel; gotoScreen(Screen::RegModePick); return; }
+    if (k == Key::Down)  { if (_regPickSel < 2) ++_regPickSel; gotoScreen(Screen::RegModePick); return; }
+    if (k == Key::Enter)
+    {
+        RegMode chosen = (RegMode)_regPickSel;
+        if (_regModeSet) _regModeSet(chosen);
+        _devMsg = std::string("Registrar mode \xe2\x86\x92 ") + regModeWord(chosen) + ".";
+        gotoScreen(Screen::Devices);
+        return;
+    }
+    if (k == Key::Char && ch == '?') { gotoScreen(Screen::Help); return; }
+}
+
+// ── Never-echoed secret modal keys (digits/letters append; [G] generates) ──────
+void Tui::onKeySecretEntry(Key k, unsigned char ch)
+{
+    if (k == Key::CtrlL) { gotoScreen(Screen::SecretEntry); return; }
+    if (k == Key::Esc)   { gotoScreen(_secretReturn); return; }
+    if (k == Key::Backspace)
+    {
+        if (!_secretBuf.empty()) _secretBuf.pop_back();
+        _secretMsg.clear();
+        gotoScreen(Screen::SecretEntry);
+        return;
+    }
+    if (k == Key::Enter)
+    {
+        if (_secretBuf.size() < kSecretMin)
+        { _secretMsg = "Secret must be at least 6 characters."; gotoScreen(Screen::SecretEntry); return; }
+        if (!_secretSet)
+        { _secretMsg = "Secret store not available on this build."; gotoScreen(Screen::SecretEntry); return; }
+        std::string err = _secretSet(_secretExt, _secretBuf);
+        if (err.empty())
+        {
+            // Report success on the return screen's inline line; never echo the secret.
+            _devMsg = "Secret set for ext " + _secretExt + ".";
+            _secretBuf.clear(); _secretMsg.clear();
+            gotoScreen(_secretReturn);
+        }
+        else
+        {
+            _secretMsg = err;
+            gotoScreen(Screen::SecretEntry);
+        }
+        return;
+    }
+    if (k == Key::Char)
+    {
+        if (ch == '?') { gotoScreen(Screen::Help); return; }
+        if (ch == 'G' || ch == 'g')
+        {
+            // Operator chose an auto-generated secret. Use the SINGLE audited CSPRNG
+            // generator (per-char esp_random()/random_device with rejection sampling,
+            // ~138 bits at the default length) — never a stretched LCG. We fill the
+            // entry buffer so the operator reviews length-by-bullets and [Enter]s to
+            // apply; the buffer is capped at kSecretMax, so request a length that fits.
+            int want = (int)kSecretMax < SipSecretStore::kGeneratedSecretLen
+                       ? (int)kSecretMax : SipSecretStore::kGeneratedSecretLen;
+            _secretBuf = SipSecretStore::makeRandomSecret(want);
+            _secretMsg = "Generated \xe2\x80\x94 [Enter] to apply (shown once).";
+            gotoScreen(Screen::SecretEntry);
+            return;
+        }
+        // Accept printable, non-space ASCII for the secret; cap at kSecretMax.
+        if (ch > 0x20 && ch < 0x7f)
+        {
+            if (_secretBuf.size() < kSecretMax) _secretBuf.push_back((char)ch);
+            _secretMsg.clear();
+            gotoScreen(Screen::SecretEntry);
+        }
+        return;
+    }
+}
+
+// ── [4]/[D]/[F] forget-device confirm keys (guarded; safe default focused) ─────
+void Tui::onKeyDeviceForget(Key k, unsigned char ch)
+{
+    if (k == Key::CtrlL) { gotoScreen(Screen::DeviceForget); return; }
+    if (k == Key::Esc)   { gotoScreen(Screen::Devices); return; }   // cancel → back
+    if (k == Key::Char)
+    {
+        if (ch == 'y' || ch == 'Y')
+        {
+            bool ok = _deviceForget ? _deviceForget(_devForgetTarget) : false;
+            _devMsg = ok ? ("Forgot " + (_devForgetExt.empty() ? _devForgetTarget : ("ext " + _devForgetExt)) + ".")
+                         : "Forget failed (not available on this build).";
+            _devSel = 0; _devTop = 0;
+            gotoScreen(Screen::Devices);
+            return;
+        }
+        if (ch == 'n' || ch == 'N') { gotoScreen(Screen::Devices); return; }
+        if (ch == '?')              { gotoScreen(Screen::Help); return; }
+    }
+    if (k == Key::Enter) { gotoScreen(Screen::Devices); return; }   // focused = safe
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // [3] PBX CONFIG — the tabbed panel (B2b-4). tui-style §2.5 + §3.5–§3.9, IA §2/§4.
 //
 // One Screen::PbxConfig hosts all five tabs; `_pbxTab` selects the body. The shared
@@ -3252,7 +3874,7 @@ void Tui::renderPbxConfig()
     switch (_pbxTab)
     {
         case PbxTab::Extensions:
-            foot = "[\xe2\x86\x90/\xe2\x86\x92]Tabs [\xe2\x86\x91/\xe2\x86\x93]Sel [Enter]Fwd [A]Add [Esc]Back";
+            foot = "[\xe2\x86\x90/\xe2\x86\x92]Tabs [\xe2\x86\x91/\xe2\x86\x93]Sel [Enter]Fwd [S]Secret [A]Add [Esc]Back";
             break;
         case PbxTab::RingGroups:
             foot = "[\xe2\x86\x90/\xe2\x86\x92]Tabs [\xe2\x86\x91/\xe2\x86\x93]Sel [Enter]Edit [A]Add [D]Del [Esc]Back";
@@ -3272,9 +3894,10 @@ void Tui::renderPbxConfig()
 }
 
 // ── Extensions tab body (tui-style §3.5) ──────────────────────────────────────
-// Lists the live REGISTERED extensions with DND + FWD status. There is no persistent
-// provisioning store today (open registrar), so an honest note sits under the table
-// and [A]dd opens the §3.5.1 submenu that leads to clearly-stubbed forms.
+// Lists the live REGISTERED extensions with their SIP-credential state (◆ SECURED /
+// · none, from SipSecretStore), DND, and FWD status. STAGE 3 replaced the honest
+// "no provisioning store" stub with a real per-extension secret state + an [S] assign/
+// rotate-secret action (a never-echoed modal). [A]dd still opens the §3.5.1 submenu.
 void Tui::renderPbxExtensions(int& bodyUsed)
 {
     PbxConfigSnapshot cfg = pbxConfig();
@@ -3302,13 +3925,15 @@ void Tui::renderPbxExtensions(int& bodyUsed)
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
 
-    // Column header + rule: EXT(5) NAME(14) STATE(13) DND(7) FWD(...).
-    bodyRow(col(Role::Header, " EXT    NAME            STATE         DND     FWD"));
+    // Column header + rule: EXT(5) NAME(9) STATE(9) SEC(9) DND(5) FWD(...).
+    // SEC is 9, not 8: "◆ SECURED" is 9 display cols (◆ glyph 1 + " SECURED" 8); an
+    // 8-wide cell let it bleed one col into DND on secured rows.
+    bodyRow(col(Role::Header, " EXT    NAME       STATE      SEC        DND    FWD"));
     {
         const char* H = glyph(Glyph::BoxH);
         std::string r = " ";
         auto run = [&](int n) { for (int i = 0; i < n; ++i) r += H; };
-        run(5); r += "  "; run(13); r += "  "; run(11); r += "  "; run(5); r += "  "; run(10);
+        run(5); r += "  "; run(9); r += "  "; run(9); r += "  "; run(9); r += "  "; run(5); r += "  "; run(8);
         bodyRow(col(Role::Border, r));
     }
 
@@ -3339,18 +3964,24 @@ void Tui::renderPbxExtensions(int& bodyUsed)
             if (!e.cfu.empty())      fwd = e.cfu;
             else if (!e.ringGroup.empty()) fwd = "grp:" + e.ringGroup;
 
+            // SEC chip text (◆ SECURED / · none) — the SipSecretStore credential state.
+            std::string secPlain = e.secured
+                ? (std::string(glyph(Glyph::Active)) + " SECURED")
+                : (std::string(_unicode ? "\xc2\xb7" : ".") + " none");
+
             std::string grid;
             grid += (sel ? (_unicode ? "\xe2\x96\xb8" : ">") : " ");  // ▸ selector
             grid += " ";
             grid += padCols(e.ext, 5) + "  ";
-            grid += padCols(e.name.empty() ? (_unicode ? "\xe2\x80\x94" : "-") : e.name, 13) + "  ";
+            grid += padCols(e.name.empty() ? (_unicode ? "\xe2\x80\x94" : "-") : e.name, 9) + "  ";
 
             if (sel && _color)
             {
                 // One reverse span over the row (selection = position+▸, not colour).
                 std::string st;
                 st += stateLabelPlain(e.state);
-                st += std::string((size_t)std::max(0, 11 - dispWidth(st)), ' ') + "  ";
+                st += std::string((size_t)std::max(0, 9 - dispWidth(st)), ' ') + "  ";
+                st += padCols(secPlain, 9) + "  ";
                 std::string dndc = e.dnd ? (std::string(glyph(Glyph::Dnd)) + " DND") : (_unicode ? "\xc2\xb7" : ".");
                 st += padCols(dndc, 5) + "  ";
                 std::string fwdc = fwd.empty() ? (_unicode ? "\xc2\xb7" : ".")
@@ -3364,8 +3995,12 @@ void Tui::renderPbxExtensions(int& bodyUsed)
                 std::string line = col(Role::Text, grid);
                 // STATE chip (glyph+label, coloured by state).
                 int vis = 0; std::string chip; appendStateChip(e.state, chip, vis);
-                chip += std::string((size_t)std::max(0, 11 - vis), ' ') + "  ";
+                chip += std::string((size_t)std::max(0, 9 - vis), ' ') + "  ";
                 line += chip;
+                // SEC chip (◆ SECURED in accent / · none in dim) — glyph+LABEL, padded.
+                if (e.secured) line += col(Role::Lamp, secPlain);
+                else           line += col(Role::Dim,  secPlain);
+                line += std::string((size_t)std::max(0, 9 - dispWidth(secPlain)), ' ') + "  ";
                 // DND chip.
                 if (e.dnd) { line += col(Role::Dnd, std::string(glyph(Glyph::Dnd)) + " DND"); line += "  "; }
                 else       { line += col(Role::Dim, _unicode ? "\xc2\xb7" : "."); line += "      "; }
@@ -3387,8 +4022,16 @@ void Tui::renderPbxExtensions(int& bodyUsed)
         body += col(Role::Text, b);
         bodyRow(body);
     }
-    bodyRow(col(Role::Dim, " List = currently-registered extensions (open registrar)."));
-    bodyRow(col(Role::Dim, " [Enter] sets forwards/DND \xc2\xb7 [A] add-flow is a stub (no provisioning store yet)."));
+    // Real secret-state summary (replaces the old "no provisioning store" stub).
+    {
+        int secured = 0;
+        for (const auto& e : cfg.extensions) if (e.secured) ++secured;
+        char b[48];
+        std::snprintf(b, sizeof(b), " %d/%d extension%s have a SIP secret.",
+                      secured, total, total == 1 ? "" : "s");
+        bodyRow(col(Role::Dim, b));
+    }
+    bodyRow(col(Role::Dim, " [Enter] forwards/DND \xc2\xb7 [S] assign/rotate SIP secret \xc2\xb7 [A] add."));
 }
 
 // ── Ring Groups tab body (tui-style §3.6) — FULLY backed + wired ──────────────
@@ -4536,6 +5179,18 @@ void Tui::onKeyPbxConfig(Key k, unsigned char ch)
     {
         if (k == Key::Char && (ch == 'A' || ch == 'a')) { _pbxAddChoice = 0; gotoScreen(Screen::PbxAddMenu); return; }
         if (k == Key::Char && (ch == 'D' || ch == 'd')) { /* no provisioning store → no delete (honest) */ return; }
+        if (k == Key::Char && (ch == 'S' || ch == 's'))
+        {
+            // Assign/rotate this extension's SIP digest secret (never-echoed modal).
+            if (_pbxSel >= 0 && _pbxSel < (int)cfg.extensions.size())
+            {
+                _secretExt = cfg.extensions[_pbxSel].ext;
+                _secretBuf.clear(); _secretMsg.clear();
+                _secretReturn = Screen::PbxConfig;
+                gotoScreen(Screen::SecretEntry);
+            }
+            return;
+        }
         if (k == Key::Enter)
         {
             // Enter on an extension → its Forwards/DND editor (the real wired path).

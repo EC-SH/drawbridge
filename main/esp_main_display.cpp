@@ -451,98 +451,84 @@ static void system_status_task(void *pvParameters) {
             int clientCount = g_sipServer ? g_sipServer->getHandler().getClientCount() : 0;
             int sessionCount = g_sipServer ? g_sipServer->getHandler().getSessionCount() : 0;
 
-            // ── Build the switchboard jack/patch snapshot from the registrar dashboard API ──
-            // All getters snapshot-copy under RequestsHandler's own _snapshotMutex; we never
-            // block the SIP core here. Everything is bounded by the registrar pools.
+            // Free-heap % for the wallboard vitals line (internal heap; PSRAM excluded so
+            // the figure reflects the constrained pool that actually matters for stability).
+            int freeHeapPct = -1;
+            {
+                size_t freeI  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+                size_t totalI = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+                if (totalI > 0) freeHeapPct = (int)((freeI * 100) / totalI);
+            }
+
+            // ── Build the wallboard snapshot (live calls + roster + DND) from the registrar
+            // dashboard API ── All getters snapshot-copy under RequestsHandler's own
+            // _snapshotMutex; we never block the SIP core here. Everything is bounded by the
+            // registrar pools (32 clients / 8 sessions).
             UiBoardSnapshot board{};
-            board.jackCount = 0;
-            board.patchCount = 0;
+            board.callCount = 0;
+            board.extCount = 0;
+            board.dndCount = 0;
+            board.dndOverflow = 0;
             if (g_sipServer) {
                 RequestsHandler& h = g_sipServer->getHandler();
                 auto clients  = h.getActiveClients();   // {ext, ip:port}
                 auto sessions = h.getActiveSessions();   // {a, b, stateStr, durationSec}
                 auto dndList  = h.getDndExtensions();    // {ext...}
 
-                // Fast-membership sets for in-call / DND derivation. Bounded by the pools.
-                std::unordered_set<std::string> inCall;
-                for (const auto& s : sessions) {
-                    const std::string& a = std::get<0>(s);
-                    const std::string& b = std::get<1>(s);
-                    const std::string& st = std::get<2>(s);
-                    // Only "live" sessions light a lamp in-call; teardown states don't.
-                    if (st == "Connected" || st == "Invited") {
-                        if (!a.empty() && a != "?") inCall.insert(a);
-                        if (!b.empty() && b != "?") inCall.insert(b);
-                    }
-                }
+                // DND membership set for roster flags + the chip list.
                 std::unordered_set<std::string> dnd(dndList.begin(), dndList.end());
 
-                // One jack per registered client (bounded to UI_MAX_JACKS).
-                for (const auto& c : clients) {
-                    if (board.jackCount >= UI_MAX_JACKS) break;
-                    UiJack& j = board.jacks[board.jackCount];
-                    strncpy(j.ext, c.first.c_str(), sizeof(j.ext) - 1);
-                    j.ext[sizeof(j.ext) - 1] = '\0';
-                    if (inCall.count(c.first))     j.state = UI_JACK_INCALL;
-                    else if (dnd.count(c.first))   j.state = UI_JACK_DND;
-                    else                           j.state = UI_JACK_IDLE;
-                    board.jackCount++;
+                // Live calls: only "live" sessions (Connected=active glow, Invited=ringing)
+                // light a row; teardown states (Bye/Cancel/Busy/Unavailable) don't. Bounded
+                // to UI_MAX_CALLS. Also collect the in-call extension set for roster flags.
+                std::unordered_set<std::string> inCall;
+                for (const auto& s : sessions) {
+                    const std::string& a  = std::get<0>(s);
+                    const std::string& b  = std::get<1>(s);
+                    const std::string& st = std::get<2>(s);
+                    int dur = std::get<3>(s);
+                    bool active  = (st == "Connected");
+                    bool ringing = (st == "Invited");
+                    if (!active && !ringing) continue;
+                    if (!a.empty() && a != "?") inCall.insert(a);
+                    if (!b.empty() && b != "?") inCall.insert(b);
+                    if (board.callCount < UI_MAX_CALLS) {
+                        UiCall& c = board.calls[board.callCount];
+                        strncpy(c.a, a.c_str(), sizeof(c.a) - 1); c.a[sizeof(c.a) - 1] = '\0';
+                        strncpy(c.b, b.c_str(), sizeof(c.b) - 1); c.b[sizeof(c.b) - 1] = '\0';
+                        c.state = active ? UI_CALL_ACTIVE : UI_CALL_RINGING;
+                        c.durationSec = dur;
+                        board.callCount++;
+                    }
                 }
 
-                // Patch cords from live sessions (bounded to UI_MAX_PATCHES).
-                for (const auto& s : sessions) {
-                    if (board.patchCount >= UI_MAX_PATCHES) break;
-                    const std::string& st = std::get<2>(s);
-                    if (st != "Connected" && st != "Invited") continue;
-                    UiPatch& p = board.patches[board.patchCount];
-                    strncpy(p.a, std::get<0>(s).c_str(), sizeof(p.a) - 1);
-                    p.a[sizeof(p.a) - 1] = '\0';
-                    strncpy(p.b, std::get<1>(s).c_str(), sizeof(p.b) - 1);
-                    p.b[sizeof(p.b) - 1] = '\0';
-                    strncpy(p.state, st.c_str(), sizeof(p.state) - 1);
-                    p.state[sizeof(p.state) - 1] = '\0';
-                    board.patchCount++;
+                // Roster: one entry per registered client (bounded to UI_MAX_EXTENSIONS),
+                // tagged with its in-call / DND flags.
+                for (const auto& c : clients) {
+                    if (board.extCount >= UI_MAX_EXTENSIONS) break;
+                    UiExt& e = board.exts[board.extCount];
+                    strncpy(e.ext, c.first.c_str(), sizeof(e.ext) - 1);
+                    e.ext[sizeof(e.ext) - 1] = '\0';
+                    e.inCall = inCall.count(c.first) > 0;
+                    e.dnd    = dnd.count(c.first) > 0;
+                    board.extCount++;
+                }
+
+                // DND chips (bounded to UI_MAX_DND_CHIPS; the rest become "+N").
+                for (const auto& ext : dndList) {
+                    if (board.dndCount < UI_MAX_DND_CHIPS) {
+                        strncpy(board.dnd[board.dndCount], ext.c_str(), sizeof(board.dnd[0]) - 1);
+                        board.dnd[board.dndCount][sizeof(board.dnd[0]) - 1] = '\0';
+                        board.dndCount++;
+                    } else {
+                        board.dndOverflow++;
+                    }
                 }
             }
 
             if (lvgl_lock(100)) {
-                ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount);
+                ui_update_status(g_localIp, uptime, g_stationNum, clientCount, sessionCount, freeHeapPct);
                 ui_update_board(board);
-
-                // Supplementary updates for non-switchboard screens (gated so we only pay
-                // the cost of snapshot building when that screen is actually visible)
-                ui_screen_t cur = ui_current_screen();
-                if (cur == SCREEN_TOPOLOGY) {
-                    // Cached at boot — no NVS open under the LVGL lock (Fix #7).
-                    ui_update_topology(g_localIp.c_str(), g_wifiMode, g_stationNum);
-                } else if (cur == SCREEN_TELEMETRY) {
-                    UiTelemetrySnapshot ts{};
-                    strncpy(ts.ip, g_localIp.c_str(), sizeof(ts.ip) - 1);
-                    ts.wifi_mode     = g_wifiMode;          // cached at boot (Fix #7)
-                    ts.session_count = sessionCount;
-                    ts.session_max   = 8;
-                    ts.client_count  = clientCount;
-                    ts.client_max    = 32;
-                    strncpy(ts.ssid, g_wifiSsid, sizeof(ts.ssid) - 1);
-                    ts.ssid[sizeof(ts.ssid) - 1] = '\0';
-                    // Pre-format session table
-                    if (g_sipServer) {
-                        RequestsHandler& h = g_sipServer->getHandler();
-                        auto sessions = h.getActiveSessions();
-                        size_t off = 0;
-                        for (const auto& s : sessions) {
-                            if (off >= sizeof(ts.sessions_text) - 40) break;
-                            off += snprintf(ts.sessions_text + off,
-                                sizeof(ts.sessions_text) - off - 1,
-                                "%s%s <-> %s  [%s]",
-                                (off == 0 ? "" : "\n"),
-                                std::get<0>(s).c_str(), std::get<1>(s).c_str(),
-                                std::get<2>(s).c_str());
-                        }
-                    }
-                    ui_update_telemetry(&ts);
-                }
-
                 lvgl_unlock();
             }
 

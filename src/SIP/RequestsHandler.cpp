@@ -13,6 +13,9 @@
 #include "CallDetailRecord.hpp"
 #include "PbxConfig.hpp"
 #include "AdminAuth.hpp"
+#include "SipDigest.hpp"
+#include "SipSecretStore.hpp"
+#include "ArpLookup.hpp"
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	// PBX config (call-forward / ring groups) and the persistent CDR ring live in
@@ -87,6 +90,16 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	loadCdrRing();
 	// Task 2B: load the admin extension from NVS (defaults to "101" if absent).
 	loadAdminExt();
+	// STAGE 2: load the registrar mode (defaults to the POCKETDIAL_OPEN_REGISTRAR
+	// seed) and the adopted-device registry from NVS.
+	loadRegistrarMode();
+	loadDevices();
+	// Prewarm the per-extension HA1 cache off the REGISTER hot path so the first
+	// Secure REGISTER does not pay a blocking NVS read while holding _mutex.
+	SipSecretStore::warmCache();
+	// Seed the dashboard snapshot with the loaded devices so the TUI sees adopted
+	// devices immediately on boot (online flags start false until each re-REGISTERs).
+	refreshDeviceSnapshot();
 }
 
 std::shared_ptr<SipMessage> RequestsHandler::getMessageFromPool(std::string message, sockaddr_in src)
@@ -290,23 +303,48 @@ void RequestsHandler::onRegister(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-#ifndef POCKETDIAL_OPEN_REGISTRAR
-	// Closed mode: reject registrations as unauthenticated/forbidden since we don't have registered credentials.
+	// ── Registrar-mode admission (STAGE 2) ───────────────────────────────────────
+	// Runtime policy replaces the old compile-time POCKETDIAL_OPEN_REGISTRAR gate.
+	//   Open   : accept every REGISTER (legacy standalone behaviour).
+	//   Secure : digest-challenge + verify against the stored HA1 for this ext.
+	//   Learn  : TOFU + MAC-lock — adopt unknown devices, enforce secured ones.
+	// On Challenge the helper has already enqueued the 401 + WWW-Authenticate; on
+	// Reject we emit the 403 here from rejectReason. Either way a non-Accept stops.
+	const std::string extStr(fromNumber);
+	const RegistrarMode mode = _registrarMode.load(std::memory_order_relaxed);
+	if (mode != RegistrarMode::Open)
 	{
-		auto response = getMessageFromPool(data->toString(), data->getSource());
-		response->setHeader("SIP/2.0 403 Forbidden");
-		response->clearBody();
-		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
-		_outbox.emplace_back(data->getSource(), std::move(response));
-		return;
+		std::string rejectReason;
+		AuthDecision decision = (mode == RegistrarMode::Secure)
+			? admitSecure(data, extStr, rejectReason)
+			: admitLearn(data, extStr, rejectReason);
+
+		if (decision == AuthDecision::Challenge)
+		{
+			// admitSecure already enqueued the 401 + WWW-Authenticate.
+			return;
+		}
+		if (decision == AuthDecision::Reject)
+		{
+			sendForbidden(data, rejectReason.empty() ? "Forbidden" : rejectReason);
+			return;
+		}
+		// decision == Accept → fall through to the normal binding path below.
 	}
-#endif
+
+	// Resolve the device MAC once (Learn/registry bookkeeping). nullopt on a
+	// first-packet ARP miss or on host — the online flag just stays unchanged then.
+	std::optional<std::string> deviceMac;
+	{
+		auto m = ArpLookup::pdLookupMac(data->getSource());
+		if (m.has_value()) deviceMac = ArpLookup::toHex12(*m);
+	}
 
 	if (requestedExpires <= 0)
 	{
 		// expires=0 (or an explicit zero) is a de-registration request.
 		unregisterClient(fromNumber);
+		if (deviceMac.has_value()) markDeviceOnline(*deviceMac, false);
 	}
 	else
 	{
@@ -329,6 +367,7 @@ void RequestsHandler::onRegister(std::shared_ptr<SipMessage> data)
 			{
 				sendRegisterBeep(newClient);
 			}
+			if (deviceMac.has_value()) markDeviceOnline(*deviceMac, true);
 		}
 		else
 		{
@@ -2236,6 +2275,391 @@ std::vector<std::tuple<std::string, std::string, std::string>> RequestsHandler::
 	return _snapshot.ringGroups;
 }
 
+// ── Registrar mode (STAGE 2) ──────────────────────────────────────────────────
+
+void RequestsHandler::setRegistrarMode(RegistrarMode mode)
+{
+	std::vector<std::pair<bool, std::string>> localLogs;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		_registrarMode.store(mode, std::memory_order_relaxed);
+		persistRegistrarMode();
+		const char* name = (mode == RegistrarMode::Open)   ? "open"
+		                 : (mode == RegistrarMode::Learn)  ? "learn"
+		                                                   : "secure";
+		queueLog(std::string("Registrar mode set to ") + name);
+		localLogs = std::move(_logQueue);
+		_logQueue.clear();
+	}
+	for (const auto& log : localLogs)
+	{
+		if (log.first) std::cerr << log.second << std::endl;
+		else std::cout << log.second << std::endl;
+	}
+}
+
+RequestsHandler::RegistrarMode RequestsHandler::getRegistrarMode() const
+{
+	// Lock-free read: the dashboard polls this; onRegister() branches on it on the
+	// hot path. The atomic guarantees a torn-free load.
+	return _registrarMode.load(std::memory_order_relaxed);
+}
+
+// ── Device registry (STAGE 2: Learn-mode adoption) ────────────────────────────
+
+void RequestsHandler::refreshDeviceSnapshot()
+{
+	// Caller holds _mutex. Mirror _devices into the dashboard snapshot, preserving
+	// the previously-published online flags (online is tracked in the snapshot, not
+	// in _devices, since it is volatile registration state — not persisted).
+	std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+
+	// Index the existing online flags by MAC so a rebuild doesn't lose them.
+	std::unordered_map<std::string, bool> wasOnline;
+	wasOnline.reserve(_snapshot.devices.size());
+	for (const auto& d : _snapshot.devices)
+	{
+		wasOnline[d.mac] = d.online;
+	}
+
+	_snapshot.devices.clear();
+	_snapshot.devices.reserve(_devices.size());
+	for (const auto& [mac, rec] : _devices)
+	{
+		AdoptedDevice d;
+		d.mac = mac;
+		d.extension = rec.extension;
+		d.state = rec.state;
+		auto it = wasOnline.find(mac);
+		d.online = (it != wasOnline.end()) ? it->second : false;
+		_snapshot.devices.push_back(std::move(d));
+	}
+}
+
+void RequestsHandler::markDeviceOnline(const std::string& mac, bool online)
+{
+	// Caller holds _mutex. Online state lives only in the snapshot (volatile, not
+	// persisted). No-op if the device isn't adopted (e.g. Open mode never records).
+	std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+	for (auto& d : _snapshot.devices)
+	{
+		if (d.mac == mac)
+		{
+			d.online = online;
+			return;
+		}
+	}
+}
+
+std::vector<RequestsHandler::AdoptedDevice> RequestsHandler::getAdoptedDevices()
+{
+	std::lock_guard<std::mutex> lock(_snapshotMutex);
+	return _snapshot.devices;
+}
+
+bool RequestsHandler::secureDevice(const std::string& macOrExt)
+{
+	std::vector<std::pair<bool, std::string>> localLogs;
+	bool changed = false;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+
+		// Accept either a 12-hex MAC (direct key) or an extension (find the device
+		// currently adopted under it).
+		auto it = _devices.find(macOrExt);
+		if (it == _devices.end())
+		{
+			for (auto cand = _devices.begin(); cand != _devices.end(); ++cand)
+			{
+				if (cand->second.extension == macOrExt) { it = cand; break; }
+			}
+		}
+
+		if (it != _devices.end())
+		{
+			// Footgun guard: promoting a device to Secured makes admitSecure() demand a
+			// digest for it. If the extension has NO stored secret, that would lock the
+			// phone out on its next REGISTER ("Extension Not Provisioned"). Refuse, and
+			// tell the operator to assign a secret first.
+			if (!SipSecretStore::hasSecret(it->second.extension))
+			{
+				queueLog("secureDevice: ext " + it->second.extension +
+					" has no SIP secret — assign one before securing", true);
+			}
+			else
+			{
+				if (it->second.state != DeviceState::Secured)
+				{
+					it->second.state = DeviceState::Secured;
+					persistDevices();
+					changed = true;
+				}
+				queueLog("Device " + it->first + " (ext " + it->second.extension + ") secured");
+			}
+		}
+		else
+		{
+			queueLog("secureDevice: no adopted device for '" + macOrExt + "'", true);
+		}
+
+		if (changed) refreshDeviceSnapshot();
+		localLogs = std::move(_logQueue);
+		_logQueue.clear();
+	}
+	for (const auto& log : localLogs)
+	{
+		if (log.first) std::cerr << log.second << std::endl;
+		else std::cout << log.second << std::endl;
+	}
+	return changed;
+}
+
+bool RequestsHandler::forgetDevice(const std::string& macOrExt)
+{
+	std::vector<std::pair<bool, std::string>> localLogs;
+	bool removed = false;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+
+		auto it = _devices.find(macOrExt);
+		if (it == _devices.end())
+		{
+			for (auto cand = _devices.begin(); cand != _devices.end(); ++cand)
+			{
+				if (cand->second.extension == macOrExt) { it = cand; break; }
+			}
+		}
+
+		if (it != _devices.end())
+		{
+			queueLog("Device " + it->first + " (ext " + it->second.extension + ") forgotten");
+			_devices.erase(it);
+			persistDevices();
+			removed = true;
+			refreshDeviceSnapshot();
+		}
+		else
+		{
+			queueLog("forgetDevice: no adopted device for '" + macOrExt + "'", true);
+		}
+
+		localLogs = std::move(_logQueue);
+		_logQueue.clear();
+	}
+	for (const auto& log : localLogs)
+	{
+		if (log.first) std::cerr << log.second << std::endl;
+		else std::cout << log.second << std::endl;
+	}
+	return removed;
+}
+
+// ── REGISTER admission helpers (STAGE 2) ──────────────────────────────────────
+// All run under _mutex (called from onRegister, which holds it via handle()).
+
+void RequestsHandler::sendChallenge(const std::shared_ptr<SipMessage>& data, bool stale)
+{
+	auto response = getMessageFromPool(data->toString(), data->getSource());
+	response->setHeader("SIP/2.0 401 Unauthorized");
+	response->clearBody();
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+	response->setTo(std::string(data->getTo()) + ";tag=" + IDGen::GenerateID(9));
+	// Fresh stateless nonce per challenge; realm MUST match SipSecretStore::kRealm.
+	response->addHeader("WWW-Authenticate",
+		SipDigest::buildWwwAuthenticate(SipSecretStore::kRealm,
+			SipDigest::generateNonce(), stale));
+	response->syncContentLength();
+	_outbox.emplace_back(data->getSource(), std::move(response));
+}
+
+void RequestsHandler::sendForbidden(const std::shared_ptr<SipMessage>& data, const std::string& reason)
+{
+	auto response = getMessageFromPool(data->toString(), data->getSource());
+	response->setHeader("SIP/2.0 403 " + reason);
+	response->clearBody();
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+	response->syncContentLength();
+	_outbox.emplace_back(data->getSource(), std::move(response));
+}
+
+RequestsHandler::AuthDecision RequestsHandler::admitSecure(
+	const std::shared_ptr<SipMessage>& data, const std::string& ext, std::string& outRejectReason)
+{
+	// Secure mode: a provisioned extension MUST present a valid digest. An ext with
+	// NO stored secret is unprovisioned — reject with a clear reason (the SAFE
+	// default; "allow first-time" would defeat the point of secure mode).
+	auto ha1 = SipSecretStore::getHa1(ext);
+	if (!ha1.has_value())
+	{
+		outRejectReason = "Extension Not Provisioned";
+		queueLog("Secure REGISTER for unprovisioned ext " + ext + " rejected", true);
+		return AuthDecision::Reject;
+	}
+
+	SipDigest::DigestAuth auth;
+	std::string_view authHdr = data->getAuthorization();
+	if (authHdr.empty() || !SipDigest::parseAuthorization(std::string(authHdr), auth))
+	{
+		// No (parseable) credentials → challenge with a fresh nonce.
+		sendChallenge(data, /*stale=*/false);
+		return AuthDecision::Challenge;
+	}
+
+	// Validate the nonce we issued. A forged/garbage nonce is a hard re-challenge
+	// (not stale); an expired-but-ours nonce → challenge with stale=true so the
+	// phone silently retries.
+	bool expired = false;
+	if (!SipDigest::validateNonce(auth.nonce, &expired))
+	{
+		sendChallenge(data, /*stale=*/expired);
+		return AuthDecision::Challenge;
+	}
+
+	// Recompute + constant-time compare. Method is REGISTER.
+	if (!SipDigest::verify(auth, *ha1, std::string(data->getType())))
+	{
+		outRejectReason = "Bad Credentials";
+		queueLog("Secure REGISTER for ext " + ext + " failed digest verify", true);
+		return AuthDecision::Reject;
+	}
+
+	return AuthDecision::Accept;
+}
+
+RequestsHandler::AuthDecision RequestsHandler::admitLearn(
+	const std::shared_ptr<SipMessage>& data, const std::string& ext, std::string& outRejectReason)
+{
+	// Learn mode = TOFU + MAC-lock.
+	//   UNKNOWN mac            -> accept WITHOUT verifying, record {mac, ext, Learned}.
+	//   KNOWN + Secured mac    -> enforce digest (same path as secure mode).
+	//   ext Secured to a DIFFERENT mac -> reject (anti-spoof lock).
+	//   first-packet ARP miss  -> accept + defer the lock to the next REGISTER.
+	auto macOpt = ArpLookup::pdLookupMac(data->getSource());
+	if (!macOpt.has_value())
+	{
+		// Cache miss (or host). Accept now; the server's 200 OK + beep + OPTIONS
+		// populates the ARP cache so the NEXT REGISTER resolves and locks. Do NOT
+		// hard-fail — that would brick the very first registration.
+		queueLog("Learn REGISTER ext " + ext + ": ARP miss, deferring MAC-lock");
+		return AuthDecision::Accept;
+	}
+	const std::string mac = ArpLookup::toHex12(*macOpt);
+
+	// Anti-spoof: if this extension is already Secured to a DIFFERENT mac, reject.
+	for (const auto& [m, rec] : _devices)
+	{
+		if (rec.extension == ext && rec.state == DeviceState::Secured && m != mac)
+		{
+			outRejectReason = "Extension Locked To Another Device";
+			queueLog("Learn REGISTER ext " + ext + " from " + mac +
+				" rejected: locked to " + m, true);
+			return AuthDecision::Reject;
+		}
+	}
+
+	auto it = _devices.find(mac);
+	if (it == _devices.end())
+	{
+		// First time we've seen this MAC: trust-on-first-use. Bound the table like
+		// _dnd/_forwards — a flood of distinct MACs can't grow the heap unbounded.
+		if (_devices.size() >= static_cast<size_t>(POCKETDIAL_MAX_CLIENTS))
+		{
+			outRejectReason = "Device Table Full";
+			queueLog("Learn REGISTER: device table full, rejecting " + mac, true);
+			return AuthDecision::Reject;
+		}
+		DeviceRecord rec;
+		rec.extension = ext;
+		rec.state = DeviceState::Learned;
+		_devices.emplace(mac, std::move(rec));
+		persistDevices();
+		refreshDeviceSnapshot();
+		queueLog("Learn: adopted device " + mac + " as ext " + ext);
+		return AuthDecision::Accept;
+	}
+
+	// Known MAC. Keep its extension in sync if the phone re-provisioned to a new AOR.
+	if (it->second.extension != ext)
+	{
+		it->second.extension = ext;
+		persistDevices();
+		refreshDeviceSnapshot();
+	}
+
+	if (it->second.state == DeviceState::Secured)
+	{
+		// Promoted device: enforce digest exactly as secure mode does.
+		return admitSecure(data, ext, outRejectReason);
+	}
+
+	// Known + still Learned → accept (TOFU continues until an admin secures it).
+	return AuthDecision::Accept;
+}
+
+// ── Outbound SIP MESSAGE (STAGE 2) ────────────────────────────────────────────
+
+bool RequestsHandler::sendMessageTo(const std::string& ext, const std::string& text)
+{
+	std::vector<std::pair<sockaddr_in, std::shared_ptr<SipMessage>>> localOutbox;
+	bool sent = false;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+
+		auto client = findClient(ext);
+		if (!client.has_value())
+		{
+			// Not registered → nothing to send to. Best-effort, no enqueue.
+			return false;
+		}
+
+		const sockaddr_in& addr = client.value()->getAddress();
+		char ipBuf[INET_ADDRSTRLEN]{};
+		inet_ntop(AF_INET, &addr.sin_addr, ipBuf, sizeof(ipBuf));
+		std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(addr.sin_port));
+
+		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+
+		std::string callId  = IDGen::GenerateID(16) + "@" + activeIp;
+		std::string branch  = "z9hG4bK" + IDGen::GenerateID(12);
+		std::string fromTag = IDGen::GenerateID(9);
+
+		// Bound the body so the whole datagram stays well under a typical MTU; a
+		// notify is short by design.
+		std::string body = text.size() > 512 ? text.substr(0, 512) : text;
+
+		std::ostringstream ss;
+		ss << "MESSAGE sip:" << ext << "@" << destIpPort << " SIP/2.0\r\n"
+		   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << branch << "\r\n"
+		   << "From: \"PocketDial\" <sip:pbx@" << srcIpPort << ">;tag=" << fromTag << "\r\n"
+		   << "To: <sip:" << ext << "@" << activeIp << ">\r\n"
+		   << "Call-ID: " << callId << "\r\n"
+		   << "CSeq: 1 MESSAGE\r\n"
+		   << "Max-Forwards: 70\r\n"
+		   << "User-Agent: pocket-dial\r\n"
+		   << "Content-Type: text/plain\r\n"
+		   << "Content-Length: " << body.size() << "\r\n\r\n"
+		   << body;
+
+		auto msg = getMessageFromPool(ss.str(), addr);
+		msg->syncContentLength();
+		_outbox.emplace_back(addr, std::move(msg));
+		sent = true;
+
+		// Drain into a local vector and dispatch outside the lock (no IO under lock).
+		localOutbox = std::move(_outbox);
+		_outbox.clear();
+	}
+
+	for (auto& [addr, msg] : localOutbox)
+	{
+		_onHandled(addr, std::move(msg));
+	}
+	return sent;
+}
+
 size_t RequestsHandler::getClientCount()
 {
 	std::lock_guard<std::mutex> lock(_snapshotMutex);
@@ -2961,6 +3385,97 @@ void RequestsHandler::persistRingGroups()
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
 	{
 		nvs_set_str(h, "groups", blob.c_str());
+		nvs_commit(h);
+		nvs_close(h);
+	}
+#endif
+}
+
+// ── Registrar mode + device registry persistence (STAGE 2) ───────────────────
+
+void RequestsHandler::loadRegistrarMode()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
+	{
+		return;
+	}
+	uint8_t v = 0;
+	esp_err_t err = nvs_get_u8(h, "reg_mode", &v);
+	nvs_close(h);
+	if (err == ESP_OK && v <= static_cast<uint8_t>(RegistrarMode::Secure))
+	{
+		_registrarMode.store(static_cast<RegistrarMode>(v), std::memory_order_relaxed);
+	}
+	// else: keep the compile-time-seeded default (Open under POCKETDIAL_OPEN_REGISTRAR).
+#endif
+}
+
+void RequestsHandler::persistRegistrarMode()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
+	{
+		nvs_set_u8(h, "reg_mode",
+			static_cast<uint8_t>(_registrarMode.load(std::memory_order_relaxed)));
+		nvs_commit(h);
+		nvs_close(h);
+	}
+#endif
+}
+
+void RequestsHandler::loadDevices()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
+	{
+		return;
+	}
+	size_t len = 0;
+	if (nvs_get_str(h, "devices", nullptr, &len) == ESP_OK && len > 0)
+	{
+		std::string buf(len, '\0');
+		if (nvs_get_str(h, "devices", buf.data(), &len) == ESP_OK)
+		{
+			if (!buf.empty() && buf.back() == '\0') buf.pop_back();
+			// Record: mac \t extension \t state(int)
+			for (const auto& rec : deserializeBlob(buf))
+			{
+				if (rec.size() < 3 || rec[0].empty()) continue;
+				if (_devices.size() >= static_cast<size_t>(POCKETDIAL_MAX_CLIENTS)) break;
+				DeviceRecord r;
+				r.extension = rec[1];
+				int si = atoi(rec[2].c_str());
+				r.state = (si == static_cast<int>(DeviceState::Secured))
+					? DeviceState::Secured : DeviceState::Learned;
+				_devices[rec[0]] = std::move(r);
+			}
+		}
+	}
+	nvs_close(h);
+#endif
+}
+
+void RequestsHandler::persistDevices()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	// mac \t extension \t state(int). Bounded by POCKETDIAL_MAX_CLIENTS, so the blob
+	// is fixed-footprint. Write-through after each adoption / secure / forget. Caller
+	// holds _mutex; online state is NOT persisted (it is volatile registration state).
+	std::string blob;
+	for (const auto& [mac, rec] : _devices)
+	{
+		blob += mac; blob += '\t';
+		blob += rec.extension; blob += '\t';
+		blob += std::to_string(static_cast<int>(rec.state)); blob += '\n';
+	}
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
+	{
+		nvs_set_str(h, "devices", blob.c_str());
 		nvs_commit(h);
 		nvs_close(h);
 	}

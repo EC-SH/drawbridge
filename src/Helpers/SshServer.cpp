@@ -58,6 +58,7 @@ typedef unsigned int TickType_t;
 #include "AdminAuth.hpp"          // userauth: open when unsecured, PIN-gated once secured
 #include "Tui.hpp"                // the ANSI sysop-terminal TUI (replaces the line shell)
 #include "RequestsHandler.hpp"    // live registrar stats for the TUI hub/status line
+#include "SipSecretStore.hpp"     // per-extension SIP digest secret assign/rotate ([S])
 #endif
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -618,9 +619,63 @@ static Tui::PbxConfigSnapshot buildPbxConfigSnapshot()
         for (const auto& g : cfg.groups)
             for (const auto& m : g.members)
                 if (m == e.ext) { e.ringGroup = g.name; break; }
+        // STAGE 3: fold the SIP digest credential state (does the SipSecretStore hold
+        // an HA1 for this extension?). Drives the Extensions tab ◆ SECURED / · none chip.
+        e.secured = SipSecretStore::hasSecret(e.ext);
         cfg.extensions.push_back(std::move(e));
     }
     return cfg;
+}
+
+// Map the SIP-layer RegistrarMode enum onto the Tui's RegMode (same value range; the
+// renderer carries no SIP dependency). Kept as a tiny free function so both the
+// provider and the mode-setter round-trip through one place.
+static Tui::RegMode toTuiRegMode(RequestsHandler::RegistrarMode m)
+{
+    switch (m)
+    {
+        case RequestsHandler::RegistrarMode::Open:   return Tui::RegMode::Open;
+        case RequestsHandler::RegistrarMode::Learn:  return Tui::RegMode::Learn;
+        case RequestsHandler::RegistrarMode::Secure: return Tui::RegMode::Secure;
+    }
+    return Tui::RegMode::Open;
+}
+static RequestsHandler::RegistrarMode fromTuiRegMode(Tui::RegMode m)
+{
+    switch (m)
+    {
+        case Tui::RegMode::Open:   return RequestsHandler::RegistrarMode::Open;
+        case Tui::RegMode::Learn:  return RequestsHandler::RegistrarMode::Learn;
+        case Tui::RegMode::Secure: return RequestsHandler::RegistrarMode::Secure;
+    }
+    return RequestsHandler::RegistrarMode::Open;
+}
+
+// Build the [4]/[D] REGISTRAR snapshot: the live registrar admission mode + the
+// adopted-device roster (getAdoptedDevices). Each device's `secured` folds in BOTH the
+// SIP-side DeviceState::Secured AND the SipSecretStore having an HA1 for its extension
+// (a learned device whose ext has been given a secret reads as secured-capable). The
+// `online` flag is the live registration binding. Fetched only while the screen is up.
+static Tui::RegistrarInfo buildRegistrarInfo()
+{
+    Tui::RegistrarInfo ri;
+    ri.realm = SipSecretStore::kRealm;
+
+    RequestsHandler* h = SshServer::instance().handler();
+    if (!h) return ri;
+
+    ri.mode = toTuiRegMode(h->getRegistrarMode());
+    for (const auto& d : h->getAdoptedDevices())
+    {
+        Tui::DeviceRow row;
+        row.mac     = d.mac;
+        row.ext     = d.extension;
+        row.online  = d.online;
+        row.secured = (d.state == RequestsHandler::DeviceState::Secured) ||
+                      (!d.extension.empty() && SipSecretStore::hasSecret(d.extension));
+        ri.devices.push_back(std::move(row));
+    }
+    return ri;
 }
 
 // Build the richer live-monitor snapshot the [1] SYSTEM MONITOR wallboard reads.
@@ -743,6 +798,33 @@ static void runTuiSession(WOLFSSH* ssh)
         if (!hh) return "PBX not attached.";
         hh->setRingGroup(name, members, mode);
         return "";
+    });
+
+    // ── [4]/[D] REGISTRAR · DEVICES providers + actions (STAGE 3) ─────────────
+    // Snapshot: live registrar mode + adopted-device roster (+ per-ext secret state).
+    tui.setRegistrarProvider(&buildRegistrarInfo);
+    // Mode change ([4]/[D]/[M]) → RequestsHandler::setRegistrarMode (runtime + NVS).
+    tui.setRegModeSetter([](Tui::RegMode m) {
+        RequestsHandler* hh = SshServer::instance().handler();
+        if (hh) hh->setRegistrarMode(fromTuiRegMode(m));
+    });
+    // Assign/rotate a per-extension SIP secret ([4]/[D]/[A] + Extensions [S]). Stores
+    // HA1=MD5(ext:realm:secret) in the SipSecretStore. Never echoed by the TUI; the
+    // plaintext is consumed here and never persisted (only its HA1 is).
+    tui.setSecretSetter([](const std::string& ext, const std::string& secret) -> std::string {
+        if (!SipSecretStore::setSecret(ext, secret))
+            return "Secret rejected (bad extension or empty).";
+        return "";
+    });
+    // Secure/lock a learned device ([4]/[D]/[S]) → RequestsHandler::secureDevice.
+    tui.setDeviceSecurer([](const std::string& macOrExt) -> bool {
+        RequestsHandler* hh = SshServer::instance().handler();
+        return hh ? hh->secureDevice(macOrExt) : false;
+    });
+    // Forget a device ([4]/[D]/[F], guarded) → RequestsHandler::forgetDevice.
+    tui.setDeviceForgetter([](const std::string& macOrExt) -> bool {
+        RequestsHandler* hh = SshServer::instance().handler();
+        return hh ? hh->forgetDevice(macOrExt) : false;
     });
 
     // ── Per-session SECURITY context ([4]) ───────────────────────────────────

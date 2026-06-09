@@ -85,7 +85,7 @@ struct Harness {
             c.maxExt = 32; c.maxMembers = 32; c.adminExt = "100";
             { Tui::PbxExt e; e.ext = "101"; e.state = Tui::State::Online; c.extensions.push_back(e); }
             { Tui::PbxExt e; e.ext = "102"; e.state = Tui::State::Online; e.dnd = true;
-              e.cfu = "205"; c.extensions.push_back(e); }
+              e.cfu = "205"; e.secured = true; c.extensions.push_back(e); }
             { Tui::PbxExt e; e.ext = "104"; e.state = Tui::State::Online;
               e.cfu = "grp:sales"; e.ringGroup = "sales"; c.extensions.push_back(e); }
             { Tui::PbxGroup g; g.name = "sales"; g.ringAll = true;
@@ -107,6 +107,33 @@ struct Harness {
             lastGrpName = name; lastGrpMembers = mem; lastGrpMode = mode; ++grpCalls;
             return "";
         });
+        // ── STAGE 3: registrar/devices snapshot + actions ─────────────────────
+        // A fixed registrar snapshot: Learn mode + two adopted devices (one learned
+        // and online, one secured and offline). The setters record their last call so
+        // the action tests can assert the wiring without a real RequestsHandler.
+        tui.setRegistrarProvider([this] {
+            Tui::RegistrarInfo r;
+            r.mode  = regMode;             // mutable so the mode-set test can observe it
+            r.realm = "pocketdial";
+            { Tui::DeviceRow d; d.mac = "aabbccddeeff"; d.ext = "101";
+              d.secured = false; d.online = true;  r.devices.push_back(d); }
+            { Tui::DeviceRow d; d.mac = "112233445566"; d.ext = "102";
+              d.secured = true;  d.online = false; r.devices.push_back(d); }
+            return r;
+        });
+        tui.setRegModeSetter([this](Tui::RegMode m) {
+            lastRegMode = m; regMode = m; ++regModeCalls;
+        });
+        tui.setSecretSetter([this](const std::string& ext, const std::string& secret) -> std::string {
+            lastSecretExt = ext; lastSecret = secret; ++secretCalls;
+            return "";   // accept everything for the test
+        });
+        tui.setDeviceSecurer([this](const std::string& macOrExt) -> bool {
+            lastSecureTarget = macOrExt; ++secureCalls; return true;
+        });
+        tui.setDeviceForgetter([this](const std::string& macOrExt) -> bool {
+            lastForgetTarget = macOrExt; ++forgetCalls; return true;
+        });
         tui.setUnicode(unicode);
         tui.setColor(color);
     }
@@ -116,6 +143,12 @@ struct Harness {
     std::string lastGrpName, lastGrpMembers, lastGrpMode;
     bool lastDndOn = false;
     int  dndCalls = 0, fwdCalls = 0, grpCalls = 0;
+
+    // STAGE 3 registrar/devices capture.
+    Tui::RegMode regMode = Tui::RegMode::Learn;   // mutable live mode for the provider
+    Tui::RegMode lastRegMode = Tui::RegMode::Open;
+    std::string  lastSecretExt, lastSecret, lastSecureTarget, lastForgetTarget;
+    int regModeCalls = 0, secretCalls = 0, secureCalls = 0, forgetCalls = 0;
 
     void clear() { out.clear(); }
     // Drive the banner past its "press any key" greeting into the hub.
@@ -143,6 +176,24 @@ bool hasColorSgr(const std::string& s) {
         }
     }
     return false;
+}
+
+// Strip SGR colour escapes (ESC '[' <params> 'm') so an assertion can match the
+// VISIBLE text regardless of colour. Non-SGR escapes (cursor/clear, which end in
+// H/J/l/h, not 'm') are preserved. The hub colours each token separately (the [n]
+// digit in Header, the label in Text), so "[1] SYSTEM MONITOR" is only contiguous
+// once the inter-token SGR runs are removed.
+std::string stripSgr(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); ) {
+        if (s[i] == 0x1b && i + 1 < s.size() && s[i + 1] == '[') {
+            size_t j = i + 2;
+            while (j < s.size() && (isdigit((unsigned char)s[j]) || s[j] == ';')) ++j;
+            if (j < s.size() && s[j] == 'm') { i = j + 1; continue; }  // drop the SGR
+        }
+        out += s[i++];
+    }
+    return out;
 }
 
 } // namespace
@@ -175,14 +226,17 @@ TEST(Tui, BannerMonoTierEmitsNoColor) {
 TEST(Tui, HubListsAllSixDestinations) {
     Harness h;
     h.toHub();
-    EXPECT_NE(h.out.find("[1] SYSTEM MONITOR"), std::string::npos);
-    EXPECT_NE(h.out.find("[2] NETWORK"), std::string::npos);
-    EXPECT_NE(h.out.find("[3] PBX CONFIG"), std::string::npos);
-    EXPECT_NE(h.out.find("[4] SECURITY"), std::string::npos);
-    EXPECT_NE(h.out.find("[5] REPORTS/LOGS"), std::string::npos);
-    EXPECT_NE(h.out.find("[6] ABOUT"), std::string::npos);
-    EXPECT_NE(h.out.find("[R] REBOOT"), std::string::npos);
-    EXPECT_NE(h.out.find("[L] LOGOUT"), std::string::npos);
+    // The hub colours the [n] digit and the label as separate SGR spans, so match
+    // the visible text after stripping colour rather than the raw byte stream.
+    const std::string vis = stripSgr(h.out);
+    EXPECT_NE(vis.find("[1] SYSTEM MONITOR"), std::string::npos);
+    EXPECT_NE(vis.find("[2] NETWORK"), std::string::npos);
+    EXPECT_NE(vis.find("[3] PBX CONFIG"), std::string::npos);
+    EXPECT_NE(vis.find("[4] SECURITY"), std::string::npos);
+    EXPECT_NE(vis.find("[5] REPORTS/LOGS"), std::string::npos);
+    EXPECT_NE(vis.find("[6] ABOUT"), std::string::npos);
+    EXPECT_NE(vis.find("[R] REBOOT"), std::string::npos);
+    EXPECT_NE(vis.find("[L] LOGOUT"), std::string::npos);
 }
 
 TEST(Tui, HubHeadroomShowsRealCounts) {
@@ -437,7 +491,7 @@ TEST(Tui, SecurityOpensAndShowsAdminAccess) {
     EXPECT_NE(h.out.find("[ SECURITY ]"), std::string::npos);
     EXPECT_NE(h.out.find("ADMIN ACCESS"), std::string::npos);
     EXPECT_NE(h.out.find("SET"), std::string::npos);          // PIN ● SET chip
-    EXPECT_NE(h.out.find("Change admin PIN"), std::string::npos);
+    EXPECT_NE(h.out.find("Change PIN"), std::string::npos);
     EXPECT_NE(h.out.find("Factory reset"), std::string::npos);
     // Esc returns to the hub.
     h.tui.feedByte(0x1b); h.tui.feed("", 0);
@@ -574,18 +628,25 @@ TEST(Tui, PbxForwardEditorAppliesForwards) {
     EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxConfig);
 }
 
-TEST(Tui, PbxForwardPickerLandsGroupTarget) {
+TEST(Tui, PbxForwardPickerOffersExtensionsNotGroups) {
     Harness h;
     h.toHub();
     h.tui.feedByte('3');
     h.tui.feedByte('\t'); h.tui.feedByte('\t');   // → Forwards/DND
     h.tui.feedByte('\r');                           // Enter on ext 101 → editor (CFU focus)
     EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxForwardEdit);
+    h.clear();                                      // assert only on the picker render
     h.tui.feedByte(' ');                            // Space opens the CFU picker
     EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxForwardPick);
-    // The picker lists the RING GROUPS section.
-    EXPECT_NE(h.out.find("RING GROUPS"), std::string::npos);
-    EXPECT_NE(h.out.find("grp:sales"), std::string::npos);
+    const std::string vis = stripSgr(h.out);
+    // Ring groups are DELIBERATELY not offered as forward targets: the SIP layer
+    // (redirectInvite→findClient) does not resolve a "grp:<name>" token, so offering
+    // one would advertise a target that silently no-ops at call time
+    // (see buildForwardPickList in Tui.cpp). The picker offers real extensions plus
+    // the explicit clear sentinel only.
+    EXPECT_EQ(vis.find("RING GROUPS"), std::string::npos);
+    EXPECT_EQ(vis.find("grp:sales"), std::string::npos);
+    EXPECT_NE(vis.find("clear this forward"), std::string::npos);
 }
 
 TEST(Tui, PbxRingGroupCreateRequiresAMember) {
@@ -656,4 +717,174 @@ TEST(Tui, PbxConfigMonoTierEmitsNoColor) {
         h.clear();
         h.tui.feedByte('\t');
     }
+}
+
+// ── STAGE 3: [4]/[D] REGISTRAR · DEVICES surface ──────────────────────────────
+
+TEST(Tui, SecurityHasDevicesEntry) {
+    Harness h;
+    h.toHub();
+    h.clear();
+    h.tui.feedByte('4');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Security);
+    // The action row ([D] Registrar) + footer ([D] Devices) both name the
+    // Registrar/Devices entry. The action row colours "[D]" and " Registrar" as
+    // separate SGR spans, so match the within-span word; the footer is one span.
+    // (Labels were shortened to keep the action row within the 80-col frame.)
+    EXPECT_NE(h.out.find("Registrar"), std::string::npos);
+    EXPECT_NE(h.out.find("[D] Devices"), std::string::npos);
+}
+
+TEST(Tui, DevicesScreenListsAdoptedDevices) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('4');
+    h.clear();
+    h.tui.feedByte('D');                  // open the Registrar/Devices surface
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Devices);
+    // Mode word + roster present, with the device-state lexicon (glyph+LABEL).
+    EXPECT_NE(h.out.find("REGISTRAR MODE"), std::string::npos);
+    EXPECT_NE(h.out.find("LEARN"), std::string::npos);     // current mode word
+    EXPECT_NE(h.out.find("ADOPTED DEVICES"), std::string::npos);
+    EXPECT_NE(h.out.find("aabbccddeeff"), std::string::npos);  // device 1 MAC
+    EXPECT_NE(h.out.find("112233445566"), std::string::npos);  // device 2 MAC
+    EXPECT_NE(h.out.find("LEARNED"), std::string::npos);   // device 1 state word
+    EXPECT_NE(h.out.find("SECURED"), std::string::npos);   // device 2 state word
+    EXPECT_NE(h.out.find("ONLINE"), std::string::npos);    // device 1 live binding
+    // Esc returns to the SECURITY screen (not the hub).
+    h.tui.feedByte(0x1b); h.tui.feed("", 0);
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Security);
+}
+
+TEST(Tui, DevicesModePickerWritesMode) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('4');
+    h.tui.feedByte('D');
+    h.tui.feedByte('M');                  // open the registrar mode chooser
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::RegModePick);
+    // All three modes are offered with operator-terse copy.
+    EXPECT_NE(h.out.find("STANDALONE"), std::string::npos);
+    EXPECT_NE(h.out.find("adopt phones"), std::string::npos);
+    EXPECT_NE(h.out.find("secure"), std::string::npos);
+    // Up to the top option (Standalone/Open), then Enter applies → setter sees Open.
+    h.tui.feed("\x1b[A", 3); h.tui.feed("\x1b[A", 3);   // move to index 0
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.regModeCalls, 1);
+    EXPECT_EQ(h.lastRegMode, Tui::RegMode::Open);
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Devices);
+}
+
+TEST(Tui, DevicesSecretModalNeverEchoes) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('4');
+    h.tui.feedByte('D');
+    h.tui.feedByte('A');                  // assign/rotate secret for the selected device
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::SecretEntry);
+    EXPECT_NE(h.out.find("SIP secret"), std::string::npos);
+    EXPECT_NE(h.out.find("ext 101"), std::string::npos);  // selected device 1 = ext 101
+    h.clear();
+    // Type a secret — the raw characters must NEVER appear (bullets only).
+    for (char c : {'h','u','n','t','e','r','2'}) h.tui.feedByte(c);
+    EXPECT_EQ(h.out.find("hunter2"), std::string::npos);
+    // Enter applies via the wired setter (length >= 6).
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.secretCalls, 1);
+    EXPECT_EQ(h.lastSecretExt, "101");
+    EXPECT_EQ(h.lastSecret, "hunter2");
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Devices);
+}
+
+TEST(Tui, DevicesSecretModalRejectsShortSecret) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('4');
+    h.tui.feedByte('D');
+    h.tui.feedByte('A');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::SecretEntry);
+    for (char c : {'a','b','c'}) h.tui.feedByte(c);   // too short
+    h.tui.feedByte('\r');
+    // Stays on the modal, no setter call, shows a guard line.
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::SecretEntry);
+    EXPECT_EQ(h.secretCalls, 0);
+    EXPECT_NE(h.out.find("at least 6"), std::string::npos);
+}
+
+TEST(Tui, DevicesSecureLearnedDeviceWired) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('4');
+    h.tui.feedByte('D');
+    // Row 0 = the learned device (aabbccddeeff). [S] secures it via the wired setter.
+    h.tui.feedByte('S');
+    EXPECT_EQ(h.secureCalls, 1);
+    EXPECT_EQ(h.lastSecureTarget, "aabbccddeeff");
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Devices);
+}
+
+TEST(Tui, DevicesForgetIsGuardedAndWired) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('4');
+    h.tui.feedByte('D');
+    h.tui.feedByte('F');                  // forget the selected device
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::DeviceForget);
+    EXPECT_NE(h.out.find("FORGET DEVICE"), std::string::npos);
+    // Safe default focused: Enter cancels (no setter call).
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Devices);
+    EXPECT_EQ(h.forgetCalls, 0);
+    // Re-open and confirm with 'y' → forgetDevice(mac).
+    h.tui.feedByte('F');
+    h.tui.feedByte('y');
+    EXPECT_EQ(h.forgetCalls, 1);
+    EXPECT_EQ(h.lastForgetTarget, "aabbccddeeff");
+}
+
+TEST(Tui, DevicesMonoTierEmitsNoColor) {
+    Harness h(/*unicode=*/false, /*color=*/false);
+    h.toHub();
+    h.tui.feedByte('4');
+    h.clear();
+    h.tui.feedByte('D');
+    EXPECT_FALSE(hasColorSgr(h.out));
+    EXPECT_NE(h.out.find("ADOPTED DEVICES"), std::string::npos);
+    // The mode chooser + secret modal are also colour-free in the mono tier.
+    h.clear(); h.tui.feedByte('M');
+    EXPECT_FALSE(hasColorSgr(h.out));
+    h.tui.feedByte(0x1b); h.tui.feed("", 0);   // back to Devices
+    h.clear(); h.tui.feedByte('A');
+    EXPECT_FALSE(hasColorSgr(h.out));
+}
+
+// ── STAGE 3: [3] PBX CONFIG Extensions tab — per-extension secret state ────────
+
+TEST(Tui, PbxExtensionsShowSecretState) {
+    Harness h;
+    h.toHub();
+    h.clear();
+    h.tui.feedByte('3');                  // Extensions tab (default)
+    EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Extensions);
+    // The SEC column header + the ◆ SECURED chip for ext 102 are present, and the
+    // old "no provisioning store" stub copy is GONE (real state replaced it).
+    EXPECT_NE(h.out.find("SEC"), std::string::npos);
+    EXPECT_NE(h.out.find("SECURED"), std::string::npos);
+    EXPECT_NE(h.out.find("have a SIP secret"), std::string::npos);
+    EXPECT_EQ(h.out.find("no provisioning store"), std::string::npos);
+}
+
+TEST(Tui, PbxExtensionsSecretActionOpensModal) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('3');                  // Extensions tab
+    h.tui.feedByte('S');                  // assign/rotate secret for row 0 (ext 101)
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::SecretEntry);
+    EXPECT_NE(h.out.find("ext 101"), std::string::npos);
+    // Apply a valid secret; the modal returns to the PBX panel (not Devices).
+    for (char c : {'s','3','c','r','3','t','x'}) h.tui.feedByte(c);
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.secretCalls, 1);
+    EXPECT_EQ(h.lastSecretExt, "101");
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxConfig);
 }

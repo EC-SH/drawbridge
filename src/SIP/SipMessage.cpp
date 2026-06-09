@@ -48,6 +48,7 @@ void SipMessage::parse()
 	_contact = {};
 	_contactNumber = {};
 	_contentLength = {};
+	_authorization = {};
 	_statusInfo.reset();
 
 	// 1. Separate header block and body payload
@@ -192,6 +193,12 @@ void SipMessage::parse()
 		else if (matchHeader(line, "content-length", "l"))
 		{
 			_contentLength = line;
+		}
+		else if (matchHeader(line, "authorization"))
+		{
+			// Whole header line ("Authorization: Digest ..."); SipDigest's parser
+			// tolerates the leading header name. No compact form for Authorization.
+			_authorization = line;
 		}
 	}
 }
@@ -556,6 +563,11 @@ sockaddr_in SipMessage::getSource() const
 std::string_view SipMessage::getContentLength() const
 {
 	return _contentLength;
+}
+
+std::string_view SipMessage::getAuthorization() const
+{
+	return _authorization;
 }
 
 std::string_view SipMessage::extractNumber(std::string_view header) const

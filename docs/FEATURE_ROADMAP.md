@@ -241,7 +241,7 @@ each external call between the trunk leg and the extension leg.
 
 | Pri | Capability | Why | Cost / constraint |
 |-----|-----------|-----|-------------------|
-| **P0** | **SIP digest auth** (REGISTER+INVITE 401/407, RFC 8760/2617) | Every commercial fabric challenges credentials — no auth, no trunk. Also closes the open registrar (already P0 in §3.3). | ~tens of KB; read-only credential callback, no new lock |
+| **P0** | **SIP digest auth** — REGISTER `401` shipped (RFC 2617 MD5); INVITE `407` + RFC 8760 SHA-256 are the remaining targets | Every commercial fabric challenges credentials — no auth, no trunk. Also closes the open registrar (already P0 in §3.3). | ~tens of KB; read-only credential callback, no new lock |
 | **P0** | **Outbound registration / static trunk** | How the box authenticates *to* the upstream (creds in NVS, re-REGISTER on expiry, outbound proxy / `Route`) | small; one outbound UAC dialog |
 | **P0** | **NAT-for-trunks**: `rport` (RFC 3581), symmetric RTP / comedia latching, Contact/Via rewrite, OPTIONS keepalive | How a SIP trunk traverses the office NAT — the correct tool, **not** ICE/TURN | small; keepalive OPTIONS already exists |
 | **P1** | **B2BUA media bridge** (trunk leg ↔ extension leg) | The two legs are different RTP domains, so the box must relay media for trunk calls — a bounded, conscious exception to the P2P invariant (§5) | a few concurrent **G.711** relays (no transcode); sized against CPU, not flash |

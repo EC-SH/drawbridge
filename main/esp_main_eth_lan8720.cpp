@@ -31,7 +31,17 @@
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "esp_eth.h"      // pulls in esp_eth_mac_esp.h (internal EMAC) + esp_eth_phy.h (LAN87xx)
+#include "esp_idf_version.h"
+#include "esp_eth.h"      // internal EMAC (esp_eth_mac_esp.h) + generic PHY (esp_eth_phy.h)
+// LAN87xx PHY driver headers: ESP-IDF v6.0 removed the chip-specific PHY drivers
+// (esp_eth_phy_new_lan87xx & friends) from the core esp_eth component and moved them
+// to standalone managed components — here the `espressif/lan87xx` package, which
+// ships this dedicated header. On v5.x esp_eth.h itself declared
+// esp_eth_phy_new_lan87xx and this header does not exist, so the include (and the
+// managed-component dependency in idf_component.yml) is gated to v6.0+.
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#include "esp_eth_phy_lan87xx.h"
+#endif
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -158,8 +168,11 @@ static esp_eth_handle_t eth_init_lan8720(void)
     // NOTE: GPIO0 is also a boot-strapping pin; driving the clock out of it can
     // interfere with auto-download mode. If flashing becomes flaky, hold the
     // BOOT button (or break the clock) during the esptool sync.
+    // v6: the EMAC_APPL_CLK_OUT_GPIO enum is gone — clock_config.rmii.clock_gpio is
+    // now a plain int GPIO number (see eth_mac_clock_config_t in esp_eth_mac_esp.h).
+    // GPIO0 is the only RMII CLK-OUT capable pad on the classic ESP32.
     emac_cfg.clock_config.rmii.clock_mode = EMAC_CLK_OUT;
-    emac_cfg.clock_config.rmii.clock_gpio = EMAC_APPL_CLK_OUT_GPIO;  // GPIO0
+    emac_cfg.clock_config.rmii.clock_gpio = GPIO_NUM_0;  // 50 MHz RMII ref clock out on GPIO0
 
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
     esp_eth_mac_t* mac = esp_eth_mac_new_esp32(&emac_cfg, &mac_config);
