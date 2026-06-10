@@ -61,12 +61,66 @@ void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback)
 #include <sstream>
 #include <cstring>
 #include <vector>
-#include <cmath>
+#include <cstdint>
 #include "esp_crt_bundle.h"
+#include "esp_timer.h"
+#include "mbedtls/base64.h"
 
 static const char* TAG = "ThreeCxAnchor";
 
-static void play_tone_task(void* arg);
+// Fallback token lifetime when the JWT can't be decoded: 50 minutes. This is
+// deliberately the JWT's real ~1h validity minus margin, NOT the OAuth
+// expires_in (3CX reports 60s there, which is wrong and would cause a refresh
+// storm that kills the active media streams).
+static constexpr int64_t kTokenFallbackLifetimeUs = 50LL * 60 * 1000000;
+
+// Decode a JWT's declared lifetime (exp - iat) in microseconds from its payload
+// segment. Returns kTokenFallbackLifetimeUs if anything about the token is
+// unparseable. Uses the JWT's own claims so no wall-clock/SNTP is required —
+// the result is compared against the monotonic esp_timer.
+static int64_t decodeJwtLifetimeUs(const std::string& jwt)
+{
+	size_t firstDot = jwt.find('.');
+	if (firstDot == std::string::npos) return kTokenFallbackLifetimeUs;
+	size_t secondDot = jwt.find('.', firstDot + 1);
+	if (secondDot == std::string::npos) return kTokenFallbackLifetimeUs;
+
+	std::string payload = jwt.substr(firstDot + 1, secondDot - firstDot - 1);
+	if (payload.empty()) return kTokenFallbackLifetimeUs;
+
+	// base64url -> base64, then pad to a multiple of 4.
+	for (char& c : payload)
+	{
+		if (c == '-') c = '+';
+		else if (c == '_') c = '/';
+	}
+	while (payload.size() % 4 != 0) payload.push_back('=');
+
+	std::vector<unsigned char> decoded(payload.size()); // decoded is always smaller
+	size_t outLen = 0;
+	int rc = mbedtls_base64_decode(decoded.data(), decoded.size(), &outLen,
+	                               reinterpret_cast<const unsigned char*>(payload.data()),
+	                               payload.size());
+	if (rc != 0 || outLen == 0) return kTokenFallbackLifetimeUs;
+
+	std::string json(reinterpret_cast<char*>(decoded.data()), outLen);
+	cJSON* root = cJSON_Parse(json.c_str());
+	if (!root) return kTokenFallbackLifetimeUs;
+
+	int64_t lifetimeUs = kTokenFallbackLifetimeUs;
+	cJSON* exp = cJSON_GetObjectItem(root, "exp");
+	cJSON* iat = cJSON_GetObjectItem(root, "iat");
+	if (cJSON_IsNumber(exp) && cJSON_IsNumber(iat))
+	{
+		double span = exp->valuedouble - iat->valuedouble; // seconds
+		if (span > 0 && span < 86400) // sanity: positive, under a day
+		{
+			lifetimeUs = static_cast<int64_t>(span * 1000000.0);
+		}
+	}
+	cJSON_Delete(root);
+	return lifetimeUs;
+}
 
 ThreeCxAnchorClient::ThreeCxAnchorClient() = default;
 
@@ -162,6 +216,10 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 		ESP_LOGW(TAG, "Cannot make call: not connected to 3CX");
 		return false;
 	}
+
+	// Refresh the OAuth token if it's near expiry. Safe here: no media streams are
+	// open at call-origination time, so a re-issue can't kill a live stream.
+	ensureToken();
 
 	// Trigger outbound call via HTTP POST /callcontrol/{sourceDn}/makecall
 	std::string makeCallUrl = _baseUrl + "/callcontrol/" + _sourceDn + "/makecall";
@@ -352,7 +410,11 @@ bool ThreeCxAnchorClient::fetchToken()
 						if (tokenItem && tokenItem->valuestring)
 						{
 							_accessToken = tokenItem->valuestring;
-							ESP_LOGI(TAG, "Retrieved access token (len=%d)", (int)_accessToken.length());
+							_tokenObtainedUs = esp_timer_get_time();
+							_tokenLifetimeUs = decodeJwtLifetimeUs(_accessToken);
+							ESP_LOGI(TAG, "Retrieved access token (len=%d, lifetime=%llds)",
+							         (int)_accessToken.length(),
+							         (long long)(_tokenLifetimeUs / 1000000));
 							success = true;
 						}
 						cJSON_Delete(root);
@@ -385,6 +447,33 @@ bool ThreeCxAnchorClient::fetchToken()
 
 	esp_http_client_cleanup(client);
 	return success;
+}
+
+bool ThreeCxAnchorClient::tokenExpiringSoon() const
+{
+	if (_tokenObtainedUs == 0 || _tokenLifetimeUs == 0) return true; // no token yet
+	// Refresh once we're within 5 minutes of the JWT's declared expiry.
+	constexpr int64_t kRefreshMarginUs = 5LL * 60 * 1000000;
+	int64_t age = esp_timer_get_time() - _tokenObtainedUs;
+	return age >= (_tokenLifetimeUs - kRefreshMarginUs);
+}
+
+bool ThreeCxAnchorClient::ensureToken()
+{
+	if (!tokenExpiringSoon()) return true;
+
+	// Never re-issue a token while media streams are live: 3CX invalidates the
+	// previous token the instant a new one is granted, which would tear down the
+	// chunked GET/POST streams holding the old token mid-call. Refresh only
+	// happens between calls (makeCall is invoked before any stream is opened).
+	if (_postClient != nullptr || _getClient != nullptr)
+	{
+		ESP_LOGW(TAG, "Token near expiry but media streams active — deferring refresh");
+		return true;
+	}
+
+	ESP_LOGI(TAG, "Access token near expiry — refreshing");
+	return fetchToken();
 }
 
 bool ThreeCxAnchorClient::connectWs()
@@ -663,9 +752,13 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 	std::string authHeader = "Bearer " + _accessToken;
 	esp_http_client_set_header(_postClient, "Authorization", authHeader.c_str());
 	esp_http_client_set_header(_postClient, "Content-Type", "application/octet-stream");
-	esp_http_client_set_header(_postClient, "Transfer-Encoding", "chunked");
 
-	esp_err_t err = esp_http_client_open(_postClient, 0); // open chunked request
+	// write_len = -1 puts esp_http_client into chunked transfer-encoding mode (it
+	// adds the Transfer-Encoding header and frames each esp_http_client_write as a
+	// chunk). Passing 0 here was the outbound-audio bug: it sent Content-Length: 0,
+	// so 3CX saw an empty body and closed the stream and every writeAudio() wrote
+	// into a dead socket. Do NOT set Transfer-Encoding manually — IDF owns it now.
+	esp_err_t err = esp_http_client_open(_postClient, -1); // -1 => chunked
 	if (err != ESP_OK)
 	{
 		ESP_LOGE(TAG, "Failed to open chunked HTTP POST stream: %s", esp_err_to_name(err));
@@ -682,8 +775,11 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 	_rxDoneSem = xSemaphoreCreateBinary();
 	xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
 
-	// 3. Launch Tone generation task to play a tone on answer
-	xTaskCreatePinnedToCore(&play_tone_task, "3cx_media_tx_tone", 3072, this, 5, nullptr, 1);
+	// Outbound audio (device->3CX) is driven by MediaBridge: the LAN RTP receiver
+	// decodes the handset's µ-law, converts to PCM16, and calls writeAudio() which
+	// posts into the chunked stream opened above. There is intentionally no local
+	// tone/audio generator here — anything this task wrote would be mixed into the
+	// far party's audio alongside the real handset stream.
 
 	return true;
 }
@@ -695,13 +791,18 @@ void ThreeCxAnchorClient::stopMediaStreams()
 	if (_rxTaskHandle)
 	{
 		// Signal the rx loop to exit, then close the connection so the blocking
-		// read() call returns immediately. Wait for the task to finish cleaning
-		// up _getClient before proceeding — without this barrier the task and
-		// this thread race on the handle (double-free / use-after-free).
+		// read()/open() call returns immediately. The close is taken under
+		// _getMutex so it can never interleave with the rx task's own
+		// close+cleanup of the same handle (double-free). The rx task owns the
+		// cleanup; we only close to unblock, then wait on the semaphore for it
+		// to finish before returning.
 		_rxTaskHandle = nullptr;
-		if (_getClient)
 		{
-			esp_http_client_close(_getClient); // unblocks runRxLoop's read()
+			std::lock_guard<std::mutex> lock(_getMutex);
+			if (_getClient)
+			{
+				esp_http_client_close(_getClient); // unblocks runRxLoop
+			}
 		}
 		if (_rxDoneSem)
 		{
@@ -709,12 +810,16 @@ void ThreeCxAnchorClient::stopMediaStreams()
 		}
 		// runRxLoop() called cleanup and nulled _getClient on its exit path.
 	}
-	else if (_getClient)
+	else
 	{
 		// No rx task running — safe to clean up directly.
-		esp_http_client_close(_getClient);
-		esp_http_client_cleanup(_getClient);
-		_getClient = nullptr;
+		std::lock_guard<std::mutex> lock(_getMutex);
+		if (_getClient)
+		{
+			esp_http_client_close(_getClient);
+			esp_http_client_cleanup(_getClient);
+			_getClient = nullptr;
+		}
 	}
 
 	{
@@ -740,69 +845,82 @@ void ThreeCxAnchorClient::rxTaskTrampoline(void* arg)
 	vTaskDelete(nullptr);
 }
 
-static void play_tone_task(void* arg)
-{
-	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
-	float phase = 0;
-	float phaseStep = 2.0f * 3.14159265f * 440.0f / 8000.0f;
-	TickType_t lastWakeTime = xTaskGetTickCount();
-
-	ESP_LOGI("ToneTask", "Starting tone generation task");
-	while (self->isConnected() && self->isStreaming())
-	{
-		int16_t toneSamples[160];
-		for (int i = 0; i < 160; ++i)
-		{
-			toneSamples[i] = (int16_t)(10000.0f * std::sin(phase));
-			phase += phaseStep;
-			if (phase >= 2.0f * 3.14159265f)
-			{
-				phase -= 2.0f * 3.14159265f;
-			}
-		}
-
-		self->writeAudio(toneSamples, 160);
-		vTaskDelayUntil(&lastWakeTime, pdMS_TO_TICKS(20));
-	}
-	ESP_LOGI("ToneTask", "Tone generation task stopped");
-	vTaskDelete(nullptr);
-}
-
 void ThreeCxAnchorClient::runRxLoop()
 {
 	std::string getUrl = _baseUrl + "/callcontrol/" + _sourceDn + "/participants/" + _activeParticipantId + "/stream";
-	esp_http_client_config_t getCfg = {};
-	getCfg.url = getUrl.c_str();
-	getCfg.method = HTTP_METHOD_GET;
-	getCfg.crt_bundle_attach = esp_crt_bundle_attach;
-	getCfg.buffer_size = 4096;
-	getCfg.buffer_size_tx = 1024;
-
-	_getClient = esp_http_client_init(&getCfg);
-	if (!_getClient)
-	{
-		return;
-	}
-
 	std::string authHeader = "Bearer " + _accessToken;
-	esp_http_client_set_header(_getClient, "Authorization", authHeader.c_str());
 
-	esp_err_t err = esp_http_client_open(_getClient, 0);
-	if (err != ESP_OK)
+	// _getClient lifecycle (init/close/cleanup) is serialized with
+	// stopMediaStreams() via _getMutex so the unblock-close and our teardown can
+	// never double-free the handle. The lock is NEVER held across the blocking
+	// open/fetch/read calls — stopMediaStreams() must be able to grab it to close
+	// the handle and unblock us.
+	auto teardownGetClient = [this]() {
+		std::lock_guard<std::mutex> lock(_getMutex);
+		if (_getClient)
+		{
+			esp_http_client_close(_getClient);
+			esp_http_client_cleanup(_getClient);
+			_getClient = nullptr;
+		}
+	};
+
+	// The /stream endpoint returns 404 (participant not found yet) or 424 (failed
+	// dependency) until the call leg is actually connected and media is flowing.
+	// startMediaStreams() can fire slightly ahead of that, so retry the open
+	// rather than giving up — otherwise inbound audio is lost for the whole call.
+	constexpr int        kMaxAttempts = 40;                  // ~20s ceiling
+	const TickType_t     kRetryDelay  = pdMS_TO_TICKS(500);
+	bool opened = false;
+
+	for (int attempt = 0; attempt < kMaxAttempts && _rxTaskHandle != nullptr; ++attempt)
 	{
-		ESP_LOGE(TAG, "Failed to open HTTP GET stream: %s", esp_err_to_name(err));
-		esp_http_client_cleanup(_getClient);
-		_getClient = nullptr;
-		return;
+		{
+			std::lock_guard<std::mutex> lock(_getMutex);
+			if (_rxTaskHandle == nullptr) break; // stop requested mid-retry
+			esp_http_client_config_t getCfg = {};
+			getCfg.url = getUrl.c_str();
+			getCfg.method = HTTP_METHOD_GET;
+			getCfg.crt_bundle_attach = esp_crt_bundle_attach;
+			getCfg.buffer_size = 4096;
+			getCfg.buffer_size_tx = 1024;
+			_getClient = esp_http_client_init(&getCfg);
+		}
+		if (!_getClient)
+		{
+			vTaskDelay(kRetryDelay);
+			continue;
+		}
+
+		esp_http_client_set_header(_getClient, "Authorization", authHeader.c_str());
+
+		esp_err_t err = esp_http_client_open(_getClient, 0);
+		if (err == ESP_OK)
+		{
+			esp_http_client_fetch_headers(_getClient);
+			int status = esp_http_client_get_status_code(_getClient);
+			if (status == 200)
+			{
+				opened = true;
+				break;
+			}
+			ESP_LOGW(TAG, "GET stream not ready (HTTP %d), attempt %d/%d", status, attempt + 1, kMaxAttempts);
+		}
+		else
+		{
+			ESP_LOGW(TAG, "GET stream open failed (%s), attempt %d/%d", esp_err_to_name(err), attempt + 1, kMaxAttempts);
+		}
+
+		teardownGetClient();
+		if (_rxTaskHandle != nullptr)
+		{
+			vTaskDelay(kRetryDelay);
+		}
 	}
 
-	esp_http_client_fetch_headers(_getClient);
-	int status = esp_http_client_get_status_code(_getClient);
-	if (status != 200)
+	if (!opened)
 	{
-		ESP_LOGE(TAG, "HTTP GET stream returned status %d", status);
-		esp_http_client_cleanup(_getClient);
-		_getClient = nullptr;
+		teardownGetClient();
 		return;
 	}
 
@@ -834,9 +952,7 @@ void ThreeCxAnchorClient::runRxLoop()
 		}
 	}
 
-	esp_http_client_close(_getClient);
-	esp_http_client_cleanup(_getClient);
-	_getClient = nullptr;
+	teardownGetClient();
 }
 
 #endif

@@ -51,6 +51,14 @@ private:
 
 	mutable std::mutex _mutex;
 	std::mutex         _postMutex; // guards _postClient across writeAudio / stopMediaStreams
+	std::mutex         _getMutex;  // guards _getClient lifecycle across runRxLoop / stopMediaStreams
+
+	// Token lifetime measured against the monotonic timer (not wall clock, so no
+	// SNTP dependency). Derived from the JWT's own exp/iat claims, NOT from the
+	// OAuth expires_in field — 3CX reports expires_in:60 but the JWT is valid ~1h,
+	// and re-issuing a token invalidates the one the active media streams hold.
+	int64_t _tokenObtainedUs = 0;
+	int64_t _tokenLifetimeUs = 0;
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	esp_websocket_client_handle_t _wsClient   = nullptr;
@@ -64,6 +72,8 @@ private:
 	void handleWsEvent(int32_t eventId, void* eventData);
 
 	bool fetchToken();
+	bool ensureToken();             // refresh iff expiring AND no media streams active
+	bool tokenExpiringSoon() const; // true when within the refresh margin of JWT exp
 	bool connectWs();
 	std::string getParticipantStatus(const std::string& participantId);
 
