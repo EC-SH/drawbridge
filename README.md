@@ -11,6 +11,20 @@ Now with **native touch display support** and **W5500 wired-Ethernet capability*
 * **SIP Virtual Extensions**: Features an inline **SIP Echo Test (`777`)** with zero-media-processing SDP loopback, and a **Parallel Broadcast / All-Page Intercom (`999`)** with target-URI rewritin[...]
 * **Strict VoIP Interoperability**: Resolves early media loopback loops and ringing hangs on professional devices (like Yealink IP phones) by automatically stripping caller SDPs from all provisiona[...]
 
+
+---
+
+## DRAWBRIDGE (Commercial Product Line)
+
+**pocket-dial** is the open-source signaling registrar foundation for **[DRAWBRIDGE](docs/DRAWBRIDGE.md)**—a LAN-sovereign edge PBX designed for high-security commercial environments. 
+
+Unlike the open-source pocket-dial, **DRAWBRIDGE** enforces:
+* **Zero Inbound WAN Surface**: No open inbound ports, no SIP trunk registrations, and no exposed RTP ranges on the WAN. The device initiates all external contacts.
+* **mTLS Identity (No shared secrets)**: Device authentication to the operator's Media Anchor uses an operator-issued mTLS certificate.
+* **B2BUA Media Bridging**: WAN/PSTN call legs are terminated and bridged locally (`RTP ⇄ playout buffer ⇄ raw PCM16 over chunked HTTPS GET/POST`) to secure the media path and route it to hosted infrastructure.
+
+For the comprehensive architecture details, see the **[DRAWBRIDGE System Architecture Overview](docs/DRAWBRIDGE.md)**.
+
 ---
 
 ## Install
