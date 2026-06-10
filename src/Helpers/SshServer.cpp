@@ -44,10 +44,72 @@ static inline int esp_console_cmd_register(const esp_console_cmd_t*) { return 0;
 static inline int esp_console_run(const char*, int*) { return 0; }
 static inline void esp_sntp_setservername(int, const char*) {}
 static inline void vTaskDelay(int) {}
+static inline void vTaskDelete(void*) {}
 #define pdMS_TO_TICKS(x) (x)
 #define portMAX_DELAY 0xffffffffUL
 typedef void* TaskHandle_t;
 typedef unsigned int TickType_t;
+
+// ESP-API host shims for the wolfSSH/TUI region (PD_HOST_SSH builds compile it
+// on the desktop). NVS doesn't exist on host: nvs_open fails, so every guarded
+// write skips — AdminAuth/host state lives in memory. Heap query reports zeros
+// (the TUI treats 0 as "query failed" and renders an honest blank).
+#include <chrono>
+typedef int esp_err_t;
+#define ESP_OK   0
+#define ESP_FAIL (-1)
+typedef unsigned int nvs_handle_t;
+#define NVS_READONLY  0
+#define NVS_READWRITE 1
+static inline esp_err_t nvs_open(const char*, int, nvs_handle_t*)        { return ESP_FAIL; }
+static inline esp_err_t nvs_set_str(nvs_handle_t, const char*, const char*) { return ESP_FAIL; }
+static inline esp_err_t nvs_set_u8(nvs_handle_t, const char*, unsigned char) { return ESP_FAIL; }
+static inline esp_err_t nvs_get_u8(nvs_handle_t, const char*, unsigned char*) { return ESP_FAIL; }
+static inline esp_err_t nvs_get_blob(nvs_handle_t, const char*, void*, size_t*) { return ESP_FAIL; }
+static inline esp_err_t nvs_commit(nvs_handle_t)                         { return ESP_FAIL; }
+static inline void      nvs_close(nvs_handle_t)                          {}
+static inline esp_err_t nvs_flash_erase()                                { return ESP_FAIL; }
+static inline long long esp_timer_get_time()
+{
+    using namespace std::chrono;
+    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+#define ESP_MAC_WIFI_STA 0
+static inline esp_err_t esp_read_mac(unsigned char*, int) { return ESP_FAIL; }
+typedef struct { size_t total_free_bytes; size_t total_allocated_bytes; } multi_heap_info_t;
+#define MALLOC_CAP_DEFAULT 0
+static inline void heap_caps_get_info(multi_heap_info_t* info, int)
+{
+    info->total_free_bytes = 0;
+    info->total_allocated_bytes = 0;
+}
+
+// Host sockets for the wolfSSH listener (PD_HOST_SSH builds). The ESP arm gets
+// these from lwip above; the stub-only build never touches a socket.
+#ifdef POCKETDIAL_HAS_WOLFSSH
+#include <thread>
+#if defined(_WIN32) || defined(_WIN64)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
+#endif // POCKETDIAL_HAS_WOLFSSH
+#endif
+
+#ifdef POCKETDIAL_HAS_WOLFSSH
+// One spelling for "close a socket" across lwip (ESP), POSIX, and winsock.
+static inline int pd_sock_close(int s)
+{
+#if defined(_WIN32) || defined(_WIN64)
+    return closesocket(s);
+#else
+    return ::close(s);   // lwip and POSIX both provide ::close for sockets
+#endif
+}
 #endif
 
 // ── wolfSSH conditional includes ─────────────────────────────────────────────
@@ -63,7 +125,12 @@ typedef unsigned int TickType_t;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 static constexpr const char* TAG = "ssh";
-static constexpr uint16_t    SSH_DEFAULT_PORT   = 22;
+// Devices serve real port 22; the host build defaults to 2222 via CMake
+// (-D PD_HOST_SSH_PORT) since 22 is usually taken/privileged on desktops.
+#ifndef POCKETDIAL_SSH_PORT
+#define POCKETDIAL_SSH_PORT 22
+#endif
+static constexpr uint16_t    SSH_DEFAULT_PORT   = POCKETDIAL_SSH_PORT;
 #ifdef POCKETDIAL_HAS_WOLFSSH
 static constexpr uint32_t    SSH_TASK_STACK     = 24576; // wolfSSH handshake crypto is stack-heavy
 #else
@@ -319,6 +386,21 @@ void SshServer::start()
         ESP_LOGI(TAG, "SSH listen task started (core %d, priority %d)",
                  SSH_TASK_CORE, SSH_TASK_PRIORITY);
     }
+#else   // host: detached std::thread instead of a FreeRTOS task
+    if (_taskHandle != nullptr)
+    {
+        return;   // already running
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    // Idempotent winsock init (reference-counted by the OS; HttpServer may
+    // already have called it, an extra WSAStartup/never-WSACleanup is fine
+    // for a process-lifetime server).
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
+    std::thread(&SshServer::sshListenTask, static_cast<void*>(this)).detach();
+    _taskHandle = reinterpret_cast<void*>(1);   // marker: listener running
+    ESP_LOGI(TAG, "SSH listener thread started (host, port %u)", SSH_DEFAULT_PORT);
 #endif  // ESP_PLATFORM
 
 #else   // POCKETDIAL_HAS_WOLFSSH not defined
@@ -984,11 +1066,13 @@ void SshServer::sshListenTask(void* arg)
         return;
     }
     int opt = 1;
-    setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // const char* cast: winsock wants char*, lwip/POSIX take void* — both accept this.
+    setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&opt), sizeof(opt));
     if (bind(listenFd, reinterpret_cast<struct sockaddr*>(&srvAddr), sizeof(srvAddr)) < 0)
     {
         ESP_LOGE(TAG, "bind() port %u failed", SSH_DEFAULT_PORT);
-        close(listenFd);
+        pd_sock_close(listenFd);
         wolfSSH_CTX_free(ctx);
         vTaskDelete(nullptr);
         return;
@@ -1012,7 +1096,7 @@ void SshServer::sshListenTask(void* arg)
         WOLFSSH* ssh = wolfSSH_new(ctx);
         if (!ssh)
         {
-            close(clientFd);
+            pd_sock_close(clientFd);
             continue;
         }
         wolfSSH_set_fd(ssh, clientFd);
@@ -1028,7 +1112,7 @@ void SshServer::sshListenTask(void* arg)
             ESP_LOGW(TAG, "wolfSSH_accept error %d (ssh_err %d: %s)", rc,
                      wolfSSH_get_error(ssh), wolfSSH_get_error_name(ssh));
             wolfSSH_free(ssh);
-            close(clientFd);
+            pd_sock_close(clientFd);
             continue;
         }
 
@@ -1064,11 +1148,11 @@ void SshServer::sshListenTask(void* arg)
 
         wolfSSH_shutdown(ssh);
         wolfSSH_free(ssh);
-        close(clientFd);
+        pd_sock_close(clientFd);
     }
 
     wolfSSH_CTX_free(ctx);
-    close(listenFd);
+    pd_sock_close(listenFd);
 
 #else   // POCKETDIAL_HAS_WOLFSSH not defined — stub loop
 

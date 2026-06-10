@@ -46,6 +46,11 @@ def patch_file(path, replacements, label, marker):
         return True  # component layout may differ; don't hard-fail the build
     with open(path, "r", encoding="utf-8", newline="") as f:
         text = f.read()
+    # A git checkout on Windows (FetchContent) may be CRLF; the anchors are LF.
+    # Match/patch on an LF-normalized copy and restore CRLF on write.
+    crlf = "\r\n" in text
+    if crlf:
+        text = text.replace("\r\n", "\n")
     if marker in text:
         print(f"[patch_wolfssl] OK (already patched) {label}")
         return True
@@ -57,6 +62,8 @@ def patch_file(path, replacements, label, marker):
             return False
         text = text.replace(old, new, 1)
     if text != original:
+        if crlf:
+            text = text.replace("\n", "\r\n")
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(text)
         print(f"[patch_wolfssl] PATCHED {label}")
@@ -65,68 +72,19 @@ def patch_file(path, replacements, label, marker):
     return True
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("usage: patch_wolfssl.py <managed_components_dir>", file=sys.stderr)
-        return 2
-    mc = sys.argv[1]
-    wolfssl = os.path.join(mc, "wolfssl__wolfssl")
-    # wolfSSH ships as a sibling managed component. The pty-req source fix (Fix 4) lives
-    # in its tree; patch_file() no-ops cleanly if it is absent (e.g. a build that pulled
-    # wolfSSL but not wolfSSH).
-    wolfssh = os.path.join(mc, "wolfssl__wolfssh")
-    if not os.path.isdir(wolfssl):
-        # wolfSSL not fetched (e.g. non-display build) — nothing to do.
-        print(f"[patch_wolfssl] wolfssl__wolfssl not present under {mc}; nothing to patch")
-        return 0
+def apply_ptyreq_fixes(internal_c):
+    """Fixes 4 & 5 (B2a): make wolfSSH 1.4.20 accept an interactive pty-req.
 
+    Shared by both layouts — the ESP managed component and the upstream git
+    tree (host FetchContent build) carry the same two bugs. Full root-cause
+    notes at the patch sites in main()'s original commit; in short:
+      Fix 4: WMALLOC(0) for the (empty) RFC-4254 terminal-modes string returns
+             NULL and was misread as OOM — skip the alloc when modesSz == 0.
+      Fix 5: GetStringRef() used `*idx < len` (vs GetString()'s `<=`), rejecting
+             a 0-length string whose length field sits exactly at buffer end —
+             which is precisely the empty modes field OpenSSH/PuTTY/paramiko send.
+    """
     ok = True
-
-    user_settings = os.path.join(wolfssl, "include", "user_settings.h")
-
-    # Fix 2: enable wolfSSH feature block (inserted right after sdkconfig.h include).
-    ok &= patch_file(user_settings, [(
-        '/* The Espressif project config file. See also sdkconfig.defaults */\n'
-        '#include "sdkconfig.h"\n',
-        '/* The Espressif project config file. See also sdkconfig.defaults */\n'
-        '#include "sdkconfig.h"\n\n'
-        '/* pocket-dial: activate the wolfSSH feature block (WOLFSSL_WOLFSSH,\n'
-        ' * WOLFSSL_KEY_GEN, ECC/ED25519/AES/SHA needed by the SSH server). */\n'
-        '#ifndef ESP_ENABLE_WOLFSSH\n'
-        '    #define ESP_ENABLE_WOLFSSH\n'
-        '#endif\n',
-    )], "user_settings.h: ESP_ENABLE_WOLFSSH",
-        marker="#ifndef ESP_ENABLE_WOLFSSH")
-
-    # Fix 4 (B2a): accept an interactive pty-req channel on ESP-IDF.
-    #
-    # Root cause (verified on hardware: ssh_probe_nopty.py works, ssh_test.py with
-    # chan.get_pty() drops the channel "before any banner"):
-    #   wolfSSH 1.4.20's DoChannelRequest() pty-req branch (wolfssh/src/internal.c,
-    #   gated on WOLFSSH_TERM which is ALREADY enabled by the stock wolfSSL 5.8.2
-    #   ESP_ENABLE_WOLFSSH block) handles the RFC-4254 6.2 terminal modes string as:
-    #
-    #       ssh->modes = (byte*)WMALLOC(modesSz, ssh->ctx->heap, DYNTYPE_STRING);
-    #       if (ssh->modes == NULL)
-    #           ret = WS_MEMORY_E;
-    #
-    #   paramiko (and OpenSSH/PuTTY in the common case) send an EMPTY modes string,
-    #   i.e. modesSz == 0, so this is WMALLOC(0, ...). On ESP-IDF with heap poisoning
-    #   OFF (the default), malloc(0) returns NULL — see the ESP-IDF "Heap Memory
-    #   Allocation" guide. The NULL is then misread as OOM: ret = WS_MEMORY_E. That
-    #   makes DoChannelRequest reply CHANNEL_FAILURE to the pty-req AND return an error
-    #   up through DoReceive(), so wolfSSH_accept() fails and SshServer closes the
-    #   socket before it can print the banner. A non-pty shell request carries no modes
-    #   field, never hits this malloc, and works — exactly the observed split.
-    #
-    # Fix: treat a zero-length modes string as "no modes" (the correct semantics) and
-    # skip the allocation/copy entirely. ssh->modes stays NULL, ssh->modesSz stays 0,
-    # the terminal dimensions are still recorded on the session (ssh->widthChar /
-    # ssh->heightRows), and the request is answered with CHANNEL_SUCCESS. Only the
-    # zero-length path changes; a client that DOES send modes is unaffected. This is a
-    # one-spot, behaviour-preserving guard applied idempotently to the (git-ignored)
-    # managed component, mirroring the other source fixes here.
-    internal_c = os.path.join(wolfssh, "src", "internal.c")
     ok &= patch_file(internal_c, [(
         '            if (ret == WS_SUCCESS) {\n'
         '                ssh->modes = (byte*)WMALLOC(modesSz,\n'
@@ -153,23 +111,6 @@ def main():
         '                    WMEMCPY(ssh->modes, modes, modesSz);\n',
     )], "internal.c: pty-req zero-length modes guard",
         marker="pocket-dial B2a")
-
-    # Fix 5 (B2a): GetStringRef() off-by-one rejected a 0-length string at buffer end.
-    #
-    # Root cause (pinpointed on hardware with a PTYDBG printf trace:
-    #   "pty-req parsed ret=-1004 begin=45 len=45 modesSz=0" — i.e. all bytes consumed,
-    #   yet WS_BUFFER_E): GetStringRef() guarded with `*idx < len` where the sibling
-    #   GetString() uses `*idx <= len` and is commented "allows 0 length string". The
-    #   pty-req "terminal modes" string (RFC-4254 6.2) is the LAST field of the request
-    #   and is EMPTY for paramiko/OpenSSH/PuTTY. After reading its 4-byte length the
-    #   cursor sits exactly at len, so `*idx < len` is false and GetStringRef returns
-    #   WS_BUFFER_E -> DoChannelRequest fails the pty-req -> wolfSSH_accept() returns
-    #   WS_FATAL_ERROR and SshServer closes the socket before the banner. A non-pty
-    #   "shell" request has no trailing empty string and never hits this.
-    #
-    # Fix: `<= len`, matching GetString() and RFC-4254 (a 0-length string at the buffer
-    # end is valid). Needed together with Fix 4: this lets the empty modes field parse;
-    # Fix 4 then avoids the WMALLOC(0). Behaviour-preserving for non-empty strings.
     ok &= patch_file(internal_c, [(
         '        if (*idx < len && *strSz <= len - *idx) {\n'
         '            *str = buf + *idx;\n'
@@ -186,6 +127,65 @@ def main():
         '        }',
     )], "internal.c: GetStringRef 0-length string at buffer end",
         marker="pocket-dial B2a Fix5")
+    return ok
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("usage: patch_wolfssl.py <managed_components_dir>", file=sys.stderr)
+        return 2
+    mc = sys.argv[1]
+    # Two layouts are supported:
+    #   * ESP-IDF managed components:  <dir>/wolfssl__wolfssl, <dir>/wolfssl__wolfssh
+    #   * CMake FetchContent (_deps):  <dir>/wolfssl-src,      <dir>/wolfssh-src
+    # The FetchContent host build only needs the wolfSSH pty-req fixes (4 & 5);
+    # the ESP-only files (user_settings.h, esp_sdk_mem_lib.c) are absent there and
+    # patch_file() no-ops on missing paths.
+    wolfssl = os.path.join(mc, "wolfssl__wolfssl")
+    wolfssh = os.path.join(mc, "wolfssl__wolfssh")
+    esp_layout = True
+    if not os.path.isdir(wolfssl) and os.path.isdir(os.path.join(mc, "wolfssl-src")):
+        wolfssl = os.path.join(mc, "wolfssl-src")
+        esp_layout = False
+    if not os.path.isdir(wolfssh) and os.path.isdir(os.path.join(mc, "wolfssh-src")):
+        wolfssh = os.path.join(mc, "wolfssh-src")
+        esp_layout = False
+    if not os.path.isdir(wolfssl) and not os.path.isdir(wolfssh):
+        # Neither fetched (e.g. a non-display ESP build) — nothing to do.
+        print(f"[patch_wolfssl] no wolfssl/wolfssh tree under {mc}; nothing to patch")
+        return 0
+
+    ok = True
+
+    user_settings = os.path.join(wolfssl, "include", "user_settings.h")
+
+    # Fixes 1/2/3/6 patch the ESP component's user_settings.h / Espressif port
+    # files — they exist only in the managed-component layout. The upstream git
+    # tree (FetchContent host build) configures via CMake instead and only needs
+    # the wolfSSH pty-req fixes (4 & 5) below.
+    if not esp_layout:
+        internal_c = os.path.join(wolfssh, "src", "internal.c")
+        ok &= apply_ptyreq_fixes(internal_c)
+        return 0 if ok else 1
+
+    # Fix 2: enable wolfSSH feature block (inserted right after sdkconfig.h include).
+    ok &= patch_file(user_settings, [(
+        '/* The Espressif project config file. See also sdkconfig.defaults */\n'
+        '#include "sdkconfig.h"\n',
+        '/* The Espressif project config file. See also sdkconfig.defaults */\n'
+        '#include "sdkconfig.h"\n\n'
+        '/* pocket-dial: activate the wolfSSH feature block (WOLFSSL_WOLFSSH,\n'
+        ' * WOLFSSL_KEY_GEN, ECC/ED25519/AES/SHA needed by the SSH server). */\n'
+        '#ifndef ESP_ENABLE_WOLFSSH\n'
+        '    #define ESP_ENABLE_WOLFSSH\n'
+        '#endif\n',
+    )], "user_settings.h: ESP_ENABLE_WOLFSSH",
+        marker="#ifndef ESP_ENABLE_WOLFSSH")
+
+    # Fixes 4 & 5 (B2a): the wolfSSH pty-req fixes — shared with the host
+    # FetchContent layout; see apply_ptyreq_fixes() for the root-cause notes.
+    internal_c = os.path.join(wolfssh, "src", "internal.c")
+    ok &= apply_ptyreq_fixes(internal_c)
 
     # Fix 1: force software crypto on the ESP32-S3 branch.
     ok &= patch_file(user_settings, [(

@@ -18,6 +18,8 @@ cmake --build build --config Release
 ```
 When `IDF_PATH` is **unset**, the root `CMakeLists.txt` builds the host binary + GoogleTest suite. When `IDF_PATH` is **set**, the same file delegates to ESP-IDF instead — so unset the IDF env for host work.
 
+`-D PD_HOST_SSH=ON` additionally serves the SSH sysop-terminal TUI from the host binary (port via `-D PD_HOST_SSH_PORT`, default 2222): wolfSSL comes from FetchContent, the wolfSSH sources are compiled directly into a static lib, and `cmake/patch_wolfssl.py` re-applies the pty-req fixes to the fetched tree (it understands both the managed-component and `_deps` layouts).
+
 ### Unit tests (GoogleTest, pulled via FetchContent)
 ```bash
 ctest --test-dir build/tests --output-on-failure          # all tests
