@@ -152,7 +152,7 @@ std::string RtpSender::activeCallId() const
 // ─────────────────────────────────────────────────────────────────────────────
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 
-bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::string& callID)
+bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::string& callID, FrameProvider provider)
 {
 	std::lock_guard<std::mutex> lock(_slotMutex);
 
@@ -197,6 +197,7 @@ bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::s
 	_sock          = sock;
 	_dest          = dest;
 	_callID        = callID;
+	_provider      = provider;
 	_stopRequested.store(false, std::memory_order_release);
 	// Mark running BEFORE the task launches so a stop() racing right behind us can't
 	// clear the slot before the task exists. The task clears this LAST, on exit.
@@ -224,6 +225,7 @@ bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::s
 		close(_sock);
 		_sock = -1;
 		_callID.clear();
+		_provider = nullptr;
 		_taskRunning.store(false, std::memory_order_release);
 		_active.store(false, std::memory_order_release);
 		return false;
@@ -276,12 +278,14 @@ void RtpSender::runLoop()
 	// are written only in start() before this task is created and are never mutated for
 	// the life of the stream, so working off locals removes the cross-thread read of
 	// _sock/_dest the hot loop used to do unlocked every frame.
-	int         sock;
-	sockaddr_in dest;
+	int           sock;
+	sockaddr_in   dest;
+	FrameProvider provider;
 	{
 		std::lock_guard<std::mutex> lock(_slotMutex);
-		sock = _sock;
-		dest = _dest;
+		sock     = _sock;
+		dest     = _dest;
+		provider = _provider;
 	}
 
 	// Per-stream RTP state. Random start seq/timestamp/SSRC per RFC 3550 §5.1.
@@ -301,8 +305,18 @@ void RtpSender::runLoop()
 	{
 		buildRtpHeader(packet, /*marker=*/firstPkt, RtpSender::PAYLOAD_TYPE_PCMU,
 			seq, timestamp, ssrc);
-		synthTone(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT,
-			static_cast<double>(RtpSender::DEFAULT_TONE_HZ), phase);
+
+		bool hasAudio = false;
+		if (provider)
+		{
+			hasAudio = provider(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT);
+		}
+
+		if (!hasAudio)
+		{
+			// Fallback: silence (µ-law silent byte is 0xFF)
+			std::memset(packet + RtpSender::RTP_HEADER_BYTES, 0xFF, RtpSender::SAMPLES_PER_PKT);
+		}
 
 		if (sock >= 0)
 		{
@@ -334,6 +348,7 @@ void RtpSender::runLoop()
 			_sock = -1;
 		}
 		_callID.clear();
+		_provider = nullptr;
 		_active.store(false, std::memory_order_release);
 	}
 	ESP_LOGI("RtpSender", "Media stream stopped");
@@ -341,7 +356,7 @@ void RtpSender::runLoop()
 
 #else   // ── Host stubs: keep the SDP-answer / cap logic testable, no real I/O ──
 
-bool RtpSender::start(const std::string& /*destIp*/, uint16_t /*destPort*/, const std::string& callID)
+bool RtpSender::start(const std::string& /*destIp*/, uint16_t /*destPort*/, const std::string& callID, FrameProvider provider)
 {
 	std::lock_guard<std::mutex> lock(_slotMutex);
 	if (_active.load(std::memory_order_acquire))
@@ -349,6 +364,7 @@ bool RtpSender::start(const std::string& /*destIp*/, uint16_t /*destPort*/, cons
 		return false;   // single-stream cap still enforced on host (for tests)
 	}
 	_callID = callID;
+	_provider = provider;
 	_active.store(true, std::memory_order_release);
 	return true;
 }
@@ -365,6 +381,7 @@ bool RtpSender::stop(const std::string& callID)
 		return false;
 	}
 	_callID.clear();
+	_provider = nullptr;
 	_active.store(false, std::memory_order_release);
 	return true;
 }

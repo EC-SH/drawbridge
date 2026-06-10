@@ -89,8 +89,12 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipStatus.cpp"
                             "../src/SIP/RtpSender.cpp"
                             "../src/SIP/RtpReceiver.cpp"
+                            "../src/SIP/ThreeCxAnchorClient.cpp"
+                            "../src/SIP/LoopbackAnchorClient.cpp"
+                            "../src/SIP/MediaBridge.cpp"
+                            "../src/SIP/PlayoutBuffer.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
-                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update esp_driver_ledc console esp_timer ${EXTRA_REQUIRES}
+                    REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update esp_driver_ledc console esp_timer esp_websocket_client esp_http_client cjson ${EXTRA_REQUIRES}
                     PRIV_REQUIRES esp_wifi)
 
 # SshServer.cpp initializes esp_console_cmd_t arrays with only the fields it uses (the

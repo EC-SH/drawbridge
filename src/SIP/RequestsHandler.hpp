@@ -31,6 +31,10 @@
 #include "CallDetailRecord.hpp"
 #include "PbxConfig.hpp"
 #include "RtpSender.hpp"
+#include "RtpReceiver.hpp"
+#include "MediaBridge.hpp"
+#include "ThreeCxAnchorClient.hpp"
+#include "LoopbackAnchorClient.hpp"
 
 class RequestsHandler
 {
@@ -314,7 +318,12 @@ private:
 
 	// Server-side RTP media source (the 440 tone stream). One concurrent stream; the
 	// ESP-only UDP socket + 20 ms pacing task live inside it, guarded for host builds.
-	RtpSender _rtpSender;
+	RtpSender            _rtpSender;
+	RtpReceiver          _rtpReceiver;
+	ThreeCxAnchorClient  _threeCxClient;
+	LoopbackAnchorClient _loopbackClient;
+	AnchorClient*        _anchorClient = nullptr;
+	MediaBridge          _mediaBridge;
 
 	// RequestsHandler.hpp: Issues #24 and #28 resolved.
 	std::unordered_map<std::string, std::function<void(std::shared_ptr<SipMessage> request)>> _handlers;
@@ -425,6 +434,7 @@ private:
 	// NVS persistence for _forwards / _ringGroups. No-ops on host (the maps are the
 	// store); on ESP they read/write the "pbxcfg" NVS namespace. Caller holds _mutex.
 	void loadPbxConfig();                 // boot-time reload into the maps
+	void loadThreeCxConfig();             // boot-time reload of 3CX settings
 	void persistForwards();               // write-through after a setForward mutation
 	void persistRingGroups();             // write-through after a setRingGroup mutation
 	bool _pbxConfigLoaded = false;

@@ -65,6 +65,12 @@ add_executable(sip_parser_tests
     ../src/SIP/SipSdpMessage.cpp
     ../src/SIP/SipClient.cpp
     ../src/SIP/Session.cpp
+    # DRAWBRIDGE M0: Playout buffer, Media bridge, and Anchor Clients
+    PlayoutBuffer_test.cpp
+    ../src/SIP/PlayoutBuffer.cpp
+    ../src/SIP/MediaBridge.cpp
+    ../src/SIP/LoopbackAnchorClient.cpp
+    ../src/SIP/ThreeCxAnchorClient.cpp
 )
 
 target_link_libraries(sip_parser_tests PRIVATE gtest gtest_main)

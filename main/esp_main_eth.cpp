@@ -418,12 +418,10 @@ extern "C" void app_main(void)
 
     if (!is_provisioned) {
         ESP_LOGW(TAG, "[boot] device unprovisioned — SIP stack held dark until credential committed");
-
         while (!AdminAuth::credentialIsSet()) {
             vTaskDelay(pdMS_TO_TICKS(2000));
             ESP_LOGI(TAG, "[boot] waiting for admin credential...");
         }
-
         nvs_handle_t nvs_h;
         if (nvs_open("storage", NVS_READWRITE, &nvs_h) == ESP_OK) {
             nvs_set_u8(nvs_h, "provisioned", 1);
