@@ -119,7 +119,75 @@ A widely used dev board featuring an integrated SD/TF card slot, 16MB flash, and
 
 ---
 
-## 5. LilyGO T-POE-Pro LAN8720 (ESP32-WROVER-E Target)
+## 5. LilyGO T-ETH-ELITE S3 (W5500, PoE) — default `eth` board
+
+The current default Ethernet target. An ESP32-S3-WROOM-1 carrier board (16 MB flash,
+8 MB PSRAM) pairing a W5500 SPI Ethernet controller with onboard 802.3af PoE and a
+40-pin Raspberry-Pi-compatible header (T-ETH ELite Shield compatible). A microSD slot
+shares a second SPI bus. This is a **different board from the T-ETH-Lite** above — the
+W5500 pin map is not the same, so build it with `-D PD_ETH_BOARD=elite` (the default).
+
+```
+       ┌──────────────────┐
+       │   RJ45 PoE 802.3af│  (Class 0, input 36–57 V)
+       └────────┬─────────┘
+                │
+                ▼
+       ┌──────────────────┐             ┌──────────────────────┐
+       │   W5500 MAC/PHY  │<─── SPI ───>│  ESP32-S3-WROOM-1     │
+       └──────────────────┘             │  (16MB flash/8MB PSRAM)│
+         SCLK: GPIO 48                   └──────────────────────┘
+         MISO: GPIO 47
+         MOSI: GPIO 21
+         CS:   GPIO 45
+         INT:  GPIO 14
+         RST:  not wired (-1)
+```
+
+### Pin Assignments
+* **Ethernet Controller**: Wiznet W5500 MAC/PHY
+* **SPI Host Device**: `SPI2_HOST` (FSPI)
+* **Bus Speed**: 40 MHz — the hardware-verified maximum for this board. The Elite's
+  W5500 pins route through the S3 GPIO matrix (not IOMUX), and the GPSPI divides its
+  80 MHz source by integers: 80 MHz hard-fails (`ESP_ERR_TIMEOUT` at driver install),
+  and anything requested between 40 and 79 lands on 40 actual.
+* **W5500 SPI address (`ETH_ADDR`)**: `1` (fixed internal address; not a GPIO)
+
+| Signal Name | ESP32-S3 GPIO | Bus Signal | Description |
+| :--- | :---: | :---: | :--- |
+| `W5500_SCLK_GPIO` | **GPIO 48** | SPI2 SCLK | SPI Serial Clock |
+| `W5500_MISO_GPIO` | **GPIO 47** | SPI2 MISO | SPI Master Input Slave Output |
+| `W5500_MOSI_GPIO` | **GPIO 21** | SPI2 MOSI | SPI Master Output Slave Input |
+| `W5500_CS_GPIO` | **GPIO 45** | SPI2 CS | SPI Chip Select (Active Low) |
+| `W5500_INT_GPIO` | **GPIO 14** | Input | W5500 Hardware Interrupt Pin |
+| `W5500_RST_GPIO` | **-1 (Unused)** | Reset | Not wired to a GPIO; reset via SPI soft command |
+
+microSD/TF slot (separate SPI bus; not used by the SIP firmware, available for future config/log storage):
+
+| Signal Name | ESP32-S3 GPIO |
+| :--- | :---: |
+| `SD_MISO` | **GPIO 9** |
+| `SD_MOSI` | **GPIO 11** |
+| `SD_SCLK` | **GPIO 10** |
+| `SD_CS` | **GPIO 12** |
+
+> [!NOTE]
+> The W5500 `SCLK`/`MISO`/`MOSI`/`CS` pins (48/47/21/45) overlap the GPIO numbers the
+> Guition display uses for its QSPI TFT bus (§2) — harmless, because those are different
+> boards with different firmware builds, but don't cross-wire the two pin maps.
+
+> [!IMPORTANT]
+> **PoE + USB power coexistence.** The Elite's PoE front end is an isolated 802.3af PD
+> module (DP9900M-5V) with a polyfused 5 V output. A P-FET (AO3401A) between USB VBUS and
+> the 5 V rail switches off automatically when PoE power is present and its body diode
+> blocks back-feed into the USB host, so **simultaneous PoE + USB-serial is safe with the
+> OTG SW OFF**. The OTG switch's sole job is to back-feed the PoE 5 V to the USB-C
+> connector (to power OTG peripherals) — leave it **OFF** whenever a computer is attached,
+> and only power the board from active 802.3af/at equipment (no passive injectors).
+
+---
+
+## 6. LilyGO T-POE-Pro LAN8720 (ESP32-WROVER-E Target)
 
 A legacy ESP32-WROVER-E board with Power-over-Ethernet (PoE) and RMII-based LAN8720 Ethernet. It leverages the native ESP32 internal MAC.
 
@@ -152,7 +220,7 @@ A legacy ESP32-WROVER-E board with Power-over-Ethernet (PoE) and RMII-based LAN8
 
 ---
 
-## 6. Generic Standalone AP (Wi-Fi Only)
+## 7. Generic Standalone AP (Wi-Fi Only)
 
 For developers lacking Ethernet or smart displays, the firmware compiles onto any standard ESP32 / ESP32-S3 Development Board (e.g., ESP32-WROOM-32D, ESP32-S3-DevKitC-1).
 
@@ -163,7 +231,7 @@ For developers lacking Ethernet or smart displays, the firmware compiles onto an
 
 ---
 
-## 7. Bill of Materials (BOM) Estimates
+## 8. Bill of Materials (BOM) Estimates
 
 The following table provides estimated BOM specifications for assembling a physical **pocket-dial** station.
 
@@ -171,6 +239,7 @@ The following table provides estimated BOM specifications for assembling a physi
 | :--- | :--- | :--- | :---: | :---: |
 | **Guition Smart Display** | ESP32-S3 3.5" black display board (320x480) with case | Guition JC3248W535 | 1 | $14.50 |
 | **PoE Ethernet Module** | ESP32-S3 core board with W5500 SPI Ethernet and PoE RJ45 | Waveshare ESP32-S3-ETH | 1 | $18.90 |
+| **PoE Ethernet + RPi-header board** | ESP32-S3-WROOM-1 board, W5500 SPI Ethernet, 802.3af PoE, 40-pin header, microSD (**default `eth` board**) | LilyGO T-ETH-ELITE S3 | 1 | $21.90 |
 | **Ethernet Dev Board** | ESP32-S3 LilyGO board with W5500 SPI Ethernet | LilyGO T-ETH-Lite S3 | 1 | $15.50 |
 | **RMII Ethernet Board** | ESP32-Wrover board with LAN8720 RMII Ethernet | LilyGO T-POE-Pro | 1 | $19.90 |
 | **Battery Divider Resistors** | 100kΩ 1% and 220kΩ 1% resistors for battery ADC divider | Generic | 1 set | $0.10 |
@@ -178,7 +247,7 @@ The following table provides estimated BOM specifications for assembling a physi
 
 ---
 
-## 8. Assembly & Wiring Guidelines
+## 9. Assembly & Wiring Guidelines
 
 ### A. Touch I2C Pull-Up Requirements
 On boards where the touch controller (AXS15231B) is connected, ensure that **4.7kΩ pull-up resistors** are soldered between:

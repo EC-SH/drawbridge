@@ -30,7 +30,7 @@ Transport is selected by the `SIP_TRANSPORT` CMake var, which picks the `main/es
 
 | `SIP_TRANSPORT` | Entry point | Board / target |
 |---|---|---|
-| `eth` (default) | `esp_main_eth.cpp` | W5500 wired/PoE (esp32s3) |
+| `eth` (default) | `esp_main_eth.cpp` | W5500 wired/PoE (esp32s3) — pin map via `-D PD_ETH_BOARD=elite`(default, LilyGO T-ETH-ELITE)`/waveshare` |
 | `wifi` | `esp_main.cpp` | generic ESP32-S3 SoftAP |
 | `display` | `esp_main_display.cpp` | Guition JC3248W535 AXS15231B touch display (LVGL) |
 | `lan8720` | `esp_main_eth_lan8720.cpp` | classic ESP32 internal EMAC — needs `set-target esp32` |

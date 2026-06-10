@@ -20,6 +20,7 @@ detail.
 | :--- | :--- | :---: | :--- | :--- | :--- | :--- |
 | **Generic ESP32 / ESP32-S3 dev board** | Wi-Fi SoftAP (open) | No | ESP32 or ESP32-S3 (PSRAM optional) | varies | **Pocket** (defaults 32/8/32, ~37 KB) | 6–8 calls, ~16 phones (SoftAP-limited) |
 | **Guition JC3248W535** | Wi-Fi SoftAP + captive portal | **Yes** — 3.5" 320×480 IPS capacitive touch (AXS15231B, QSPI) | ESP32-S3R8, **8 MB Octal PSRAM** | 16 MB QSPI | **Office** (64/24/64, ~90 KB) | ~24 calls, 50+ phones |
+| **LilyGO T-ETH-ELITE S3 (W5500, PoE)** — *default `eth`* | **Wired Ethernet + PoE** (W5500 SPI, 802.3af) | No | ESP32-S3-WROOM-1, 8 MB PSRAM | 16 MB + microSD | **Rack** (128/48/128, ~180 KB) | ~48 calls, 100+ phones |
 | **Waveshare ESP32-S3-ETH (W5500, PoE)** | **Wired Ethernet + PoE** (W5500 SPI) | No | ESP32-S3R8 | — | **Rack** (128/48/128, ~180 KB) | ~48 calls, 100+ phones |
 | **LilyGO T-ETH-Lite (W5500)** | **Wired Ethernet** (W5500 SPI) | No | ESP32-S3, 8 MB PSRAM | 16 MB + SD/TF slot | **Rack** | ~48 calls, 100+ phones |
 | **LilyGO T-POE-Pro (LAN8720)** | **Wired Ethernet + PoE** (LAN8720 RMII, internal MAC) | No | ESP32-WROVER-E | — | **Rack** | ~48 calls, 100+ phones |
@@ -45,7 +46,7 @@ Notes:
 
 - The board hosts its own **open** access point `esp32-sipserver` on channel 1 with an
   internal DHCP server; the registrar binds `192.168.4.1:5060`
-  (`main/esp_main.cpp`, [HARDWARE.md §6](HARDWARE.md)).
+  (`main/esp_main.cpp`, [HARDWARE.md §7](HARDWARE.md)).
 - The SoftAP is configured for **10 associated stations** (`EXAMPLE_MAX_STA_CONN = 10`),
   and the ESP-IDF Wi-Fi driver hard-caps associations at roughly **10–16** regardless of
   how large you set the client pool ([SCALING.md §5](SCALING.md)). This is why the
@@ -53,18 +54,23 @@ Notes:
 - Best for: self-contained pop-up intercoms, classrooms, small offices, or any place
   with no existing network. No router required.
 
-### Wired Ethernet / PoE (Waveshare W5500, LilyGO T-ETH-Lite W5500, LilyGO T-POE-Pro LAN8720)
+### Wired Ethernet / PoE (LilyGO T-ETH-ELITE W5500, Waveshare W5500, LilyGO T-ETH-Lite W5500, LilyGO T-POE-Pro LAN8720)
 
 - The board is a node on your wired LAN, obtaining an address via DHCP with static
   fallback. There is **no station-association ceiling**, so the SIP session pool — not
   the network — becomes the limit, which is why high client counts belong on a wired
   board (Rack tier).
 - **W5500** boards use an external Wiznet MAC/PHY over SPI; **LAN8720** boards use the
-  ESP32's internal Ethernet MAC over RMII. See [HARDWARE.md §3–5](HARDWARE.md) for exact
-  pinouts and bus speeds (W5500 default 36 MHz, supports up to 80 MHz).
-- **PoE** is available on the Waveshare ESP32-S3-ETH and the LilyGO T-POE-Pro (a single
-  RJ45 carries both data and power). The LilyGO T-ETH-Lite is W5500 wired Ethernet
-  without onboard PoE.
+  ESP32's internal Ethernet MAC over RMII. See [HARDWARE.md §3–6](HARDWARE.md) for exact
+  pinouts and bus speeds (W5500 at 40 MHz on the T-ETH-ELITE — its hardware-verified
+  max through the S3 GPIO matrix; the chip itself supports up to 80 MHz on IOMUX-routed
+  boards). The three W5500
+  boards differ **only** in their SPI pin map — pick yours at build time with
+  `-D PD_ETH_BOARD=elite` (default) or `=waveshare`; the T-ETH-Lite pins are not yet
+  wired into the build.
+- **PoE** is available on the LilyGO T-ETH-ELITE (802.3af Class 0), the Waveshare
+  ESP32-S3-ETH, and the LilyGO T-POE-Pro (a single RJ45 carries both data and power). The
+  LilyGO T-ETH-Lite is W5500 wired Ethernet without onboard PoE.
 - Best for: permanent installs, racks, deployments with more than ~16 phones, or where
   you want power and data on one cable.
 
@@ -102,7 +108,7 @@ shows the captive-portal join QR code on first boot.
 
 ## 5. Power and wiring notes
 
-From [HARDWARE.md §8](HARDWARE.md):
+From [HARDWARE.md §9](HARDWARE.md):
 
 - **Touch I2C pull-ups (Guition display):** ensure **4.7 kΩ pull-ups** on `TOUCH_SDA`
   (GPIO 4) and `TOUCH_SCL` (GPIO 8) to 3.3 V. Many JC3248W535 clones omit these, causing
@@ -110,8 +116,8 @@ From [HARDWARE.md §8](HARDWARE.md):
 - **High-frequency SPI Ethernet routing (W5500 boards):** keep SPI traces **shorter than
   5 cm**, bundle ground alongside `SCK`/`MOSI`, and expect crosstalk on a 36 MHz clock if
   lines are loosely jumpered on a breadboard.
-- **PoE:** the Waveshare ESP32-S3-ETH and LilyGO T-POE-Pro accept power over the RJ45;
-  the LilyGO T-ETH-Lite and Wi-Fi boards are USB-C powered.
+- **PoE:** the LilyGO T-ETH-ELITE, Waveshare ESP32-S3-ETH, and LilyGO T-POE-Pro accept
+  power over the RJ45; the LilyGO T-ETH-Lite and Wi-Fi boards are USB-C powered.
 - **Backlight (Guition display):** `TFT_BL` is on GPIO 1, active-high (high = backlight on).
 
 > [!NOTE]
@@ -127,7 +133,8 @@ From [HARDWARE.md §8](HARDWARE.md):
 | The cheapest, simplest standalone box; no existing network | **Generic ESP32 / ESP32-S3** (Wi-Fi SoftAP, Pocket tier) |
 | A local screen, touch UI, and on-device status display | **Guition JC3248W535** (Office tier) |
 | More than ~16 phones, or a permanent rack install | A **wired Ethernet** board (Rack tier) |
-| Power and data on a single cable | **Waveshare ESP32-S3-ETH** or **LilyGO T-POE-Pro** (PoE) |
+| Power and data on a single cable | **LilyGO T-ETH-ELITE** (default), **Waveshare ESP32-S3-ETH**, or **LilyGO T-POE-Pro** (PoE) |
+| A Raspberry-Pi-style 40-pin header + PoE + microSD on an S3 | **LilyGO T-ETH-ELITE S3** (W5500) |
 | Wired Ethernet on an S3 with PSRAM + SD slot, no PoE | **LilyGO T-ETH-Lite (W5500)** |
 | Maximum concurrent calls (~48) | Any **Rack-tier** wired board, built with the Rack `-D` flags |
 | A throwaway / pop-up intercom you can carry | **Generic ESP32** SoftAP node |
@@ -142,7 +149,10 @@ for the exact commands. In short:
 
 - Wi-Fi SoftAP: default build (`idf.py build`).
 - Touch display: `idf.py -D SIP_TRANSPORT=display build`.
-- Wired Ethernet / PoE: `idf.py -D SIP_TRANSPORT=eth build`.
+- Wired Ethernet / PoE: `idf.py -D SIP_TRANSPORT=eth build` — defaults to the **LilyGO
+  T-ETH-ELITE S3** pin map. For the Waveshare board add `-D PD_ETH_BOARD=waveshare`. The
+  boot log prints the active board name + pin map (`W5500 board: …`) so you can confirm
+  the right map is compiled in.
 
 To raise the capacity tier, append the `-DCMAKE_CXX_FLAGS="-DPOCKETDIAL_MAX_CLIENTS=…"`
 flags from [SCALING.md §3](SCALING.md).

@@ -359,15 +359,24 @@ idf.py -p COM3 -D SIP_TRANSPORT=display flash monitor
 ---
 
 ### W5500 Ethernet & PoE
-To build the server utilizing high-speed wired Ethernet (e.g. Waveshare ESP32-S3-ETH or LilyGO T-ETH-Lite):
+To build the server utilizing high-speed wired Ethernet on a W5500 board (LilyGO
+T-ETH-ELITE, Waveshare ESP32-S3-ETH, etc.):
 
 ```bash
-# Build using the Ethernet transport compile flag
+# Build using the Ethernet transport compile flag.
+# Defaults to the LilyGO T-ETH-ELITE S3 pin map.
 idf.py -D SIP_TRANSPORT=eth build
 
-# Flash and monitor
-idf.py -p COM3 -D SIP_TRANSPORT=eth flash monitor
+# For the Waveshare ESP32-S3-ETH instead, select its pin map:
+idf.py -D SIP_TRANSPORT=eth -D PD_ETH_BOARD=waveshare build
+
+# Flash and monitor (replace COMx with your board's port)
+idf.py -p COMx -D SIP_TRANSPORT=eth flash monitor
 ```
+
+The boot log prints the active board and pins (`W5500 board: LilyGO T-ETH-ELITE S3 — SCLK=48 …`),
+followed by `Ethernet link UP` and the DHCP `IP: …` once the cable is connected. See
+[docs/ETH_SMOKE.md](docs/ETH_SMOKE.md) for the full bring-up / smoke-test runbook.
 
 ---
 

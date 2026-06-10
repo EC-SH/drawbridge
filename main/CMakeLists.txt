@@ -4,7 +4,7 @@
 # Override at build time:  idf.py -D SIP_TRANSPORT=display build
 # NOTE: lan8720 requires the classic ESP32 (has the internal EMAC):  idf.py set-target esp32
 if(NOT DEFINED SIP_TRANSPORT)
-    set(SIP_TRANSPORT "eth")      # default to Ethernet for Waveshare board
+    set(SIP_TRANSPORT "eth")      # default to W5500 Ethernet (LilyGO T-ETH-ELITE pins; see PD_ETH_BOARD)
 endif()
 
 set(ADDITIONAL_SRCS "")
@@ -22,7 +22,21 @@ if(SIP_TRANSPORT STREQUAL "eth")
     else()
         set(EXTRA_REQUIRES esp_eth ${IDF_V6_DRIVERS})
     endif()
-    message(STATUS "SipServer transport: W5500 Ethernet (PoE)")
+    # W5500 boards differ only in their SPI pin map. Select with -D PD_ETH_BOARD=<board>:
+    #   elite     → LilyGO T-ETH-ELITE S3 (default; the board on the bench)
+    #   waveshare → Waveshare ESP32-S3-ETH (PoE)
+    # esp_main_eth.cpp picks the pins from the PD_ETH_BOARD_* define emitted below.
+    if(NOT DEFINED PD_ETH_BOARD)
+        set(PD_ETH_BOARD "elite")
+    endif()
+    if(PD_ETH_BOARD STREQUAL "elite")
+        set(ETH_BOARD_DEF "PD_ETH_BOARD_ELITE")
+    elseif(PD_ETH_BOARD STREQUAL "waveshare")
+        set(ETH_BOARD_DEF "PD_ETH_BOARD_WAVESHARE")
+    else()
+        message(FATAL_ERROR "Unknown PD_ETH_BOARD='${PD_ETH_BOARD}' — use 'elite' or 'waveshare'")
+    endif()
+    message(STATUS "SipServer transport: W5500 Ethernet — board: ${PD_ETH_BOARD}")
 elseif(SIP_TRANSPORT STREQUAL "lan8720")
     # LilyGO T-Internet-COM: classic ESP32 internal EMAC + external LAN8720 PHY (RMII).
     # Internal EMAC is built into esp_eth; the PHY power pin needs gpio. IDF v6.0 moved
@@ -94,6 +108,12 @@ set_source_files_properties("../src/Helpers/SshServer.cpp"
 # so they must NOT define POCKETDIAL_HAS_WIFI.
 if(NOT SIP_TRANSPORT STREQUAL "eth" AND NOT SIP_TRANSPORT STREQUAL "lan8720")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_WIFI)
+endif()
+
+# W5500 board pin-map selector (see the eth branch above). Drives the #if in
+# esp_main_eth.cpp; absent the define, that file falls back to the Elite pins.
+if(SIP_TRANSPORT STREQUAL "eth")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ${ETH_BOARD_DEF})
 endif()
 
 # Re-apply the wolfSSL ESP-IDF-v6.0.1 compatibility patches to the freshly fetched

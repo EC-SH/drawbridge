@@ -57,17 +57,37 @@
 // ── Tag for ESP_LOG ────────────────────────────────────────────────────────
 static const char* TAG = "SipServerETH";
 
-// ── W5500 SPI Pin Mapping (Waveshare ESP32-S3-ETH) ────────────────────────
-//    Verify these against your board's schematic / silkscreen.
-#define W5500_SCLK_GPIO   12
-#define W5500_MISO_GPIO   13
-#define W5500_MOSI_GPIO   11
-#define W5500_CS_GPIO     10
-#define W5500_INT_GPIO    14
-#define W5500_RST_GPIO    -1    // -1 if not wired to a GPIO
+// ── W5500 SPI pin map (board-selected) ────────────────────────────────────
+//   Chosen at build time by main/CMakeLists.txt from -D PD_ETH_BOARD=<board>:
+//     elite     → LilyGO T-ETH-ELITE S3  (ESP32-S3-WROOM-1 + W5500)  ← DEFAULT
+//     waveshare → Waveshare ESP32-S3-ETH (W5500, PoE)
+//   Defaults to the Elite when neither macro is defined, so a stray build of
+//   this file targets the board that's actually on the bench.
+//   Verify against your board's schematic / silkscreen before trusting it.
+#if defined(PD_ETH_BOARD_WAVESHARE)
+#  define W5500_BOARD_NAME "Waveshare ESP32-S3-ETH"
+#  define W5500_SCLK_GPIO  12
+#  define W5500_MISO_GPIO  13
+#  define W5500_MOSI_GPIO  11
+#  define W5500_CS_GPIO    10
+#  define W5500_INT_GPIO   14
+#  define W5500_RST_GPIO   -1
+#else  // PD_ETH_BOARD_ELITE (default)
+#  define W5500_BOARD_NAME "LilyGO T-ETH-ELITE S3"
+#  define W5500_SCLK_GPIO  48
+#  define W5500_MISO_GPIO  47
+#  define W5500_MOSI_GPIO  21
+#  define W5500_CS_GPIO    45
+#  define W5500_INT_GPIO   14   // Elite ETH_INT
+#  define W5500_RST_GPIO   -1   // Elite ETH_RST not wired to a GPIO
+#endif
 
 #define W5500_SPI_HOST    SPI2_HOST
-#define W5500_SPI_CLOCK   36    // MHz — W5500 supports up to 80 MHz
+#define W5500_SPI_CLOCK   40    // MHz — max stable through the S3 GPIO matrix on this
+                                // pin set (verified on hardware: 80 MHz hard-fails with
+                                // ESP_ERR_TIMEOUT at driver install; the GPSPI divides an
+                                // 80 MHz source by integers, so requests in 40..79 all
+                                // land on 40 actual). The old 36 quietly ran at 26.7.
 
 // ── Static IP fallback (set USE_STATIC_IP to 1 to skip DHCP) ──────────────
 #define USE_STATIC_IP     0
@@ -143,6 +163,10 @@ static void ip_event_handler(void* arg, esp_event_base_t event_base,
 
 static esp_eth_handle_t eth_init_w5500(void)
 {
+    ESP_LOGI(TAG, "W5500 board: %s — SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d @ %d MHz",
+             W5500_BOARD_NAME, W5500_SCLK_GPIO, W5500_MISO_GPIO, W5500_MOSI_GPIO,
+             W5500_CS_GPIO, W5500_INT_GPIO, W5500_RST_GPIO, W5500_SPI_CLOCK);
+
     // ── SPI bus ─────────────────────────────────────────────────────────
     spi_bus_config_t buscfg = {};
     buscfg.miso_io_num   = W5500_MISO_GPIO;
@@ -160,6 +184,23 @@ static esp_eth_handle_t eth_init_w5500(void)
     devcfg.clock_speed_hz = W5500_SPI_CLOCK * 1000 * 1000;
     devcfg.spics_io_num   = W5500_CS_GPIO;
     devcfg.queue_size     = 20;
+
+#if W5500_INT_GPIO >= 0
+    // ── GPIO ISR service (required for the W5500 INT pin) ───────────────
+    // The esp_eth W5500 driver registers an ISR on int_gpio_num when it
+    // starts. On ESP-IDF v6 the GPIO ISR service is NOT auto-installed, so
+    // without this the handler-add fails ("gpio: ... isr service is not
+    // installed") and the driver never receives link/RX interrupts — the
+    // link silently never comes up even with a cable attached. Idempotent:
+    // ESP_ERR_INVALID_STATE means another subsystem already installed it.
+    {
+        esp_err_t isr_rc = gpio_install_isr_service(0);
+        if (isr_rc != ESP_OK && isr_rc != ESP_ERR_INVALID_STATE)
+        {
+            ESP_ERROR_CHECK(isr_rc);
+        }
+    }
+#endif
 
     // ── MAC config ──────────────────────────────────────────────────────
     // ESP-IDF v5.1+ changed the macro to accept (spi_host, &spi_devcfg);
