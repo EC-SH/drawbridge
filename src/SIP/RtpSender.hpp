@@ -40,10 +40,13 @@
 #include <string>
 #include <array>
 #include <mutex>
+#include <functional>
 
 class RtpSender
 {
 public:
+	using FrameProvider = std::function<bool(uint8_t* outUlaw, size_t count)>;
+
 	// G.711 @ 8 kHz, 20 ms ptime → 160 samples / packet. Payload type 0 (PCMU).
 	static constexpr int    SAMPLE_RATE_HZ   = 8000;
 	static constexpr int    PTIME_MS         = 20;
@@ -91,7 +94,7 @@ public:
 	// Returns false if a stream is already active (cap reached) or the socket/task
 	// could not be created. On host this is a guarded no-op that still flips _active
 	// so the SDP-answer / cap logic is exercisable in tests.
-	bool start(const std::string& destIp, uint16_t destPort, const std::string& callID);
+	bool start(const std::string& destIp, uint16_t destPort, const std::string& callID, FrameProvider provider = nullptr);
 
 	// Stop the stream IF it belongs to `callID` (or unconditionally if callID empty).
 	// Idempotent: safe to call on an already-idle sender. Frees the socket, signals
@@ -125,6 +128,7 @@ private:
 	// task never race the slot. Non-recursive (matches the codebase convention).
 	mutable std::mutex _slotMutex;
 	std::string        _callID;           // owner of the live stream
+	FrameProvider      _provider;
 };
 
 #endif

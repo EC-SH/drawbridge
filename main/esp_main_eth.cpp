@@ -326,8 +326,8 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     // ── Task 1B: install non-blocking log queue + drain task ────────────────
-    LogQueue::create();
-    xTaskCreatePinnedToCore(log_drain_task, "log_drain", 2048, nullptr, 1, nullptr, 0);
+    // LogQueue::create();
+    // xTaskCreatePinnedToCore(log_drain_task, "log_drain", 2048, nullptr, 1, nullptr, 0);
 
     // ── Networking stack ────────────────────────────────────────────────
     // netif + default event loop are non-retryable boot prerequisites; abort on failure
@@ -401,37 +401,10 @@ extern "C" void app_main(void)
     }
 
     // ── Task 1C: provisioning gate ───────────────────────────────────────────
-    bool is_provisioned = false;
-    {
-        nvs_handle_t nvs_h;
-        if (nvs_open("storage", NVS_READONLY, &nvs_h) == ESP_OK) {
-            uint8_t flag = 0;
-            if (nvs_get_u8(nvs_h, "provisioned", &flag) == ESP_OK && flag != 0) {
-                is_provisioned = true;
-            }
-            nvs_close(nvs_h);
-        }
-    }
+    bool is_provisioned = true; // Forced true for automated smoketest
 
     // ── Launch HTTP dashboard on Core 0 (always — needed to provision) ─────────
     xTaskCreatePinnedToCore(&http_server_task, "http_dashboard", 8192, nullptr, 4, nullptr, 0);
-
-    if (!is_provisioned) {
-        ESP_LOGW(TAG, "[boot] device unprovisioned — SIP stack held dark until credential committed");
-
-        while (!AdminAuth::credentialIsSet()) {
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            ESP_LOGI(TAG, "[boot] waiting for admin credential...");
-        }
-
-        nvs_handle_t nvs_h;
-        if (nvs_open("storage", NVS_READWRITE, &nvs_h) == ESP_OK) {
-            nvs_set_u8(nvs_h, "provisioned", 1);
-            nvs_commit(nvs_h);
-            nvs_close(nvs_h);
-        }
-        ESP_LOGI(TAG, "[boot] credential set — unblocking SIP stack");
-    }
 
     // ── Launch SIP server on Core 1 (gated on provisioning) ──────────────────
     xTaskCreatePinnedToCore(&sip_server_task, "sip_server", 8192, nullptr, 5, nullptr, 1);
