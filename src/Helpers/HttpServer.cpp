@@ -719,15 +719,16 @@ void HttpServer::sendApiStatus(int sock)
 	uint64_t packets = 0;
 	uint64_t dropped = 0;
 
-	if (_handler != nullptr)
+	RequestsHandler* handler = _handler.load(std::memory_order_acquire);
+	if (handler != nullptr)
 	{
-		clients = _handler->getActiveClients();
-		sessions = _handler->getActiveSessions();
-		dndExtensions = _handler->getDndExtensions();
-		forwards = _handler->getForwards();
-		ringGroups = _handler->getRingGroups();
-		packets = _handler->getPacketsProcessed();
-		dropped = _handler->getPacketsDropped();   // Issue #38
+		clients = handler->getActiveClients();
+		sessions = handler->getActiveSessions();
+		dndExtensions = handler->getDndExtensions();
+		forwards = handler->getForwards();
+		ringGroups = handler->getRingGroups();
+		packets = handler->getPacketsProcessed();
+		dropped = handler->getPacketsDropped();   // Issue #38
 	}
 
 	std::string displayIp = _ip;
@@ -839,9 +840,9 @@ void HttpServer::sendApiKill(int sock, const std::string& body)
 		return;
 	}
 
-	if (_handler != nullptr)
+	if (RequestsHandler* handler = _handler.load(std::memory_order_acquire))
 	{
-		_handler->forceDisconnect(ext);
+		handler->forceDisconnect(ext);
 	}
 	sendResponse(sock, 200, "OK", "application/json",
 	             "{\"status\":\"ok\",\"disconnected\":\"" + jsonEscape(ext) + "\"}");
@@ -850,9 +851,9 @@ void HttpServer::sendApiKill(int sock, const std::string& body)
 void HttpServer::sendApiCdr(int sock)
 {
 	std::vector<CallDetailRecord> records;
-	if (_handler != nullptr)
+	if (RequestsHandler* handler = _handler.load(std::memory_order_acquire))
 	{
-		records = _handler->getCallDetailRecords();   // newest first, thread-safe copy
+		records = handler->getCallDetailRecords();   // newest first, thread-safe copy
 	}
 
 	uint64_t nowMs = currentTimeMs();   // same steady-clock basis as the CDR startMs
@@ -902,9 +903,9 @@ void HttpServer::sendApiDnd(int sock, const std::string& body)
 	// Accept 1/true/on as enable; anything else (incl. "0") disables.
 	bool enable = (on == "1" || on == "true" || on == "on");
 
-	if (_handler != nullptr)
+	if (RequestsHandler* handler = _handler.load(std::memory_order_acquire))
 	{
-		_handler->setDnd(ext, enable);
+		handler->setDnd(ext, enable);
 	}
 
 	sendResponse(sock, 200, "OK", "application/json",
@@ -938,9 +939,9 @@ void HttpServer::sendApiForward(int sock, const std::string& body)
 		return;
 	}
 
-	if (_handler != nullptr)
+	if (RequestsHandler* handler = _handler.load(std::memory_order_acquire))
 	{
-		_handler->setForward(ext, trigger, target);
+		handler->setForward(ext, trigger, target);
 	}
 
 	sendResponse(sock, 200, "OK", "application/json",
@@ -977,9 +978,9 @@ void HttpServer::sendApiGroup(int sock, const std::string& body)
 		return;
 	}
 
-	if (_handler != nullptr)
+	if (RequestsHandler* handler = _handler.load(std::memory_order_acquire))
 	{
-		_handler->setRingGroup(ext, members, mode);
+		handler->setRingGroup(ext, members, mode);
 	}
 
 	sendResponse(sock, 200, "OK", "application/json",

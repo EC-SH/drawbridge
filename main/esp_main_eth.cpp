@@ -261,14 +261,15 @@ static void sip_server_task(void* pvParameters)
 
 static void http_server_task(void* pvParameters)
 {
-    // Wait for SIP server to initialize
-    while (g_sipServer == nullptr) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
+    // Start the dashboard IMMEDIATELY — do not wait for g_sipServer. On an
+    // unprovisioned device the SIP stack is held dark until an admin
+    // credential is committed via this web UI, so waiting here deadlocks
+    // onboarding (HTTP ← SIP ← credential ← HTTP). HttpServer null-checks
+    // the handler on every endpoint; the live registrar is attached below
+    // once the SIP task constructs it.
     ESP_LOGI(TAG, "Starting CGA CRT Dashboard on %s:%d", s_ip_addr.c_str(), HTTP_DASHBOARD_PORT);
 
-    HttpServer http(s_ip_addr, HTTP_DASHBOARD_PORT, &g_sipServer->getHandler());
+    HttpServer http(s_ip_addr, HTTP_DASHBOARD_PORT, nullptr);
     http.start();
     ESP_LOGI(TAG, "CGA CRT Dashboard RUNNING at http://%s:%d/",
              s_ip_addr.c_str(), HTTP_DASHBOARD_PORT);
@@ -278,9 +279,16 @@ static void http_server_task(void* pvParameters)
     // next reset. No-op unless the running image is pending verify.
     int otaSettleSec = 0;
     bool otaConfirmed = false;
+    bool handlerAttached = false;
     while (true)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!handlerAttached && g_sipServer != nullptr)
+        {
+            http.attachHandler(&g_sipServer->getHandler());
+            handlerAttached = true;
+            ESP_LOGI(TAG, "Dashboard: live SIP registrar attached");
+        }
         if (!otaConfirmed && ++otaSettleSec >= 5)
         {
             otaConfirmed = true;

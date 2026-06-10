@@ -30,6 +30,17 @@ public:
 
 	void start();
 
+	// Late-bind the live SIP registrar. The dashboard must be able to start
+	// BEFORE the SIP stack exists — an unprovisioned device holds SIP dark
+	// until an admin credential is committed *via this web UI*, so HttpServer
+	// cannot wait for the handler (that ordering deadlocks onboarding on the
+	// headless eth/wifi builds). All endpoints null-check, so until this is
+	// called they serve empty datasets. Same idiom as SshServer::attachHandler.
+	void attachHandler(RequestsHandler* h)
+	{
+		_handler.store(h, std::memory_order_release);
+	}
+
 private:
 	void acceptLoop();
 	void handleClient(int clientSock);
@@ -120,7 +131,9 @@ private:
 	std::string _ip;
 	int _port;
 	int _listenSock;
-	RequestsHandler* _handler;
+	// Written by attachHandler() from the SIP task once the registrar exists;
+	// read by the HTTP accept/worker threads. nullptr until then.
+	std::atomic<RequestsHandler*> _handler;
 	std::atomic<bool> _running;
 	std::thread _acceptThread;
 
