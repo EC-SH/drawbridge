@@ -68,6 +68,20 @@ void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback)
 
 static const char* TAG = "ThreeCxAnchor";
 
+// 3CX Call Control WS event_type is a NUMERIC enum, not a string. From the 3CX
+// call-control-examples (server/src/types.ts):
+//   enum EventType { Upset, Remove, DTMFstring, PromptPlaybackFinished }
+// TypeScript auto-numbers these 0..3. The earlier parser compared event_type to
+// the strings "Upset"/"Remove"/"DTMFstring", but cJSON gives a number there
+// (valuestring == NULL), so every event was silently dropped — the device never
+// saw a call answer, so it never sent 200 OK / started media / dropped the leg.
+enum ThreeCxEventType {
+	TCX_EV_UPSET       = 0,
+	TCX_EV_REMOVE      = 1,
+	TCX_EV_DTMF        = 2,
+	TCX_EV_PROMPT_DONE = 3,
+};
+
 // Fallback token lifetime when the JWT can't be decoded: 50 minutes. This is
 // deliberately the JWT's real ~1h validity minus margin, NOT the OAuth
 // expires_in (3CX reports 60s there, which is wrong and would cause a refresh
@@ -632,6 +646,17 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 			break;
 
 		case WEBSOCKET_EVENT_DATA:
+			// DIAGNOSTIC: dump every WS data frame raw, before any filtering, so we
+			// can see exactly what 3CX pushes on ring/answer/hangup. op_code 0x01=text,
+			// 0x02=binary, 0x08=close, 0x09=ping, 0x0A=pong, 0x00=continuation.
+			ESP_LOGI(TAG, "WS frame: op=0x%02x len=%d off=%d total=%d", data->op_code,
+			         data->data_len, data->payload_offset, data->payload_len);
+			if (data->op_code == 0x01 && data->data_ptr != nullptr && data->data_len > 0)
+			{
+				std::string rawDump(data->data_ptr, data->data_len);
+				ESP_LOGI(TAG, "WS payload: %s", rawDump.c_str());
+			}
+
 			if (data->op_code == 0x01 && data->data_ptr != nullptr && data->data_len > 0)
 			{
 				// Received text data from WSS
@@ -645,9 +670,9 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 					cJSON* evType = cJSON_GetObjectItem(eventObj, "event_type");
 					cJSON* entity = cJSON_GetObjectItem(eventObj, "entity");
 
-					if (evType && evType->valuestring && entity && entity->valuestring)
+					if (cJSON_IsNumber(evType) && entity && entity->valuestring)
 					{
-						std::string typeStr = evType->valuestring;
+						int evTypeNum = evType->valueint;
 						std::string entityStr = entity->valuestring;
 
 						// Parse entity path to verify DN and participantId:
@@ -674,7 +699,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 									evCb = _eventCb;
 								}
 
-								if (typeStr == "Upset")
+								if (evTypeNum == TCX_EV_UPSET)
 								{
 									ESP_LOGI(TAG, "Call control event: Participant Upset %s", partId.c_str());
 									std::string statusStr = getParticipantStatus(partId);
@@ -694,7 +719,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										}
 									}
 								}
-								else if (typeStr == "Remove")
+								else if (evTypeNum == TCX_EV_REMOVE)
 								{
 									ESP_LOGI(TAG, "Call control event: Participant Remove %s", partId.c_str());
 									if (_activeParticipantId == partId)
@@ -708,7 +733,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										evCb(ev);
 									}
 								}
-								else if (typeStr == "DTMFstring")
+								else if (evTypeNum == TCX_EV_DTMF)
 								{
 									cJSON* attached = cJSON_GetObjectItem(eventObj, "attached_data");
 									if (attached)
