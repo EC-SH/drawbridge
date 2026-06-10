@@ -4017,7 +4017,10 @@ void RequestsHandler::loadThreeCxConfig()
 
 		std::memset(buf, 0, sizeof(buf));
 		len = sizeof(buf);
-		if (nvs_get_str(h, "3cx_client_secret", buf, &len) == ESP_OK && buf[0] != '\0')
+		// NVS keys are capped at 15 chars (NVS_KEY_NAME_MAX_SIZE-1); "3cx_secret"
+		// and "3cx_loopback" stay under that. The longer "3cx_client_secret" /
+		// "3cx_use_loopback" forms silently fail nvs_get with KEY_TOO_LONG.
+		if (nvs_get_str(h, "3cx_secret", buf, &len) == ESP_OK && buf[0] != '\0')
 		{
 			clientSecret = buf;
 		}
@@ -4029,7 +4032,7 @@ void RequestsHandler::loadThreeCxConfig()
 			sourceDn = buf;
 		}
 
-		nvs_get_u8(h, "3cx_use_loopback", &useLoopback);
+		nvs_get_u8(h, "3cx_loopback", &useLoopback);
 		nvs_close(h);
 	}
 	if (baseUrl.empty())

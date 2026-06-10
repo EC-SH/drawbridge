@@ -493,8 +493,17 @@ bool ThreeCxAnchorClient::connectWs()
 		wsUrl = "wss://" + wsUrl + "/callcontrol/ws";
 	}
 
+	// The Bearer token MUST be supplied via wsCfg.headers (the config path), which
+	// is what feeds the handshake request. esp_websocket_client_set_headers() does
+	// NOT work for handshake auth — it early-returns ESP_ERR_INVALID_ARG unless the
+	// client is already CONNECTED, so calling it before start() silently set no
+	// header and 3CX rejected the unauthenticated upgrade with HTTP 401. Each header
+	// line must be CRLF-terminated. init() strdup's this string, so the local is safe.
+	std::string authHeader = "Authorization: Bearer " + _accessToken + "\r\n";
+
 	esp_websocket_client_config_t wsCfg = {};
 	wsCfg.uri = wsUrl.c_str();
+	wsCfg.headers = authHeader.c_str();
 	wsCfg.crt_bundle_attach = esp_crt_bundle_attach;
 	wsCfg.task_stack = 16384; // needs headroom for two blocking HTTP sessions fired from event handler
 	wsCfg.buffer_size = 4096;
@@ -504,10 +513,6 @@ bool ThreeCxAnchorClient::connectWs()
 	{
 		return false;
 	}
-
-	// Pass Authorization header using Bearer token
-	std::string authHeader = "Authorization: Bearer " + _accessToken + "\r\n";
-	esp_websocket_client_set_headers(_wsClient, authHeader.c_str());
 
 	esp_err_t err = esp_websocket_register_events(_wsClient, WEBSOCKET_EVENT_ANY,
 	                                               &ThreeCxAnchorClient::wsEventTrampoline, this);
