@@ -106,8 +106,12 @@ bool LoopbackAnchorClient::dropCall(const std::string& participantId)
 
 	if (evCb)
 	{
-		CallEvent dropEv{CallEvent::Dropped, participantId, ""};
-		evCb(dropEv);
+		// Fire asynchronously: the caller (e.g. onBye) may hold RequestsHandler::_mutex,
+		// and the event callback also takes that mutex — synchronous dispatch deadlocks.
+		_simThread = std::thread([evCb, participantId]() {
+			CallEvent dropEv{CallEvent::Dropped, participantId, ""};
+			evCb(dropEv);
+		});
 	}
 
 	return true;

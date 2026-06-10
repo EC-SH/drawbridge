@@ -133,10 +133,10 @@ TEST(LoopbackAnchorClientTest, SimEventsAndAudioLoop)
 	EXPECT_TRUE(client.writeAudio(txAudio, 10));
 	EXPECT_TRUE(audioReceived);
 
-	// Tear down call
+	// Tear down call — Dropped event fires async; stop() joins the sim thread
+	// so the assertion is placed after stop() to guarantee the callback ran.
 	EXPECT_TRUE(client.dropCall("mock-part-123"));
-	EXPECT_EQ(droppedCount, 1);
-
 	client.stop();
+	EXPECT_EQ(droppedCount, 1);
 	EXPECT_FALSE(client.isConnected());
 }

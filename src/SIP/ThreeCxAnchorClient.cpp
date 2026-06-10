@@ -268,12 +268,17 @@ void ThreeCxAnchorClient::setEventCallback(EventCallback cb)
 
 bool ThreeCxAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
 {
-	if (!_postClient || pcmSamples == nullptr || count == 0)
+	if (pcmSamples == nullptr || count == 0)
 	{
 		return false;
 	}
 
-	// Write chunk of raw PCM16 samples (little-endian byte representation)
+	std::lock_guard<std::mutex> lock(_postMutex);
+	if (!_postClient)
+	{
+		return false;
+	}
+
 	const char* rawBytes = reinterpret_cast<const char*>(pcmSamples);
 	size_t rawLen = count * sizeof(int16_t);
 
@@ -402,7 +407,7 @@ bool ThreeCxAnchorClient::connectWs()
 	esp_websocket_client_config_t wsCfg = {};
 	wsCfg.uri = wsUrl.c_str();
 	wsCfg.crt_bundle_attach = esp_crt_bundle_attach;
-	wsCfg.task_stack = 8192;
+	wsCfg.task_stack = 16384; // needs headroom for two blocking HTTP sessions fired from event handler
 	wsCfg.buffer_size = 4096;
 
 	_wsClient = esp_websocket_client_init(&wsCfg);
@@ -670,6 +675,11 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 	}
 
 	// 2. Initialize HTTP GET client and launch Rx task for inbound audio
+	if (_rxDoneSem)
+	{
+		vSemaphoreDelete(_rxDoneSem);
+	}
+	_rxDoneSem = xSemaphoreCreateBinary();
 	xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
 
 	// 3. Launch Tone generation task to play a tone on answer
@@ -684,22 +694,37 @@ void ThreeCxAnchorClient::stopMediaStreams()
 
 	if (_rxTaskHandle)
 	{
-		// HTTP client close will unblock read loop, task will delete itself
+		// Signal the rx loop to exit, then close the connection so the blocking
+		// read() call returns immediately. Wait for the task to finish cleaning
+		// up _getClient before proceeding — without this barrier the task and
+		// this thread race on the handle (double-free / use-after-free).
 		_rxTaskHandle = nullptr;
+		if (_getClient)
+		{
+			esp_http_client_close(_getClient); // unblocks runRxLoop's read()
+		}
+		if (_rxDoneSem)
+		{
+			xSemaphoreTake(_rxDoneSem, pdMS_TO_TICKS(2000));
+		}
+		// runRxLoop() called cleanup and nulled _getClient on its exit path.
 	}
-
-	if (_getClient)
+	else if (_getClient)
 	{
+		// No rx task running — safe to clean up directly.
 		esp_http_client_close(_getClient);
 		esp_http_client_cleanup(_getClient);
 		_getClient = nullptr;
 	}
 
-	if (_postClient)
 	{
-		esp_http_client_close(_postClient);
-		esp_http_client_cleanup(_postClient);
-		_postClient = nullptr;
+		std::lock_guard<std::mutex> lock(_postMutex);
+		if (_postClient)
+		{
+			esp_http_client_close(_postClient);
+			esp_http_client_cleanup(_postClient);
+			_postClient = nullptr;
+		}
 	}
 	ESP_LOGI(TAG, "Media streams stopped");
 }
@@ -708,6 +733,10 @@ void ThreeCxAnchorClient::rxTaskTrampoline(void* arg)
 {
 	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
 	self->runRxLoop();
+	if (self->_rxDoneSem)
+	{
+		xSemaphoreGive(self->_rxDoneSem);
+	}
 	vTaskDelete(nullptr);
 }
 
@@ -767,10 +796,11 @@ void ThreeCxAnchorClient::runRxLoop()
 		return;
 	}
 
-	int status = esp_http_client_fetch_headers(_getClient);
+	esp_http_client_fetch_headers(_getClient);
+	int status = esp_http_client_get_status_code(_getClient);
 	if (status != 200)
 	{
-		ESP_LOGE(TAG, "HTTP GET stream fetch headers returned status %d", status);
+		ESP_LOGE(TAG, "HTTP GET stream returned status %d", status);
 		esp_http_client_cleanup(_getClient);
 		_getClient = nullptr;
 		return;

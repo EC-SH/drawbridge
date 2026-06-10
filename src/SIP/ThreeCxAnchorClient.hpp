@@ -50,13 +50,15 @@ private:
 	AudioRxCallback _audioCb;
 
 	mutable std::mutex _mutex;
+	std::mutex         _postMutex; // guards _postClient across writeAudio / stopMediaStreams
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	esp_websocket_client_handle_t _wsClient   = nullptr;
 	esp_http_client_handle_t      _postClient = nullptr;
 	esp_http_client_handle_t      _getClient  = nullptr;
 
-	TaskHandle_t _rxTaskHandle = nullptr;
+	TaskHandle_t      _rxTaskHandle = nullptr;
+	SemaphoreHandle_t _rxDoneSem    = nullptr; // signalled by rx task before it deletes itself
 
 	static void wsEventTrampoline(void* handlerArgs, esp_event_base_t base, int32_t eventId, void* eventData);
 	void handleWsEvent(int32_t eventId, void* eventData);

@@ -455,6 +455,23 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	{
+		auto session = getSession(data->getCallID());
+		if (session.has_value() && session.value()->getDest() == _dummyClient)
+		{
+			_mediaBridge.stopBridge();
+			if (_anchorClient)
+				_anchorClient->dropCall("");
+			auto response = getMessageFromPool(data->toString(), data->getSource());
+			response->setHeader(SipMessageTypes::OK);
+			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+			response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+			_outbox.emplace_back(data->getSource(), std::move(response));
+			endCall(data->getCallID(), data->getFromNumber(), data->getToNumber(), "handset CANCEL");
+			return;
+		}
+	}
+
 	setCallState(data->getCallID(), Session::State::Cancel);
 	endHandle(data->getToNumber(), data);
 }
@@ -2965,27 +2982,6 @@ void RequestsHandler::tick()
 		_onHandled(event.first, std::move(event.second));
 	}
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
-	static bool smokeTestTriggered = false;
-	static int ticksConnected = 0;
-	if (!smokeTestTriggered && _anchorClient == &_threeCxClient && _threeCxClient.isConnected())
-	{
-		ticksConnected++;
-		if (ticksConnected >= 5) // wait 5 ticks (5 seconds) after connected
-		{
-			smokeTestTriggered = true;
-			queueLog("[SMOKETEST] Triggering automated outbound call to 3057673260...");
-			if (!_threeCxClient.makeCall("3057673260"))
-			{
-				queueLog("[SMOKETEST] Failed to initiate call to 3057673260 via makeCall", true);
-			}
-			else
-			{
-				queueLog("[SMOKETEST] Outbound call to 3057673260 initiated successfully");
-			}
-		}
-	}
-#endif
 }
 
 std::optional<std::shared_ptr<SipClient>> RequestsHandler::findClientByAddress(const sockaddr_in& addr)
@@ -3995,10 +3991,10 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 
 void RequestsHandler::loadThreeCxConfig()
 {
-	std::string baseUrl = "https://engagekw.3cx.us";
-	std::string clientId = "rcv2";
-	std::string clientSecret = "GoatTpAr1EFd4PZnI5p9jupbgZ0Gi8E3";
-	std::string sourceDn = "rcv2";
+	std::string baseUrl;
+	std::string clientId;
+	std::string clientSecret;
+	std::string sourceDn;
 	uint8_t useLoopback = 0;
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
@@ -4036,9 +4032,9 @@ void RequestsHandler::loadThreeCxConfig()
 		nvs_get_u8(h, "3cx_use_loopback", &useLoopback);
 		nvs_close(h);
 	}
-	if (baseUrl == "https://engagekw.3cx.us")
+	if (baseUrl.empty())
 	{
-		useLoopback = 0;
+		useLoopback = 1; // no credentials provisioned — stay in loopback until configured
 	}
 #else
 	useLoopback = 1;
