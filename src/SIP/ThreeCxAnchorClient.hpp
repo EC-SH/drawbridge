@@ -50,7 +50,7 @@ private:
 	AudioRxCallback _audioCb;
 
 	mutable std::mutex _mutex;
-	std::mutex         _postMutex; // guards _postClient across writeAudio / stopMediaStreams
+	mutable std::mutex _postMutex; // guards _postClient across writeAudio / stopMediaStreams; mutable for isStreaming() const
 	std::mutex         _getMutex;  // guards _getClient lifecycle across runRxLoop / stopMediaStreams
 
 	// Token lifetime measured against the monotonic timer (not wall clock, so no

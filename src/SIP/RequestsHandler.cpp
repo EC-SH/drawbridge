@@ -4074,7 +4074,9 @@ void RequestsHandler::loadThreeCxConfig()
 		}
 		delete sca;
 		vTaskDelete(NULL);
-	}, "3cx_start", 4096, arg, 5, NULL);
+		// 12288: start() runs a full mbedTLS handshake (fetchToken) + WS connect;
+		// 4096 overflowed the instant the real client was used (bootloop on hw).
+	}, "3cx_start", 12288, arg, 5, NULL);
 #else
 	// Member thread, joined in ~RequestsHandler — a detached thread here captured
 	// `this` and outlived the handler in unit tests (nondeterministic segfaults).
@@ -4307,7 +4309,8 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		}
 		delete mca;
 		vTaskDelete(NULL);
-	}, "3cx_makecall", 4096, arg, 5, NULL);
+		// 12288: makeCall is a TLS HTTPS round trip — same overflow as 3cx_start.
+	}, "3cx_makecall", 12288, arg, 5, NULL);
 #else
 	std::thread([this, destination, callId, callerNumber]() {
 		if (!_anchorClient->makeCall(destination))
@@ -4340,7 +4343,8 @@ void RequestsHandler::asyncDropCall(const std::string& participantId)
 		dca->anchor->dropCall(dca->partId);
 		delete dca;
 		vTaskDelete(NULL);
-	}, "3cx_dropcall", 4096, arg, 5, NULL);
+		// 12288: dropCall is a TLS HTTPS round trip — same overflow as 3cx_start.
+	}, "3cx_dropcall", 12288, arg, 5, NULL);
 #else
 	std::thread([this, participantId]() {
 		_anchorClient->dropCall(participantId);
