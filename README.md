@@ -3,11 +3,11 @@
 > [!NOTE]
 > **Latest release: [v1.2.0](../../releases/latest)** — hardware-verified on the JC3248W535 display board (boots, joins Wi-Fi, SIP + dashboard confirmed working). **Prebuilt, flashable firmware is attached to the release** — see [Install](#install). `main` carries newer in-development changes; pin to a release tag for production.
 
-A self-contained, enterprise-capable SIP PBX on a $10 microcontroller. Flash an ESP32-S3, connect softphones or physical IP phones to its network, and make direct VoIP calls instantly. No routers, [...]
+**A sovereign, zero-trust SIP gateway for the edge.** drawbridge transforms $10 microcontrollers into autonomous, mTLS-secured PBX anchors, decentralizing secure telecom infrastructure without exposing inbound WAN surfaces. Flash an ESP32-S3, connect softphones or physical IP phones to its network, and make direct VoIP calls instantly.
 
 Now with **native touch display support** and **W5500 wired-Ethernet capability**:
-* **Guition JC3248W535EN HMI Target**: Features a native **ESP-IDF v6.0.1 + LVGL 8.4.0** application driving a 3.5" IPS capacitive touchscreen with a retro CGA CRT-style switchboard dashboard — displ[...]
-* **Wired-Ethernet & PoE Support**: Pre-configured transport targets for Waveshare ESP32-S3-ETH and LilyGO T-ETH boards, bridging pocket-dial to professional wired and Power-over-Ethernet network s[...]
+* **Guition JC3248W535EN HMI Target**: Features a native **ESP-IDF v6.0.1 + LVGL 8.4.0** application driving a 3.5" IPS capacitive touchscreen with a retro CGA CRT-style switchboard dashboard. *(Note: This board represents the development milestone the ESP32 SIP logic was built on, and is not recommended for deployment).*
+* **Wired-Ethernet & PoE Support**: Pre-configured transport targets for [Waveshare ESP32-S3-ETH](https://www.waveshare.com/wiki/ESP32-S3-ETH) (unverified, check pins) and [LilyGO T-ETH boards](https://github.com/Xinyuan-LilyGO/LilyGO-T-ETH-Series) (canonical), bridging drawbridge to professional wired and Power-over-Ethernet network switches.
 * **SIP Virtual Extensions**: Features an inline **SIP Echo Test (`777`)** with zero-media-processing SDP loopback, and a **Parallel Broadcast / All-Page Intercom (`999`)** with target-URI rewritin[...]
 * **Strict VoIP Interoperability**: Resolves early media loopback loops and ringing hangs on professional devices (like Yealink IP phones) by automatically stripping caller SDPs from all provisiona[...]
 
@@ -37,8 +37,8 @@ Download the firmware for your board from the **[latest release](../../releases/
 
 | Variant | Board / use |
 |---------|-------------|
-| `*-display.*` | Guition JC3248W535 3.5" touch display |
-| `*-eth.*` | W5500 wired Ethernet / PoE (Waveshare ESP32-S3-ETH, LilyGO T-ETH) |
+| `*-display.*` | Guition JC3248W535 3.5" touch display (Not recommended for deployment) |
+| `*-eth.*` | W5500 wired Ethernet / PoE ([Waveshare ESP32-S3-ETH](https://www.waveshare.com/wiki/ESP32-S3-ETH), [LilyGO T-ETH](https://github.com/Xinyuan-LilyGO/LilyGO-T-ETH-Series)) |
 | `*-wifi.*` | Generic ESP32-S3 (Wi-Fi SoftAP) |
 
 Flash with [esptool](https://github.com/espressif/esptool) (`pip install esptool`). Example for the **display** build — replace `COM3` with your serial port (`/dev/ttyUSB0` on Linux/macOS):
