@@ -89,6 +89,11 @@ private:
 
 	bool startMediaStreams(const std::string& participantId);
 	void stopMediaStreams();
+	// Spawn the Rx task (GET-stream retry loop) if it isn't running yet. Called
+	// at RINGING so the loop is already polling on a warm TLS connection when
+	// the leg connects — inbound audio then opens ~one RTT after answer.
+	// Returns true if the task is running (newly spawned or already up).
+	bool startRxIfNeeded(const std::string& participantId);
 
 	esp_http_client_handle_t makeAuthedClient(const std::string& url, esp_http_client_method_t method, int txBufSize, const std::string& token = "");
 	bool performAuthedRequest(esp_http_client_handle_t client, int* statusCodeOut = nullptr);

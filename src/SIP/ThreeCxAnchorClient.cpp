@@ -876,16 +876,18 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 
 								if (evTypeNum == TCX_EV_UPSET)
 								{
-									// 3CX repeats Upset for a participant every ~750ms. Once we
-									// are already streaming this participant, skip the work:
-									// getParticipantStatus is a blocking TLS GET on this WS task,
-									// and re-firing Answered would re-send 200 OK to the handset.
+									// 3CX repeats Upset for a participant every ~750ms. Skip the
+									// work only once the call is FULLY up for this participant
+									// (POST stream open => Answered/200 OK already fired). The Rx
+									// task alone no longer counts as busy — it is primed during
+									// ringing below, and keying the throttle on it would swallow
+									// the Connected Upset that actually answers the call.
 									bool isSameActivePart = false;
 									{
 										std::lock_guard<std::mutex> lock(_mutex);
 										isSameActivePart = (_activeParticipantId == partId);
 									}
-									if (isSameActivePart)
+									if (isSameActivePart && isStreaming())
 									{
 										break;
 									}
@@ -925,6 +927,15 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 											ESP_LOGE(TAG, "Failed to start media streams for participant %s", partId.c_str());
 											stopMediaStreams();
 										}
+									}
+									else
+									{
+										// RING-TIME PRIME: the leg exists but isn't connected yet
+										// (Dialing/Ringing). Start the Rx task now — its retry loop
+										// is cheap on the persistent connection — so the GET stream
+										// is already being polled the instant 3CX flips the leg to
+										// Connected. Inbound audio then opens ~one RTT after answer.
+										startRxIfNeeded(partId);
 									}
 								}
 								else if (evTypeNum == TCX_EV_REMOVE)
@@ -971,16 +982,43 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 	}
 }
 
+bool ThreeCxAnchorClient::startRxIfNeeded(const std::string& participantId)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	if (_rxTaskHandle != nullptr)
+	{
+		// Already polling (ring-time prime or a duplicate call) — nothing to do.
+		return true;
+	}
+	_activeParticipantId = participantId;
+	if (_rxDoneSem)
+	{
+		vSemaphoreDelete(_rxDoneSem);
+	}
+	_rxDoneSem = xSemaphoreCreateBinary();
+	BaseType_t rc = xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
+	if (rc != pdPASS)
+	{
+		ESP_LOGE(TAG, "Failed to create Rx task");
+		_rxTaskHandle = nullptr;
+		return false;
+	}
+	ESP_LOGI(TAG, "Rx stream task started for participant %s", participantId.c_str());
+	return true;
+}
+
 bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 {
 	ESP_LOGI(TAG, "Starting media streams for participant %s", participantId.c_str());
 
-	// Single-call guard
+	// Single-call guard: a live POST stream means a call is already fully up.
+	// (The Rx task alone is NOT a busy signal anymore — it gets primed during
+	// ringing by startRxIfNeeded.)
 	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		if (_rxTaskHandle != nullptr)
+		std::lock_guard<std::mutex> postLock(_postMutex);
+		if (_postClient != nullptr)
 		{
-			ESP_LOGW(TAG, "startMediaStreams: Media streams already active/starting");
+			ESP_LOGW(TAG, "startMediaStreams: Media streams already active");
 			return false;
 		}
 	}
@@ -988,29 +1026,22 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 	std::string baseUrl, sourceDn, token;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
+		if (_rxTaskHandle != nullptr && _activeParticipantId != participantId)
+		{
+			ESP_LOGW(TAG, "startMediaStreams: Rx busy with participant %s", _activeParticipantId.c_str());
+			return false;
+		}
 		_activeParticipantId = participantId;
 		baseUrl = _baseUrl;
 		sourceDn = _sourceDn;
 		token = _accessToken;
 	}
 
-	// 1. Launch the Rx task FIRST so its GET-stream TLS handshake runs in
-	// parallel with the POST open below (they were serialized before, stacking
-	// two handshakes into the answer-to-audio delay).
+	// 1. Make sure the Rx task is up (no-op when it was primed at ringing) so
+	// its GET-stream handshake/polling overlaps the POST open below.
+	if (!startRxIfNeeded(participantId))
 	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		if (_rxDoneSem)
-		{
-			vSemaphoreDelete(_rxDoneSem);
-		}
-		_rxDoneSem = xSemaphoreCreateBinary();
-		BaseType_t rc = xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
-		if (rc != pdPASS)
-		{
-			ESP_LOGE(TAG, "Failed to create Rx task");
-			_rxTaskHandle = nullptr;
-			return false;
-		}
+		return false;
 	}
 
 	// 2. Initialize HTTP POST client for outbound audio. On failure the caller
@@ -1179,7 +1210,12 @@ void ThreeCxAnchorClient::runRxLoop()
 	// full mbedTLS handshake (~0.5-1s on the S3) per 404, which serialized into
 	// multi-second answer-to-audio delays. Now only the first attempt (or a
 	// server-closed connection) pays a handshake; a retry is ~one RTT.
-	constexpr int        kMaxAttempts = 40;                  // ~20s ceiling
+	// 240 attempts ≈ 2 min at the 500ms backoff cap: the task is now started at
+	// RINGING, so the loop must comfortably outlast a long unanswered ring (the
+	// old 40-attempt/~20s ceiling would expire mid-ring and the call would
+	// connect with no inbound audio). Teardown still exits it immediately via
+	// _rxTaskHandle/socket shutdown.
+	constexpr int        kMaxAttempts = 240;
 	TickType_t           delay        = pdMS_TO_TICKS(50);   // Start fast at 50ms
 	bool opened = false;
 
