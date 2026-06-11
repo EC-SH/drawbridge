@@ -1,4 +1,4 @@
-# drawbridge
+# drawbridge — an ENGAGE product
 
 > [!NOTE]
 > **Latest release: [v1.2.0](../../releases/latest)** — hardware-verified on the JC3248W535 display board (boots, joins Wi-Fi, SIP + dashboard confirmed working). **Prebuilt, flashable firmware is attached to the release** — see [Install](#install). `main` carries newer in-development changes; pin to a release tag for production.
@@ -468,4 +468,4 @@ Parses headers and extracts SDP details through an O(n) non-mutating index-walki
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+Drawbridge is a **commercial product of the ENGAGE product line** — see the [LICENSE](LICENSE) file. It is built on the MIT-licensed SipServer foundation (notice retained) and links GPL-dual-licensed wolfSSL/wolfSSH for the SSH console; all upstream licenses are cited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

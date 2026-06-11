@@ -1,21 +1,57 @@
-MIT License
+DRAWBRIDGE — an ENGAGE product
+Commercial License (Proprietary)
 
-Copyright (c) 2022 BarGabriel
+Copyright (c) 2024-2026 EC-SH / ENGAGE. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Drawbridge ("the Software") is a commercial product of the ENGAGE product
+line. Except for the third-party and upstream components identified below,
+the Software, including its source code, firmware images, documentation,
+TUI/web interfaces and branding, is licensed — not sold — and may be used
+only under a written commercial agreement with EC-SH / ENGAGE.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Unless you have such an agreement, you may NOT copy, modify, distribute,
+sublicense, sell, or create derivative works of the proprietary portions of
+the Software. Evaluation of source code published in this repository is
+permitted for review purposes only.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+────────────────────────────────────────────────────────────────────────────
+UPSTREAM AND THIRD-PARTY COMPONENTS (binding conditions — read carefully)
+────────────────────────────────────────────────────────────────────────────
+
+1. Upstream foundation (MIT). Drawbridge is a derivative work of the
+   "SipServer" project, Copyright (c) 2022 BarGabriel, licensed under the
+   MIT License. As required by that license, the original copyright notice
+   and permission notice are retained in full in THIRD_PARTY_NOTICES.md and
+   continue to apply to the portions of this codebase derived from it. The
+   MIT license permits commercial and proprietary derivative works provided
+   the notice is preserved; this file does not and cannot narrow your
+   rights in the original upstream work itself.
+
+2. wolfSSL / wolfSSH (GPLv2 — dual-licensed). The SSH sysop terminal links
+   against wolfSSL and wolfSSH, which are distributed under the GNU GPL v2
+   (or a commercial license from wolfSSL Inc.). Distributing Drawbridge
+   binaries that link wolfSSL/wolfSSH under THIS proprietary license
+   requires a commercial wolfSSL license; absent one, any distributed build
+   containing wolfSSL/wolfSSH is governed by the GPLv2's terms. Builds made
+   without the SSH component (POCKETDIAL_HAS_WOLFSSH / PD_HOST_SSH off) do
+   not carry this obligation.
+
+3. All other third-party components (ESP-IDF and Espressif managed
+   components — Apache-2.0; LVGL — MIT; cJSON — MIT; cxxopts — MIT;
+   GoogleTest — BSD-3-Clause, development only) are used under their
+   respective licenses, reproduced or cited in THIRD_PARTY_NOTICES.md.
+   Nothing in this file alters those licenses.
+
+This license text is a commercial-licensing statement prepared by the
+project; it has not been reviewed by legal counsel. Have it reviewed before
+relying on it for commercial distribution.
+
+Contact: EC-SH / ENGAGE — https://github.com/EC-SH/drawbridge

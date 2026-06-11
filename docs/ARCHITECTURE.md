@@ -1,17 +1,18 @@
-# Pocket-Dial ESP32 Firmware: Deep Architectural Review
+# Drawbridge Firmware: Deep Architectural Review
 
-This document provides a highly technical, deep architectural analysis of the **pocket-dial** firmware. It reviews the post-refactor system topology, multi-core scheduling paradigm, component communication boundaries, select-based HTTP thread dispatching model, and concurrency optimizations.
+This document provides a highly technical, deep architectural analysis of the **Drawbridge** firmware (an ENGAGE product, distributed under a commercial license — see `LICENSE` and `THIRD_PARTY_NOTICES.md`; formerly known as *pocket-dial*, a name that survives in compile defines such as `POCKETDIAL_*`). It reviews the post-refactor system topology, multi-core scheduling paradigm, component communication boundaries, select-based HTTP thread dispatching model, the WAN trunk anchor, and concurrency optimizations.
 
 ---
 
 ## 1. System Topology & Component Overview
 
-**pocket-dial** is an ultra-low-latency, dual-core SIP registrar and proxy server designed to run on resource-constrained ESP32 and ESP32-S3 microcontrollers. It supports multiple networking interfaces (Wi-Fi SoftAP/Station and SPI/RMII wired Ethernet) and drives smart displays (e.g., JC3248W535) using the LVGL graphics library.
+**Drawbridge** is an ultra-low-latency, dual-core SIP registrar and proxy server designed to run on resource-constrained ESP32 and ESP32-S3 microcontrollers (and as a host binary for development/CI). It supports multiple networking interfaces (Wi-Fi SoftAP/Station and SPI/RMII wired Ethernet) and drives smart displays (e.g., JC3248W535) using the LVGL graphics library.
 
-The firmware architecture is divided into three core logical layers:
+The firmware architecture is divided into four core logical layers:
 1. **Network Hardware & Driver Layer**: Controls physical media (Wi-Fi radio, W5500 SPI Ethernet MAC/PHY, LAN8720 RMII PHY) and registers low-level event handlers.
 2. **Signaling & State Engine Layer (`RequestsHandler`)**: A lightweight RFC 3261-compliant SIP registrar and session controller managing client registration leases, active SIP sessions, and intercom broadcasting/paging features.
-3. **User Interface & Query Layer**: Consists of a custom select-based, thread-dispatching `HttpServer` serving a retro CGA CRT web dashboard, an mDNS service responder, and a high-frequency LVGL-based GUI display task.
+3. **WAN Trunk Anchor Layer (`AnchorClient` / `MediaBridge`)**: An optional outbound trunk that bridges LAN handsets to a commercial softswitch / CPaaS fabric over its HTTPS call-control API, with on-device µ-law⇄PCM16 media bridging (see §6).
+4. **User Interface & Query Layer**: A custom select-based, thread-dispatching `HttpServer` serving a retro CGA CRT web dashboard, an mDNS service responder, a high-frequency LVGL-based GUI display task, and a wolfSSH-backed **sysop terminal TUI** over SSH (see §7).
 
 ```mermaid
 graph TD
@@ -46,7 +47,7 @@ graph TD
 
 ## 2. Core Task Topology & Affinity Splits
 
-To prevent render frame drops and network packet loss, **pocket-dial** enforces a strict core affinity split that isolates real-time communication tasks from CPU-intensive graphics rendering.
+To prevent render frame drops and network packet loss, **Drawbridge** enforces a strict core affinity split that isolates real-time communication tasks from CPU-intensive graphics rendering.
 
 The system assigns FreeRTOS tasks to specific cores using `xTaskCreatePinnedToCore`:
 
@@ -108,7 +109,7 @@ The refactored `RequestsHandler::handle` utilizes an **Outbox Pattern**:
 Dynamic heap allocations (`new`, `malloc`, `make_shared`) within the hot UDP signaling path are a major cause of memory fragmentation and non-deterministic jitter on embedded targets.
 
 The post-refactor signaling engine implements **static memory pre-allocation**:
-* During initialization, `RequestsHandler` pre-allocates contiguous arrays of `SipClient` and `Session` smart pointers inside the constructor (`_clientPool` of size 32, and `_sessionPool` of size 8).
+* During initialization, `RequestsHandler` pre-allocates contiguous arrays of `SipClient` and `Session` smart pointers inside the constructor. Pool depths are compile-time knobs in `src/SIP/PoolConfig.hpp` (`POCKETDIAL_MAX_CLIENTS`, default 32; `POCKETDIAL_MAX_SESSIONS`, default 8; plus a `SipMessage` scratch pool and a beep-dialog pool), all overridable from the build command line.
 * In steady-state operation, `allocateClient` and `allocateSession` search these pre-allocated pools to recycle unused objects, entirely bypassing the runtime heap.
 * If the pool is exhausted under heavy load, the server automatically evicts the oldest expired client registration lease or returns `503 Service Unavailable`, protecting the core heap from out-of-memory (OOM) silent panics.
 
@@ -171,3 +172,33 @@ To protect the registrar from UDP flood denial-of-service (DoS) attacks, the `Re
 * **Zero CPU Parse Overheads**: Rate check verification is executed before any SIP header parsing, dynamic routing, or database work. If an IP exceeds its burst threshold, the packet is instantly discarded, and the atomic `_packetsDropped` counter is incremented.
 * **Eviction Cycle**: To prevent memory leak accumulation from transient spoofed IPs, inactive buckets are periodically evicted during the central registrar sweep.
 * **Subnet CIDR Filtering**: If compiled with `-DPOCKETDIAL_ALLOW_CIDR="192.168.1.0/24"`, the registrar translates incoming IP addresses and blocks any traffic originating from outside the designated local network segment.
+
+---
+
+## 6. WAN Trunk Anchor & Media Bridge
+
+Drawbridge can place outbound calls beyond the LAN by anchoring a leg on an upstream **commercial softswitch / CPaaS fabric** via its HTTPS call-control API (kept vendor-neutral here per the project's documentation discretion policy). The trunk is abstracted behind the `AnchorClient` interface (`src/SIP/AnchorClient.hpp`): `init`/`start`/`stop`, `makeCall`/`dropCall`, a control-event callback (`Ringing`/`Answered`/`Dropped`/`Dtmf`), and a bidirectional PCM16 audio API (`writeAudio` upstream, `registerAudioRxCallback` downstream). Two implementations exist: the production ESP-IDF client (real mTLS/WSS/HTTPS, in `src/SIP/`) and `LoopbackAnchorClient` (a host-testable echo double, selectable at runtime).
+
+### Control plane
+* **Persistent control-plane TLS connection**: `makeCall` / participant-drop commands run over a single keep-alive HTTPS connection (`_ctrlClient`, guarded by `_ctrlMutex`) that is pre-warmed at boot/reconnect (`warmCtrlConnection()`) and repaired/retried once on a stale socket (`performCtrl`). Each call-control command therefore costs one RTT instead of a fresh mbedTLS handshake.
+* **WebSocket event channel**: call-state events arrive over a WSS connection derived from the configured base URL; the event handler runs on the WebSocket event task, so responses it generates are staged into `RequestsHandler::_asyncOutbox` (never the per-request `_outbox`, which is cleared at the start of every `handle()`).
+* **OAuth token rules**: token lifetime is derived from the JWT's own `exp`/`iat` claims against the monotonic timer (no SNTP dependency) — *not* from the OAuth `expires_in` field, which the upstream reports incorrectly (60 s vs. the JWT's ~1 h validity). Refresh triggers within a 5-minute margin of expiry but is **deferred while media streams are active**, because re-issuing a token invalidates the one the open chunked streams hold mid-call.
+
+### Media plane
+* **Ring-time-primed GET audio stream**: the downstream audio receiver task is spawned at the *Ringing* event (`startRxIfNeeded`), so its retry loop is already polling on a warm TLS connection when the leg connects — inbound audio opens roughly one RTT after answer instead of paying connect+handshake at answer time.
+* **Chunked POST audio stream**: upstream audio is written through an `esp_http_client` opened with `write_len = -1` (IDF-managed `Transfer-Encoding: chunked` framing) and is terminated with a clean RFC 9112 last-chunk on teardown.
+* **`MediaBridge` (`src/SIP/MediaBridge.cpp`)**: one active bridge at a time. The LAN handset's RTP µ-law is decoded to PCM16 and pushed to the anchor's POST stream; anchor PCM16 from the GET stream lands in a `PlayoutBuffer`, is µ-law-encoded, and is paced out to the handset by `RtpSender` (underruns yield G.711 comfort noise rather than wiping samples). The bridge's RTP receiver binds an ephemeral port that is advertised in the SDP answer.
+
+### Dial plan integration (`RequestsHandler::onInvite`)
+A leading **`9` is the explicit trunk-access prefix**: dialing `101` rings LAN extension 101, while `9101` strips the 9 and routes `101` out the WAN anchor — checked *before* the registrar lookup, so the prefix always means "go out the trunk" even if a local `9101` exists. As a legacy fallback, an **unregistered destination without the prefix still tries the trunk** when one is connected. Anchor-routed sessions are flagged via `Session::setAnchor(true)` / `Session::isAnchor()`, which steers the *Answered* (200 OK + `MediaBridge` start), *Dropped* (server BYE with the stored local To-tag, Issue #12), and BYE/CANCEL paths. The blocking anchor operations (`start`, `makeCall`, `dropCall`) run on detached worker tasks/threads, never on the SIP receive thread.
+
+### Trunk configuration persistence
+Trunk credentials (base URL, client ID, client secret, source DN, loopback flag) are persisted in NVS under the `"storage"` namespace with trunk-prefixed keys (kept ≤15 chars, the NVS key limit). `RequestsHandler::getTrunkConfig()` / `setTrunkConfig()` are mutex-guarded and back the SSH TUI's trunk screen; **changes apply on the next reboot** — the anchor client is constructed from NVS at startup (asynchronously, so the TLS token fetch never blocks the constructor).
+
+---
+
+## 7. SSH Sysop Terminal (TUI)
+
+`src/Helpers/SshServer.cpp` runs an embedded **wolfSSH** server (TCP port 22 by default, overridable via the NVS `ssh_port` u16; gated by `POCKETDIAL_HAS_WOLFSSH`, present on the display build and optionally on host via `-D PD_HOST_SSH=ON`). Its listener task is pinned to **Core 0 at priority 3** — below the SIP tasks — and it stubs itself gracefully when wolfSSH is not linked.
+
+The terminal itself, `src/Helpers/Tui.cpp`, is a **transport-agnostic ANSI TUI engine**: it takes a `std::function` byte writer plus a `feed(bytes)` input path and has no wolfSSH dependency, so it is host-compilable and unit-tested (`tests/Tui_test.cpp`). `SshServer::runTuiSession` wires it to the SSH channel. Screens (banner → hub → System Monitor, Network, PBX Config, Security, Reports/CDR, About) read and mutate state exclusively through the existing thread-safe `RequestsHandler` snapshot getters and guarded mutators — never raw engine internals. All framed output is measured in display columns (`dispWidth`/`padCols`/`truncCols`), never bytes, to keep the 80×24 frame intact with multibyte UTF-8 glyphs.
