@@ -95,7 +95,7 @@ bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
 
 			if (evCb)
 			{
-				CallEvent ringingEv{CallEvent::Ringing, _activeParticipantId, ""};
+				CallEvent ringingEv{CallEvent::Ringing, _activeParticipantId, "", ""};
 				evCb(ringingEv);
 			}
 
@@ -105,13 +105,81 @@ bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
 
 			if (evCb)
 			{
-				CallEvent answerEv{CallEvent::Answered, _activeParticipantId, ""};
+				CallEvent answerEv{CallEvent::Answered, _activeParticipantId, "", ""};
 				evCb(answerEv);
 			}
 		});
 	}
 
 	return true;
+}
+
+bool LoopbackAnchorClient::answerCall(const std::string& participantId)
+{
+	if (!_connected)
+	{
+		return false;
+	}
+
+	std::string partId;
+	EventCallback evCb;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		partId = participantId.empty() ? _activeParticipantId : participantId;
+		if (partId.empty())
+		{
+			return false;
+		}
+		_activeParticipantId = partId;
+		evCb = _eventCb;
+	}
+
+	// Mirror 3CX: answering the inbound participant connects the leg, which the real
+	// client observes as a Connected upsert → Answered. Fire it on a sim thread so the
+	// callback never runs under the caller's lock (matches makeCall's threading).
+	if (evCb)
+	{
+		std::thread answerThread([evCb, partId]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			CallEvent answerEv{CallEvent::Answered, partId, "", ""};
+			evCb(answerEv);
+		});
+		std::lock_guard<std::mutex> lock(_mutex);
+		_simThreads.push_back(std::move(answerThread));
+	}
+	return true;
+}
+
+void LoopbackAnchorClient::simulateInboundCall(const std::string& callerId)
+{
+	if (!_connected)
+	{
+		return;
+	}
+
+	_stopSimThread = true;
+	uint64_t myCallId = ++g_activeCallId;
+	reapSimThreads();
+	_stopSimThread = false;
+
+	std::lock_guard<std::mutex> lock(_mutex);
+	_simThreads.emplace_back([this, myCallId, callerId]() {
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		if (myCallId != g_activeCallId.load()) return;
+
+		EventCallback evCb;
+		std::string partId = "mock-in-" + std::to_string(myCallId);
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			evCb = _eventCb;
+			_activeParticipantId = partId;
+		}
+		if (evCb)
+		{
+			CallEvent inEv{CallEvent::Incoming, partId, "", callerId};
+			evCb(inEv);
+		}
+	});
 }
 
 bool LoopbackAnchorClient::dropCall(const std::string& participantId)
@@ -144,7 +212,7 @@ bool LoopbackAnchorClient::dropCall(const std::string& participantId)
 		// _mutex risks vector reallocation while stop() is moving threads out,
 		// and mirrors the lock-free join pattern already used in stop().
 		std::thread dropThread([evCb, partId]() {
-			CallEvent dropEv{CallEvent::Dropped, partId, ""};
+			CallEvent dropEv{CallEvent::Dropped, partId, "", ""};
 			evCb(dropEv);
 		});
 		{

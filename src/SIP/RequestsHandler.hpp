@@ -362,6 +362,28 @@ private:
 	                     const std::string& dialed);
 	void asyncMakeCall(const std::string& destination, const std::string& callId, const std::string& callerNumber);
 	void asyncDropCall(const std::string& participantId);
+	void asyncAnswerCall(const std::string& participantId);
+
+	// ── Inbound anchor (PSTN → local extension) ──────────────────────────────────
+	// The mirror of routeAnchorCall: an upstream CallEvent::Incoming for a monitored
+	// DN makes the server a UAC that originates an INVITE *toward* the local handset
+	// registered as that DN. Unlike the outbound (server-as-UAS) leg these dialogs are
+	// keyed by a server-minted Call-ID and carry their UAC state on the Session
+	// (isAnchorInbound/UacBranch/RemoteTag/AnchorParticipantId).
+	//   routeInboundAnchorCall : ring the local DN handset (offerless INVITE), arm a
+	//                            no-answer timer; if the DN is unregistered or the one
+	//                            media bridge is busy, drop the upstream leg.
+	//   onInboundAnchorOk      : the handset's 200 OK — start the media bridge to the
+	//                            handset's RTP, ACK with our SDP answer, then async
+	//                            answerCall() the upstream leg.
+	// Both run under _mutex (the event callback / SIP handler already hold it).
+	void routeInboundAnchorCall(const std::string& participantId, const std::string& callerId);
+	void onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, const std::shared_ptr<Session>& session);
+	// CANCEL our outstanding INVITE toward the handset on an inbound leg that has NOT
+	// been answered yet (no remote tag): the local extension is still ringing and we
+	// need to stop it (no-answer timeout, or the PSTN caller abandoned). Built from the
+	// Session's stored UAC dialog state. Caller holds _mutex.
+	std::shared_ptr<SipMessage> buildInboundCancel(const std::shared_ptr<Session>& session);
 
 
 	// Server-side RTP media source (the 440 tone stream). One concurrent stream; the

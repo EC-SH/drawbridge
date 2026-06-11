@@ -30,6 +30,7 @@ public:
 	bool isConnected() const override;
 	bool isStreaming() const;
 	bool makeCall(const std::string& destination) override;
+	bool answerCall(const std::string& participantId) override;
 	bool dropCall(const std::string& participantId) override;
 	void setEventCallback(EventCallback cb) override;
 	bool writeAudio(const int16_t* pcmSamples, size_t count) override;
@@ -45,6 +46,14 @@ private:
 	std::atomic<bool> _connected{false};
 	std::string       _accessToken;
 	std::string       _activeParticipantId;
+
+	// Inbound disambiguation. A participant upsert on _sourceDn is OURS (outbound) when
+	// _outboundActive is set by makeCall; otherwise it is the upstream delivering a PSTN
+	// call to the monitored DN. _inboundSignaledPartId records the participant we have
+	// already announced via CallEvent::Incoming so the ~750 ms upsert repeats fire it
+	// only once. Both guarded by _mutex.
+	std::atomic<bool> _outboundActive{false};
+	std::string       _inboundSignaledPartId;
 
 	EventCallback   _eventCb;
 	AudioRxCallback _audioCb;

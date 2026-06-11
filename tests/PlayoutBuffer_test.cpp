@@ -140,3 +140,47 @@ TEST(LoopbackAnchorClientTest, SimEventsAndAudioLoop)
 	EXPECT_EQ(droppedCount, 1);
 	EXPECT_FALSE(client.isConnected());
 }
+
+// Inbound (Mode 1) anchor contract: an upstream-delivered PSTN call surfaces as a
+// single CallEvent::Incoming carrying the participant id + caller id; answering it
+// (answerCall, the mirror of makeCall) drives the participant to Answered — exactly
+// the sequence the engine's routeInboundAnchorCall → onInboundAnchorOk path drives.
+TEST(LoopbackAnchorClientTest, InboundCallAnnounceAndAnswer)
+{
+	LoopbackAnchorClient client;
+	client.init("https://localhost", "app-id", "app-secret", "113");
+	EXPECT_TRUE(client.start());
+
+	std::atomic<int> incomingCount{0};
+	std::atomic<int> answerCount{0};
+	std::string seenParticipant;
+	std::string seenCaller;
+
+	client.setEventCallback([&](const AnchorClient::CallEvent& ev) {
+		if (ev.type == AnchorClient::CallEvent::Incoming)
+		{
+			incomingCount++;
+			seenParticipant = ev.participantId;
+			seenCaller = ev.callerId;
+		}
+		else if (ev.type == AnchorClient::CallEvent::Answered)
+		{
+			answerCount++;
+		}
+	});
+
+	// Upstream offers a PSTN call to the monitored DN.
+	client.simulateInboundCall("+15551234567");
+	std::this_thread::sleep_for(std::chrono::milliseconds(40));
+	EXPECT_EQ(incomingCount, 1);
+	EXPECT_FALSE(seenParticipant.empty());
+	EXPECT_EQ(seenCaller, "+15551234567");
+
+	// The engine answers once the local extension picks up → leg connects (Answered).
+	EXPECT_TRUE(client.answerCall(seenParticipant));
+	std::this_thread::sleep_for(std::chrono::milliseconds(40));
+	EXPECT_EQ(answerCount, 1);
+
+	client.stop();
+	EXPECT_FALSE(client.isConnected());
+}

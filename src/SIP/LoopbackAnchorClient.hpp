@@ -23,10 +23,17 @@ public:
 	void stop() override;
 	bool isConnected() const override;
 	bool makeCall(const std::string& destination) override;
+	bool answerCall(const std::string& participantId) override;
 	bool dropCall(const std::string& participantId) override;
 	void setEventCallback(EventCallback cb) override;
 	bool writeAudio(const int16_t* pcmSamples, size_t count) override;
 	void registerAudioRxCallback(AudioRxCallback cb) override;
+
+	// Test hook: pretend the upstream is delivering a PSTN call to the monitored DN.
+	// Fires a single CallEvent::Incoming (participant id "mock-in-<n>", the given
+	// callerId). The engine is expected to ring a local extension and then call
+	// answerCall(), which drives the participant to Answered — mirroring makeCall().
+	void simulateInboundCall(const std::string& callerId);
 
 private:
 	std::string _baseUrl;

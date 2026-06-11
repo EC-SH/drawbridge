@@ -11,9 +11,15 @@ class AnchorClient
 public:
 	struct CallEvent
 	{
-		enum Type { Ringing, Answered, Dropped, Dtmf } type;
+		// Ringing/Answered/Dropped/Dtmf describe a call the device ORIGINATED (outbound,
+		// via makeCall). Incoming is the inverse: the upstream is delivering a PSTN call
+		// to a DN this device monitors, and the device must ring a local extension and
+		// then answerCall() to take it. callerId carries the PSTN caller's number/name
+		// when the upstream provides it (best-effort; may be empty).
+		enum Type { Ringing, Answered, Dropped, Dtmf, Incoming } type;
 		std::string participantId;
 		std::string dtmfDigit;
+		std::string callerId;
 	};
 	using EventCallback = std::function<void(const CallEvent&)>;
 	using AudioRxCallback = std::function<void(const int16_t* pcmSamples, size_t count)>;
@@ -37,6 +43,12 @@ public:
 
 	// Originate a PSTN call
 	virtual bool makeCall(const std::string& destination) = 0;
+
+	// Answer an inbound participant the upstream is offering to a monitored DN (the
+	// mirror of makeCall). Called once the local extension has accepted, so the
+	// upstream connects the PSTN leg and the media streams can open. participantId is
+	// the id carried by the CallEvent::Incoming that announced the call.
+	virtual bool answerCall(const std::string& participantId) = 0;
 
 	// Hang up an active call
 	virtual bool dropCall(const std::string& participantId) = 0;

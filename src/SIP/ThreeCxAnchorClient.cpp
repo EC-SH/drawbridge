@@ -35,6 +35,11 @@ bool ThreeCxAnchorClient::makeCall(const std::string&)
 	return false;
 }
 
+bool ThreeCxAnchorClient::answerCall(const std::string&)
+{
+	return false;
+}
+
 bool ThreeCxAnchorClient::dropCall(const std::string&)
 {
 	return false;
@@ -264,6 +269,10 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 	std::string makeCallUrl = baseUrl + "/callcontrol/" + sourceDn + "/makecall";
 	std::string postData = "{\"destination\":\"" + destination + "\"}";
 
+	// Mark an outbound call in flight BEFORE the POST so the participant upserts 3CX
+	// pushes for it are classified as ours (not mistaken for an inbound PSTN call).
+	_outboundActive.store(true, std::memory_order_release);
+
 	int status = 0;
 	bool success = performCtrl(makeCallUrl, "application/json", postData, &status);
 	if (success)
@@ -273,6 +282,7 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 	else
 	{
 		ESP_LOGE(TAG, "makeCall request failed (status=%d)", status);
+		_outboundActive.store(false, std::memory_order_release);   // POST failed → not in flight
 	}
 	return success;
 }
@@ -310,6 +320,47 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 	else
 	{
 		ESP_LOGE(TAG, "dropCall request failed for participant %s (status=%d)", partId.c_str(), status);
+	}
+	return success;
+}
+
+bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
+{
+	std::string partId, baseUrl, sourceDn;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (!_connected.load(std::memory_order_acquire))
+		{
+			return false;
+		}
+		partId = participantId.empty() ? _activeParticipantId : participantId;
+		baseUrl = _baseUrl;
+		sourceDn = _sourceDn;
+	}
+	if (partId.empty())
+	{
+		return false;
+	}
+
+	// Answer the inbound participant the route point is offering us: POST
+	// /callcontrol/{dn}/participants/{id}/answer on the persistent control connection.
+	// 3CX then connects the PSTN leg, flips the participant to Connected, and the
+	// existing Upset→Connected path opens the PCM streams (startMediaStreams).
+	//
+	// NOTE: a route point configured as an *External Call Flow* app may instead expect
+	// /route (route the call into the app) rather than /answer. If a deployment's
+	// inbound calls never connect, this action string is the first thing to flip.
+	std::string answerUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + partId + "/answer";
+
+	int status = 0;
+	bool success = performCtrl(answerUrl, nullptr, "", &status);
+	if (success)
+	{
+		ESP_LOGI(TAG, "Answered inbound participant %s", partId.c_str());
+	}
+	else
+	{
+		ESP_LOGE(TAG, "answerCall request failed for participant %s (status=%d)", partId.c_str(), status);
 	}
 	return success;
 }
@@ -918,7 +969,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										{
 											if (evCb)
 											{
-												CallEvent ev{CallEvent::Answered, partId, ""};
+												CallEvent ev{CallEvent::Answered, partId, "", ""};
 												evCb(ev);
 											}
 										}
@@ -930,11 +981,51 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 									}
 									else
 									{
+										// A not-yet-connected participant on our DN is either our own
+										// outbound leg ringing, OR the upstream delivering a PSTN call
+										// to the monitored DN. Disambiguate on _outboundActive.
+										bool isInbound = false;
+										{
+											std::lock_guard<std::mutex> lock(_mutex);
+											isInbound = !_outboundActive.load(std::memory_order_acquire) &&
+											            _inboundSignaledPartId != partId;
+											if (isInbound) _inboundSignaledPartId = partId;
+										}
+
+										if (isInbound)
+										{
+											// INBOUND: announce it once so the engine rings the local
+											// extension. It calls answerCall(partId) on local answer,
+											// which flips the leg to Connected (handled above). Pull a
+											// best-effort caller id from attached_data for the From line.
+											std::string callerId;
+											cJSON* attached = cJSON_GetObjectItem(eventObj, "attached_data");
+											if (attached)
+											{
+												for (const char* k : { "caller_id", "party_caller_id", "callerid", "caller_number" })
+												{
+													cJSON* c = cJSON_GetObjectItem(attached, k);
+													if (c && c->valuestring && c->valuestring[0])
+													{
+														callerId = c->valuestring;
+														break;
+													}
+												}
+											}
+											ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
+											         _sourceDn.c_str(), partId.c_str(), callerId.c_str());
+											if (evCb)
+											{
+												CallEvent ev{CallEvent::Incoming, partId, "", callerId};
+												evCb(ev);
+											}
+										}
+
 										// RING-TIME PRIME: the leg exists but isn't connected yet
 										// (Dialing/Ringing). Start the Rx task now — its retry loop
 										// is cheap on the persistent connection — so the GET stream
-										// is already being polled the instant 3CX flips the leg to
-										// Connected. Inbound audio then opens ~one RTT after answer.
+										// is already being polled the instant the leg flips to
+										// Connected. Audio then opens ~one RTT after answer.
 										startRxIfNeeded(partId);
 									}
 								}
@@ -953,7 +1044,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 
 									if (evCb)
 									{
-										CallEvent ev{CallEvent::Dropped, partId, ""};
+										CallEvent ev{CallEvent::Dropped, partId, "", ""};
 										evCb(ev);
 									}
 								}
@@ -965,7 +1056,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										cJSON* dtmfInput = cJSON_GetObjectItem(attached, "dtmf_input");
 										if (dtmfInput && dtmfInput->valuestring && evCb)
 										{
-											CallEvent ev{CallEvent::Dtmf, partId, dtmfInput->valuestring};
+											CallEvent ev{CallEvent::Dtmf, partId, dtmfInput->valuestring, ""};
 											evCb(ev);
 										}
 									}
@@ -1086,6 +1177,11 @@ void ThreeCxAnchorClient::stopMediaStreams()
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		_activeParticipantId.clear();
+		// Call is over: clear the inbound/outbound disambiguation so the NEXT participant
+		// upsert is classified fresh (a stale _outboundActive would mask a real inbound
+		// call; a stale _inboundSignaledPartId would swallow its Incoming event).
+		_outboundActive.store(false, std::memory_order_release);
+		_inboundSignaledPartId.clear();
 		taskToKill = _rxTaskHandle;
 		_rxTaskHandle = nullptr; // signal task to exit
 	}
