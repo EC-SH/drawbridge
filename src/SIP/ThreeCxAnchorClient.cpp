@@ -192,6 +192,10 @@ bool ThreeCxAnchorClient::start()
 		return false;
 	}
 
+	// 3. Pre-establish the control-plane TLS session so the first makecall
+	// doesn't pay the handshake during post-dial delay.
+	warmCtrlConnection();
+
 	return true;
 }
 
@@ -208,6 +212,7 @@ void ThreeCxAnchorClient::stop()
 	}
 
 	stopMediaStreams();
+	closeCtrlClient();
 
 	if (_wsClient)
 	{
@@ -247,30 +252,20 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 	// open at call-origination time, so a re-issue can't kill a live stream.
 	ensureToken();
 
-	std::string baseUrl, sourceDn, token;
+	std::string baseUrl, sourceDn;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		baseUrl = _baseUrl;
 		sourceDn = _sourceDn;
-		token = _accessToken;
 	}
 
-	// Trigger outbound call via HTTP POST /callcontrol/{sourceDn}/makecall
+	// Trigger outbound call via HTTP POST /callcontrol/{sourceDn}/makecall on
+	// the persistent control connection (one RTT instead of a TLS handshake).
 	std::string makeCallUrl = baseUrl + "/callcontrol/" + sourceDn + "/makecall";
-	esp_http_client_handle_t client = makeAuthedClient(makeCallUrl, HTTP_METHOD_POST, 1024, token);
-	if (!client)
-	{
-		ESP_LOGE(TAG, "Failed to init HTTP client for makeCall");
-		return false;
-	}
-
-	esp_http_client_set_header(client, "Content-Type", "application/json");
-
 	std::string postData = "{\"destination\":\"" + destination + "\"}";
-	esp_http_client_set_post_field(client, postData.c_str(), postData.length());
 
 	int status = 0;
-	bool success = performAuthedRequest(client, &status);
+	bool success = performCtrl(makeCallUrl, "application/json", postData, &status);
 	if (success)
 	{
 		ESP_LOGI(TAG, "Successfully initiated call to %s", destination.c_str());
@@ -279,15 +274,13 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 	{
 		ESP_LOGE(TAG, "makeCall request failed (status=%d)", status);
 	}
-
-	esp_http_client_cleanup(client);
 	return success;
 }
 
 bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 {
 	std::string partId;
-	std::string baseUrl, sourceDn, token;
+	std::string baseUrl, sourceDn;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		if (!_connected.load(std::memory_order_acquire))
@@ -297,7 +290,6 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 		partId = participantId.empty() ? _activeParticipantId : participantId;
 		baseUrl = _baseUrl;
 		sourceDn = _sourceDn;
-		token = _accessToken;
 	}
 
 	if (partId.empty())
@@ -306,15 +298,11 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 	}
 
 	// Trigger drop via HTTP POST /callcontrol/{sourceDn}/participants/{participantId}/drop
+	// on the persistent control connection — fast teardown, no fresh handshake.
 	std::string dropUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + partId + "/drop";
-	esp_http_client_handle_t client = makeAuthedClient(dropUrl, HTTP_METHOD_POST, 1024, token);
-	if (!client)
-	{
-		return false;
-	}
 
 	int status = 0;
-	bool success = performAuthedRequest(client, &status);
+	bool success = performCtrl(dropUrl, nullptr, "", &status);
 	if (success)
 	{
 		ESP_LOGI(TAG, "Successfully dropped participant %s", partId.c_str());
@@ -323,8 +311,6 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 	{
 		ESP_LOGE(TAG, "dropCall request failed for participant %s (status=%d)", partId.c_str(), status);
 	}
-
-	esp_http_client_cleanup(client);
 	return success;
 }
 
@@ -682,6 +668,94 @@ bool ThreeCxAnchorClient::performAuthedRequest(esp_http_client_handle_t client, 
 	}
 }
 
+bool ThreeCxAnchorClient::performCtrl(const std::string& url, const char* contentType, const std::string& body, int* statusCodeOut)
+{
+	std::string token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		token = _accessToken;
+	}
+
+	std::lock_guard<std::mutex> ctrlLock(_ctrlMutex);
+
+	// Two attempts: the first may ride a connection the server idled out, in
+	// which case perform() fails; the second goes out on a fresh handle, which
+	// is exactly what every request paid before this connection was persistent.
+	for (int attempt = 0; attempt < 2; ++attempt)
+	{
+		if (!_ctrlClient)
+		{
+			_ctrlClient = makeAuthedClient(url, HTTP_METHOD_POST, 1024, token);
+			if (!_ctrlClient)
+			{
+				return false;
+			}
+		}
+		else
+		{
+			esp_http_client_set_url(_ctrlClient, url.c_str());
+			esp_http_client_set_method(_ctrlClient, HTTP_METHOD_POST);
+			// Token may have rotated since the handle was created.
+			std::string authHeader = "Bearer " + token;
+			esp_http_client_set_header(_ctrlClient, "Authorization", authHeader.c_str());
+		}
+
+		if (contentType)
+		{
+			esp_http_client_set_header(_ctrlClient, "Content-Type", contentType);
+		}
+		esp_http_client_set_post_field(_ctrlClient, body.c_str(), body.length());
+
+		esp_err_t err = esp_http_client_perform(_ctrlClient);
+		if (err == ESP_OK)
+		{
+			int status = esp_http_client_get_status_code(_ctrlClient);
+			if (statusCodeOut)
+			{
+				*statusCodeOut = status;
+			}
+			return (status >= 200 && status < 300);
+		}
+
+		ESP_LOGW(TAG, "Control request failed (%s)%s", esp_err_to_name(err),
+		         attempt == 0 ? " — reconnecting" : "");
+		esp_http_client_cleanup(_ctrlClient);
+		_ctrlClient = nullptr;
+	}
+
+	if (statusCodeOut)
+	{
+		*statusCodeOut = -1;
+	}
+	return false;
+}
+
+void ThreeCxAnchorClient::warmCtrlConnection()
+{
+	// Establish the control-plane TLS session ahead of the first command so a
+	// makecall right after dialing doesn't pay the handshake. A POST to the DN
+	// root is a no-op command-wise (3CX answers 4xx) but completes the TLS+TCP
+	// setup that perform() will then reuse.
+	std::string url;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		url = _baseUrl + "/callcontrol/" + _sourceDn;
+	}
+	int status = 0;
+	performCtrl(url, nullptr, "", &status);
+	ESP_LOGI(TAG, "Control connection pre-warmed (HTTP %d)", status);
+}
+
+void ThreeCxAnchorClient::closeCtrlClient()
+{
+	std::lock_guard<std::mutex> ctrlLock(_ctrlMutex);
+	if (_ctrlClient)
+	{
+		esp_http_client_cleanup(_ctrlClient);
+		_ctrlClient = nullptr;
+	}
+}
+
 bool ThreeCxAnchorClient::readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out)
 {
 	std::vector<char> buffer;
@@ -920,9 +994,29 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 		token = _accessToken;
 	}
 
-	// 1. Initialize HTTP POST client for outbound audio
+	// 1. Launch the Rx task FIRST so its GET-stream TLS handshake runs in
+	// parallel with the POST open below (they were serialized before, stacking
+	// two handshakes into the answer-to-audio delay).
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (_rxDoneSem)
+		{
+			vSemaphoreDelete(_rxDoneSem);
+		}
+		_rxDoneSem = xSemaphoreCreateBinary();
+		BaseType_t rc = xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
+		if (rc != pdPASS)
+		{
+			ESP_LOGE(TAG, "Failed to create Rx task");
+			_rxTaskHandle = nullptr;
+			return false;
+		}
+	}
+
+	// 2. Initialize HTTP POST client for outbound audio. On failure the caller
+	// invokes stopMediaStreams(), which shuts down and joins the Rx task.
 	std::string postUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + participantId + "/stream";
-	
+
 	esp_http_client_handle_t postClient = nullptr;
 	{
 		std::lock_guard<std::mutex> postLock(_postMutex);
@@ -951,32 +1045,6 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 		}
 	}
 	ESP_LOGI(TAG, "POST (device->3CX) audio stream OPEN: %s", postUrl.c_str());
-
-	// 2. Initialize HTTP GET client and launch Rx task for inbound audio
-	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		if (_rxDoneSem)
-		{
-			vSemaphoreDelete(_rxDoneSem);
-		}
-		_rxDoneSem = xSemaphoreCreateBinary();
-		BaseType_t rc = xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
-		if (rc != pdPASS)
-		{
-			ESP_LOGE(TAG, "Failed to create Rx task");
-			_rxTaskHandle = nullptr;
-			{
-				std::lock_guard<std::mutex> postLock(_postMutex);
-				if (_postClient)
-				{
-					esp_http_client_close(_postClient);
-					esp_http_client_cleanup(_postClient);
-					_postClient = nullptr;
-				}
-			}
-			return false;
-		}
-	}
 
 	return true;
 }
@@ -1104,46 +1172,57 @@ void ThreeCxAnchorClient::runRxLoop()
 	// dependency) until the call leg is actually connected and media is flowing.
 	// startMediaStreams() can fire slightly ahead of that, so retry the open
 	// rather than giving up — otherwise inbound audio is lost for the whole call.
+	//
+	// LATENCY: the client handle is created ONCE and re-opened across retries so
+	// the TLS session persists — the 3CX reference examples do the same with
+	// keep-alive agents. The old loop tore the client down per attempt, paying a
+	// full mbedTLS handshake (~0.5-1s on the S3) per 404, which serialized into
+	// multi-second answer-to-audio delays. Now only the first attempt (or a
+	// server-closed connection) pays a handshake; a retry is ~one RTT.
 	constexpr int        kMaxAttempts = 40;                  // ~20s ceiling
 	TickType_t           delay        = pdMS_TO_TICKS(50);   // Start fast at 50ms
 	bool opened = false;
 
-	for (int attempt = 0; attempt < kMaxAttempts && _rxTaskHandle != nullptr; ++attempt)
 	{
-		{
-			std::lock_guard<std::mutex> lock(_getMutex);
-			if (_rxTaskHandle == nullptr) break; // stop requested mid-retry
-			_getClient = makeAuthedClient(getUrl, HTTP_METHOD_GET, 1024, token);
-		}
-		if (!_getClient)
-		{
-			vTaskDelay(delay);
-			delay = (delay * 2 > pdMS_TO_TICKS(500)) ? pdMS_TO_TICKS(500) : delay * 2;
-			continue;
-		}
-
-		esp_err_t err = esp_http_client_open(_getClient, 0);
-		if (err == ESP_OK)
-		{
-			esp_http_client_fetch_headers(_getClient);
-			int status = esp_http_client_get_status_code(_getClient);
-			if (status == 200)
-			{
-				opened = true;
-				break;
-			}
-			ESP_LOGW(TAG, "GET stream not ready (HTTP %d), attempt %d/%d", status, attempt + 1, kMaxAttempts);
-		}
-		else
-		{
-			ESP_LOGW(TAG, "GET stream open failed (%s), attempt %d/%d", esp_err_to_name(err), attempt + 1, kMaxAttempts);
-		}
-
-		teardownGetClient();
+		std::lock_guard<std::mutex> lock(_getMutex);
 		if (_rxTaskHandle != nullptr)
 		{
-			vTaskDelay(delay);
-			delay = (delay * 2 > pdMS_TO_TICKS(500)) ? pdMS_TO_TICKS(500) : delay * 2;
+			_getClient = makeAuthedClient(getUrl, HTTP_METHOD_GET, 1024, token);
+		}
+	}
+
+	if (_getClient)
+	{
+		for (int attempt = 0; attempt < kMaxAttempts && _rxTaskHandle != nullptr; ++attempt)
+		{
+			esp_err_t err = esp_http_client_open(_getClient, 0);
+			if (err == ESP_OK)
+			{
+				esp_http_client_fetch_headers(_getClient);
+				int status = esp_http_client_get_status_code(_getClient);
+				if (status == 200)
+				{
+					opened = true;
+					break;
+				}
+				ESP_LOGW(TAG, "GET stream not ready (HTTP %d), attempt %d/%d", status, attempt + 1, kMaxAttempts);
+				// Drain the error body completely so the persistent connection can
+				// carry the next attempt (an unread body poisons handle reuse).
+				char drainBuf[256];
+				while (esp_http_client_read(_getClient, drainBuf, sizeof(drainBuf)) > 0) {}
+			}
+			else
+			{
+				// Connection-level failure: esp_http_client re-establishes the
+				// transport on the next open, so still no per-retry teardown needed.
+				ESP_LOGW(TAG, "GET stream open failed (%s), attempt %d/%d", esp_err_to_name(err), attempt + 1, kMaxAttempts);
+			}
+
+			if (_rxTaskHandle != nullptr)
+			{
+				vTaskDelay(delay);
+				delay = (delay * 2 > pdMS_TO_TICKS(500)) ? pdMS_TO_TICKS(500) : delay * 2;
+			}
 		}
 	}
 

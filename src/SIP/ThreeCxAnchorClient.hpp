@@ -65,6 +65,13 @@ private:
 	esp_http_client_handle_t      _postClient = nullptr;
 	esp_http_client_handle_t      _getClient  = nullptr;
 
+	// Persistent control-plane HTTPS connection (makecall / participant drop).
+	// Kept open across requests so each command is one RTT instead of a fresh
+	// mbedTLS handshake — mirrors the keep-alive agents in the 3CX reference
+	// examples. Guarded by _ctrlMutex; never touched under _mutex.
+	esp_http_client_handle_t      _ctrlClient = nullptr;
+	std::mutex                    _ctrlMutex;
+
 	TaskHandle_t      _rxTaskHandle = nullptr;
 	SemaphoreHandle_t _rxDoneSem    = nullptr; // signalled by rx task before it deletes itself
 
@@ -85,6 +92,12 @@ private:
 
 	esp_http_client_handle_t makeAuthedClient(const std::string& url, esp_http_client_method_t method, int txBufSize, const std::string& token = "");
 	bool performAuthedRequest(esp_http_client_handle_t client, int* statusCodeOut = nullptr);
+	// One-shot POST on the persistent control connection (creates/repairs the
+	// handle as needed; retries once on a stale connection). contentType may be
+	// nullptr for an empty-body POST.
+	bool performCtrl(const std::string& url, const char* contentType, const std::string& body, int* statusCodeOut = nullptr);
+	void warmCtrlConnection();   // pre-establish the control TLS session (boot/reconnect)
+	void closeCtrlClient();      // teardown under _ctrlMutex
 	bool readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out);
 #endif
 };
