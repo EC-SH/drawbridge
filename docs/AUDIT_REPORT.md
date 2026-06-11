@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-This report delivers a rigorous technical re-audit of the **pocket-dial** firmware codebase (`GlomarGadaffi/pocket-dial`) following a series of critical architectural refactors and security updates. The firmware represents a highly consolidated, zero-upstream-dependency SIP PBX optimized for resource-constrained platforms, such as standard ESP32 and ESP32-S3 (e.g., smart display HMI hardware).
+This report delivers a rigorous technical re-audit of the **pocket-dial** firmware codebase (`EC-SH/drawbridge`) following a series of critical architectural refactors and security updates. The firmware represents a highly consolidated, zero-upstream-dependency SIP PBX optimized for resource-constrained platforms, such as standard ESP32 and ESP32-S3 (e.g., smart display HMI hardware).
 
 This comprehensive audit evaluates the resolution of **19 high-impact firmware issues** (incorporating both the 13 legacy issues and the 6 newly merged core security patches, Issues #54 through #59). These issues encompass race conditions, mutex lock contention, real-time memory fragmentation, stack overflows, buffer overflows, null pointer dereferences, input whitelisting bypasses, and rate-limiting evasion.
 

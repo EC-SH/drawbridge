@@ -9,7 +9,7 @@
 
 ## Executive Quality Review
 
-This code review details a comprehensive quality pass over the post-refactor and post-patch **pocket-dial** firmware codebase (`GlomarGadaffi/pocket-dial`). The assessment evaluates coding styles, naming conventions, inclusion structure, memory profiles, and algorithmic efficiency.
+This code review details a comprehensive quality pass over the post-refactor and post-patch **pocket-dial** firmware codebase (`EC-SH/drawbridge`). The assessment evaluates coding styles, naming conventions, inclusion structure, memory profiles, and algorithmic efficiency.
 
 ### Codebase Health Assessment
 Following the recent integration of security patches (Issues #54 through #59), the codebase exhibits **exceptional health**. The separation of concerns between raw packet listening (`UdpServer`), connection management (`HttpServer`), signaling coordination (`RequestsHandler`), and message parsing (`SipMessage`) is highly logical and modular. Standard RAII wrappers are employed correctly, and the entire signaling thread path compiles without Run-Time Type Information (RTTI) support, making it perfect for microcontrollers.

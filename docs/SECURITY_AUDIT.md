@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-This security audit and threat model report evaluates the network-facing and local attack surfaces of the **pocket-dial** ESP32 PBX firmware codebase (`GlomarGadaffi/pocket-dial`). The primary objectives are to analyze entry points, assess the robustness of parsers, review access control mechanisms, and classify findings using CVE-class severity ratings and CVSS v3.1 scoring vectors.
+This security audit and threat model report evaluates the network-facing and local attack surfaces of the **pocket-dial** ESP32 PBX firmware codebase (`EC-SH/drawbridge`). The primary objectives are to analyze entry points, assess the robustness of parsers, review access control mechanisms, and classify findings using CVE-class severity ratings and CVSS v3.1 scoring vectors.
 
 > [!WARNING]
 > **Summary of Findings:** The firmware has successfully mitigated two high-risk vulnerabilities—**Host/Origin Validation (DNS Rebinding)** and **SIP Signaling Input Injection**—via the recently integrated security patches. 

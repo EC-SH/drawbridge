@@ -1,4 +1,4 @@
-# pocket-dial
+# drawbridge
 
 > [!NOTE]
 > **Latest release: [v1.2.0](../../releases/latest)** — hardware-verified on the JC3248W535 display board (boots, joins Wi-Fi, SIP + dashboard confirmed working). **Prebuilt, flashable firmware is attached to the release** — see [Install](#install). `main` carries newer in-development changes; pin to a release tag for production.
@@ -6,7 +6,7 @@
 A self-contained, enterprise-capable SIP PBX on a $10 microcontroller. Flash an ESP32-S3, connect softphones or physical IP phones to its network, and make direct VoIP calls instantly. No routers, [...]
 
 Now with **native touch display support** and **W5500 wired-Ethernet capability**:
-* **Guition JC3248W535EN HMI Target**: Features a native **ESP-IDF v5.3 + LVGL 8.3** application driving a 3.5" IPS capacitive touchscreen with a retro CGA CRT-style switchboard dashboard — displ[...]
+* **Guition JC3248W535EN HMI Target**: Features a native **ESP-IDF v6.0.1 + LVGL 8.4.0** application driving a 3.5" IPS capacitive touchscreen with a retro CGA CRT-style switchboard dashboard — displ[...]
 * **Wired-Ethernet & PoE Support**: Pre-configured transport targets for Waveshare ESP32-S3-ETH and LilyGO T-ETH boards, bridging pocket-dial to professional wired and Power-over-Ethernet network s[...]
 * **SIP Virtual Extensions**: Features an inline **SIP Echo Test (`777`)** with zero-media-processing SDP loopback, and a **Parallel Broadcast / All-Page Intercom (`999`)** with target-URI rewritin[...]
 * **Strict VoIP Interoperability**: Resolves early media loopback loops and ringing hangs on professional devices (like Yealink IP phones) by automatically stripping caller SDPs from all provisiona[...]
@@ -54,7 +54,7 @@ esptool --chip esp32s3 -p COM3 -b 460800 write_flash \
 
 ### 🛠 Option 2 — Build the firmware from source
 
-For development or custom configs (ESP-IDF v5.3+ or Arduino). See **[Building](#building)** — e.g. `idf.py -D SIP_TRANSPORT=display flash monitor`.
+For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building](#building)** — e.g. `idf.py -D SIP_TRANSPORT=display flash monitor`.
 
 ### 💻 Option 3 — Run on a computer or Raspberry Pi (no ESP32 needed)
 
@@ -62,7 +62,7 @@ The same SIP engine runs as a desktop/server binary on Linux/macOS/Windows. Need
 
 ```bash
 # One-liner: download the latest release source, build, and run
-curl -fsSL https://raw.githubusercontent.com/GlomarGadaffi/pocket-dial/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/EC-SH/drawbridge/main/install.sh | sh
 
 # …or from a clone:
 ./quickstart.sh                 # Windows: quickstart.bat
@@ -121,7 +121,7 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 * [VoIP Interoperability & SDP Stripping](#voip-interoperability--sdp-stripping)
 * [Automated Testing & Smoke Tools](#automated-testing--smoke-tools)
 * [Building](#building)
-  * [ESP32-S3 (ESP-IDF v5.3)](#esp32-s3-esp-idf-v53)
+  * [ESP32-S3 (ESP-IDF v6.0.1)](#esp32-s3-esp-idf-v53)
   * [JC3248W535EN Smart Display](#jc3248w535en-smart-display)
   * [W5500 Ethernet & PoE](#w5500-ethernet--poe)
   * [ESP32-S3 (Arduino IDE)](#esp32-s3-arduino-ide)
@@ -137,7 +137,7 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 * **Standalone AP Mode (ESP32-S3)** — Spawns an open Wi-Fi access point (`esp32-sipserver`), runs an internal DHCP server, and binds the SIP registrar to `192.168.4.1:5060`. Connect, register, a[...]
 * **W5500 Ethernet / PoE Transport** — Direct network interface driver support for wired RJ45 and Power-over-Ethernet environments, featuring DHCP or static IP fallbacks.
 * **Captive Portal Wi-Fi Onboarding** — When unconfigured, spawns a secure setup SoftAP (`My-Ap`) and displays a join QR code on screen. Intercepts HTTP traffic via a background DNS redirection [...]
-* **Smart Touchscreen Dashboard** — Native ESP-IDF 5.3 + LVGL 8.3 CGA-style HMI. Double-buffered in external OPI PSRAM (307.2 KB 16-bit color frames). Tap to cycle phosphorus theme colors (CGA B[...]
+* **Smart Touchscreen Dashboard** — Native ESP-IDF v6.0.1 + LVGL 8.4.0 CGA-style HMI. Double-buffered in external OPI PSRAM (307.2 KB 16-bit color frames). Tap to cycle phosphorus theme colors (CGA B[...]
 * **Active Keepalive OPTIONS & Pruning** — Periodically dispatches OPTIONS ping packets to all active clients. Automatically reaps dead bindings upon lease timeouts or silent periods to bound me[...]
 * **Robust Concurrency & Headless Fallback** — Dedicated, core-isolated FreeRTOS tasks. SIP signaling executes on Core 1, and HTTP/Web dashboard operations execute on Core 0. If the display pane[...]
 
@@ -198,7 +198,7 @@ The device boots as its own isolated telecommunication hub. Media (RTP) flows di
 ## Project Structure
 
 ```
-pocket-dial/
+drawbridge/
 ├── CMakeLists.txt              # Dual-mode build: desktop (CMake) or ESP-IDF
 ├── ISSUES.md                   # Roadmap & Architectural Concurrency Issues
 ├── CHANGELOG.md                # Detailed release notes and issue fixes
@@ -213,7 +213,7 @@ pocket-dial/
 │   ├── drivers/                # Low-level QSPI panel and touch screen driver layer
 │   │   ├── esp_lcd_axs15231b.c # High-performance esp_lcd driver
 │   │   └── esp_lcd_axs15231b.h
-│   ├── ui/                     # Interactive LVGL 8.3 switchboard dashboard
+│   ├── ui/                     # Interactive LVGL 8.4.0 switchboard dashboard
 │   │   ├── ui.cpp              # CGA interface, touch press router, log terminal
 │   │   └── ui.h
 │   └── wifi/                   # DNS/HTTP redirect captive portal wizard
@@ -336,7 +336,7 @@ The `.smoke/` directory also holds hardware helpers: `capture.py` (bounded USB-C
 
 ## Building
 
-### ESP32-S3 (ESP-IDF v5.3)
+### ESP32-S3 (ESP-IDF v6.0.1)
 Required for professional firmware development. Installs and registers the device under native ESP-IDF structures.
 
 ```bash

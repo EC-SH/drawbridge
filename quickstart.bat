@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ===================================================
-echo             pocket-dial - Quickstart Build
+echo             drawbridge - Quickstart Build
 echo ===================================================
 echo.
 
@@ -85,7 +85,7 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [3/3] Launching pocket-dial server...
+echo [3/3] Launching drawbridge server...
 echo.
 
 rem Detect binary location

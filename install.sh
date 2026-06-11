@@ -3,15 +3,15 @@ set -eu
 
 # default to latest stable release tag
 TAG="v1.2.0"
-ZIP_DIR="pocket-dial-1.2.0"
-URL="https://github.com/GlomarGadaffi/pocket-dial/archive/refs/tags/${TAG}.zip"
+ZIP_DIR="drawbridge-1.2.0"
+URL="https://github.com/EC-SH/drawbridge/archive/refs/tags/${TAG}.zip"
 
 # check if we requested bleeding edge / unreleased
-REQ_BRANCH="${1:-${POCKET_DIAL_BRANCH:-}}"
+REQ_BRANCH="${1:-${DRAWBRIDGE_BRANCH:-${POCKET_DIAL_BRANCH:-}}}"
 if [ "$REQ_BRANCH" = "main" ] || [ "$REQ_BRANCH" = "unreleased" ]; then
     echo "Using bleeding-edge (unreleased) main branch..."
-    URL="https://github.com/GlomarGadaffi/pocket-dial/archive/refs/heads/main.zip"
-    ZIP_DIR="pocket-dial-main"
+    URL="https://github.com/EC-SH/drawbridge/archive/refs/heads/main.zip"
+    ZIP_DIR="drawbridge-main"
 fi
 
 # check if --service flag is present
@@ -23,7 +23,7 @@ for arg in "$@"; do
 done
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-echo "Downloading pocket-dial..."
+echo "Downloading drawbridge..."
 curl -fsSL "$URL" -o "$T/pd.zip"
 
 unzip -q "$T/pd.zip" -d "$T"

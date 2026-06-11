@@ -34,7 +34,7 @@ Cross-references:
 | Media | Peer-to-peer G.711 RTP; server never sees audio. `enforceG711()` rewrites SDP to `0 8 101`; `clearBody()` strips ringing SDP for strict-UA interop (Yealink) | `src/SIP/SipMessage.cpp`, README "VoIP Interoperability" |
 | Virtual extensions | `777` zero-DSP echo loopback; `999` parallel all-page/intercom with auto-answer header injection, Request-URI/To rewrite, race-to-answer + CANCEL of losers | `RequestsHandler::startPaging` / `handlePagingAnswer` |
 | Registration lease | Expiry parsing/capping (`DEFAULT/MAX_EXPIRES` 3600 s), OPTIONS keepalive ping, dead-binding sweep/prune | `parseRequestedExpires`, `sweepExpired`, `maybeSweep` |
-| Transports | Wi-Fi SoftAP (+ captive portal), W5500 / LAN8720 wired Ethernet & PoE, Guition JC3248W535 touch display (LVGL 8.3) | `main/esp_main*.cpp`, `main/drivers`, `main/ui` |
+| Transports | Wi-Fi SoftAP (+ captive portal), W5500 / LAN8720 wired Ethernet & PoE, Guition JC3248W535 touch display (LVGL 8.4.0) | `main/esp_main*.cpp`, `main/drivers`, `main/ui` |
 | Onboarding | Captive-portal SoftAP, hand-rolled DNS redirect, on-screen join QR, NVS-persisted Wi-Fi mode/SSID/creds | `main/wifi/DnsServer.cpp`, `esp_main_display.cpp` |
 | Web dashboard | Select-based, thread-dispatched `HttpServer`; lock-free snapshot status API; mDNS (`pocketdial.local`, `_sip._udp`, `_http._tcp`) | `ARCHITECTURE.md` §4, `src/Helpers/HttpServer.*` |
 | Concurrency / RT safety | Core-pinned tasks (SIP vs HTTP/LVGL), outbox pattern (socket syscalls outside lock), double-buffered snapshot, **zero-heap-alloc hot path** | `ARCHITECTURE.md` §2–3 |

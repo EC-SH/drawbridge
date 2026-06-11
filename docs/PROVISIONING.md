@@ -2,7 +2,7 @@
 
 **Issue:** #35 (Zero-Touch Phone Auto-Provisioning, HTTP)
 **Status:** Phase-1 design (build-ready). No code merged yet.
-**Target:** ESP32-S3, ESP-IDF v5.3, C++17. Self-contained SIP registrar/PBX.
+**Target:** ESP32-S3, ESP-IDF v6.0.1, C++17. Self-contained SIP registrar/PBX.
 **Audience:** The engineer who will implement this. Architecture decisions below are
 final unless the "Open Questions" section flags them otherwise — implement directly.
 
@@ -33,7 +33,7 @@ mapping stored in NVS, forcing the same constraints the SIP engine already enfor
 
 A factory-fresh SIP phone has no idea pocket-dial exists. There are three standard
 mechanisms for it to learn a provisioning server URL. We evaluate each against the
-ESP32-S3 / ESP-IDF v5.3 reality, then recommend the MVP path.
+ESP32-S3 / ESP-IDF v6.0.1 reality, then recommend the MVP path.
 
 ### 1.1 DHCP Option 66 / Option 43 (the "real" zero-touch path)
 
@@ -49,7 +49,7 @@ Enterprise phones request a provisioning URL via DHCP:
 
 **ESP-IDF feasibility constraint (the blocker).** pocket-dial's SoftAP runs the
 bundled ESP-IDF `dhcpserver` component (via `esp_netif_create_default_wifi_ap()` in
-`main/esp_main.cpp`). On IDF v5.3 the *server-side* option API,
+`main/esp_main.cpp`). On IDF v6.0.1 the *server-side* option API,
 `esp_netif_dhcps_option(esp_netif_t*, esp_netif_dhcp_option_mode_t,
 esp_netif_dhcp_option_id_t, void*, uint32_t)`, only exposes a **fixed, small enum** of
 option IDs:

@@ -14,9 +14,9 @@ Ensure you have installed the correct USB-to-UART bridge drivers for your target
 * **Silicon Labs CP210x:** [Download CP210x VCP Drivers](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) (Common on standard ESP32 DevKits)
 * **WCH CH340 / CH341:** [Download CH340 Drivers](http://www.wch-ic.com/downloads/CH341SER_EXE.html) (Common on low-cost S3 boards, displays, and clone devkits)
 
-### 2. ESP-IDF Toolchain (v5.1.2 or v5.2.1)
-The firmware is fully certified and compiled against **ESP-IDF v5.1.2** and **v5.2.1**.
-* **Windows installation:** Download and run the [ESP-IDF Offline Installer](https://dl.espressif.com/dl/esp-idf/) (Select version `5.1.2` or `5.2.1`).
+### 2. ESP-IDF Toolchain (v6.0.1)
+The firmware is fully certified and compiled against **ESP-IDF v6.0.1**.
+* **Windows installation:** Download and run the [ESP-IDF Offline Installer](https://dl.espressif.com/dl/esp-idf/) (Select version `6.0.1`).
 * **Linux/macOS installation:** Follow the [Espressif Standard Shell Setup Guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/linux-macos-setup.html).
 
 ---
@@ -38,7 +38,7 @@ To load the correct compilers (`xtensa-esp32-elf-gcc`, `xtensa-esp32s3-elf-g++`)
 ```
 
 > [!TIP]
-> If activation is successful, running `idf.py --version` should output `ESP-IDF v5.1.x` or `ESP-IDF v5.2.x`.
+> If activation is successful, running `idf.py --version` should output `ESP-IDF v6.0.1`.
 
 ---
 
@@ -46,8 +46,8 @@ To load the correct compilers (`xtensa-esp32-elf-gcc`, `xtensa-esp32s3-elf-g++`)
 
 1. **Clone the repository and submodules:**
    ```bash
-   git clone --recursive https://github.com/GlomarGadaffi/pocket-dial.git
-   cd pocket-dial
+   git clone --recursive https://github.com/EC-SH/drawbridge.git
+   cd drawbridge
    ```
 
 2. **Select your target chip architecture:**

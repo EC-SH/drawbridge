@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# pocket-dial HTTP API Verification Script  (single source of truth)
+# drawbridge HTTP API Verification Script  (single source of truth)
 # ==============================================================================
 # This script executes standard, boundary, safety, security (CORS), OTA, and
-# admin-auth test scenarios against a running pocket-dial target.
+# admin-auth test scenarios against a running drawbridge target.
 #
 # It is the ONE smoke suite used both:
 #   * locally / in CI against the host build  (SipServer on 127.0.0.1:8080), and
@@ -58,7 +58,7 @@ else
 fi
 
 echo -e "${CYAN}======================================================================${RESET}"
-echo -e "${CYAN}          POCKET-DIAL HTTP REST API AUTOMATED VERIFICATION           ${RESET}"
+echo -e "${CYAN}          DRAWBRIDGE HTTP REST API AUTOMATED VERIFICATION            ${RESET}"
 echo -e "${CYAN}======================================================================${RESET}"
 echo -e "Target            : ${NC}${TARGET_INPUT}${RESET}"
 echo -e "Base Connection   : ${NC}${BASE_URL}/${RESET}"
@@ -440,7 +440,7 @@ echo -e "  Tests Passed         : ${GREEN}${PASSED_TESTS}${RESET}"
 if [ "$FAILED_TESTS" -eq 0 ]; then
     echo -e "  Tests Failed         : ${GREEN}0 (SUCCESS)${RESET}"
     echo -e "${CYAN}======================================================================${RESET}"
-    echo -e "${GREEN}>>> SUCCESS: The pocket-dial firmware matches all REST specifications!${RESET}"
+    echo -e "${GREEN}>>> SUCCESS: The drawbridge firmware matches all REST specifications!${RESET}"
     exit 0
 else
     echo -e "  Tests Failed         : ${RED}${FAILED_TESTS}${RESET}"

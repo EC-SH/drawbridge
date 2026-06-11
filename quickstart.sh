@@ -10,7 +10,7 @@ for arg in "$@"; do
 done
 
 echo "==================================================="
-echo "            pocket-dial - Quickstart Build"
+echo "            drawbridge - Quickstart Build"
 echo "==================================================="
 echo
 
@@ -44,7 +44,7 @@ else
 fi
 
 if [ "$INSTALL_SERVICE" = true ]; then
-    echo "[3/3] Installing pocket-dial as a system service..."
+    echo "[3/3] Installing drawbridge as a system service..."
     echo
 
     # Check if systemctl/systemd is available
@@ -58,9 +58,9 @@ if [ "$INSTALL_SERVICE" = true ]; then
     sudo chmod +x /usr/local/bin/SipServer
 
     echo "Creating systemd service file..."
-    sudo tee /etc/systemd/system/pocket-dial.service > /dev/null <<EOF
+    sudo tee /etc/systemd/system/drawbridge.service > /dev/null <<EOF
 [Unit]
-Description=Pocket-Dial SIP Server
+Description=Drawbridge SIP Server
 After=network.target
 
 [Service]
@@ -77,24 +77,24 @@ EOF
     sudo systemctl daemon-reload
 
     echo "Registering/enabling service (not starting)..."
-    sudo systemctl enable pocket-dial
+    sudo systemctl enable drawbridge
 
     echo
     echo "==================================================="
-    echo " [SUCCESS] pocket-dial installed as a system service!"
+    echo " [SUCCESS] drawbridge installed as a system service!"
     echo "==================================================="
     echo "The service has been enabled but is NOT currently running."
     echo "You can manage the service using the following commands:"
-    echo "  Start:   sudo systemctl start pocket-dial"
-    echo "  Stop:    sudo systemctl stop pocket-dial"
-    echo "  Status:  sudo systemctl status pocket-dial"
-    echo "  Logs:    sudo journalctl -u pocket-dial -f"
+    echo "  Start:   sudo systemctl start drawbridge"
+    echo "  Stop:    sudo systemctl stop drawbridge"
+    echo "  Status:  sudo systemctl status drawbridge"
+    echo "  Logs:    sudo journalctl -u drawbridge -f"
     echo "==================================================="
     echo
     exit 0
 fi
 
-echo "[3/3] Launching pocket-dial server..."
+echo "[3/3] Launching drawbridge server..."
 echo
 
 # Start the web browser automatically based on OS
