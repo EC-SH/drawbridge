@@ -228,7 +228,7 @@ bool ThreeCxAnchorClient::isConnected() const
 
 bool ThreeCxAnchorClient::isStreaming() const
 {
-	std::lock_guard<std::mutex> lock(_mutex);
+	std::lock_guard<std::mutex> lock(_postMutex);
 	return _postClient != nullptr;
 }
 
@@ -955,15 +955,16 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 
 void ThreeCxAnchorClient::stopMediaStreams()
 {
+	TaskHandle_t taskToKill = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		_activeParticipantId.clear();
+		taskToKill = _rxTaskHandle;
+		_rxTaskHandle = nullptr; // signal task to exit
 	}
 
-	if (_rxTaskHandle)
+	if (taskToKill)
 	{
-		TaskHandle_t taskToKill = _rxTaskHandle;
-		_rxTaskHandle = nullptr; // signal task to exit
 		{
 			std::lock_guard<std::mutex> lock(_getMutex);
 			if (_getClient)
@@ -982,15 +983,23 @@ void ThreeCxAnchorClient::stopMediaStreams()
 			{
 				ESP_LOGE(TAG, "Rx task failed to exit in time! Forcing task deletion.");
 				vTaskDelete(taskToKill);
-				// Force cleanup since task was killed and won't clean up itself
+				// Force cleanup since task was killed and won't clean up itself.
+				// Use try_lock: if the deleted task was holding _getMutex when it
+				// was killed, the mutex is permanently poisoned and a blocking
+				// lock_guard would deadlock here.
+				if (_getMutex.try_lock())
 				{
-					std::lock_guard<std::mutex> lock(_getMutex);
 					if (_getClient)
 					{
 						esp_http_client_close(_getClient);
 						esp_http_client_cleanup(_getClient);
 						_getClient = nullptr;
 					}
+					_getMutex.unlock();
+				}
+				else
+				{
+					ESP_LOGE(TAG, "_getMutex poisoned by killed task — leaking _getClient to avoid deadlock");
 				}
 			}
 		}
@@ -1116,7 +1125,7 @@ void ThreeCxAnchorClient::runRxLoop()
 	}
 	ESP_LOGI(TAG, "GET (3CX->device) audio stream OPEN: %s", getUrl.c_str());
 
-	char readBuf[513]; // +1 for carry byte prepending
+	alignas(2) char readBuf[514]; // +1 for carry byte, +1 for alignment padding; alignas(2) for safe int16_t reinterpret_cast
 	bool hasCarry = false;
 	char carryByte = 0;
 	int rxReads = 0;

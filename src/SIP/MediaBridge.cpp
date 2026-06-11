@@ -84,7 +84,7 @@ bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort
 		int16_t pcmSamples[320];
 		size_t toRead = (count > 320) ? 320 : count;
 
-		bool readOk = _playoutBuffer.read(pcmSamples, toRead);
+		_playoutBuffer.read(pcmSamples, toRead);
 
 		// Encode linear PCM16 samples to µ-law
 		RtpSender::ulawEncodeBuffer(pcmSamples, toRead, outUlaw);

@@ -129,11 +129,17 @@ bool LoopbackAnchorClient::dropCall(const std::string& participantId)
 
 	if (evCb)
 	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		_simThreads.emplace_back([evCb, partId]() {
+		// Spawn the event callback thread outside the lock. emplace_back under
+		// _mutex risks vector reallocation while stop() is moving threads out,
+		// and mirrors the lock-free join pattern already used in stop().
+		std::thread dropThread([evCb, partId]() {
 			CallEvent dropEv{CallEvent::Dropped, partId, ""};
 			evCb(dropEv);
 		});
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			_simThreads.push_back(std::move(dropThread));
+		}
 	}
 
 	return true;
