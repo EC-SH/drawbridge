@@ -41,6 +41,8 @@ private:
 
 	mutable std::mutex _mutex;
 
+	void reapSimThreads();
+
 	std::vector<std::thread> _simThreads;
 	std::atomic<bool> _stopSimThread{false};
 };

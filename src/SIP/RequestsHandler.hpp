@@ -105,6 +105,23 @@ public:
 	// Default "101". Loaded from NVS namespace "pbxcfg", key "admin_ext" at boot.
 	std::string getAdminExt() const;
 
+	// ── WAN trunk (3CX call-control API) config ──────────────────────────────────
+	// NVS-persisted ("storage"/"3cx_*") credentials for the PSTN trunk. The dial
+	// plan exposes it as the dial-9 prefix: "9<number>" goes out the trunk. The
+	// setter validates + persists; the new client config takes effect on reboot
+	// (the live anchor client is not restarted mid-session). Thread-safe.
+	struct TrunkConfig
+	{
+		std::string baseUrl;       // https://pbx.example.com:5001
+		std::string clientId;      // 3CX API client id
+		std::string clientSecret;  // 3CX API client secret (never display)
+		std::string sourceDn;      // the DN the device originates calls as
+		bool useLoopback = true;   // true = mock loopback anchor (no PSTN)
+	};
+	TrunkConfig getTrunkConfig();
+	std::string setTrunkConfig(const TrunkConfig& cfg);  // "" on success
+	bool isTrunkConnected();   // live anchor state (for the TRUNK status chip)
+
 	// ── Registrar mode (STAGE 2) ──────────────────────────────────────────────────
 	// Runtime registrar policy, replacing the compile-time POCKETDIAL_OPEN_REGISTRAR
 	// gate. NVS-persisted (namespace "pbxcfg", key "reg_mode"); the compile-time
@@ -338,6 +355,11 @@ private:
 		const std::string& activeIp,
 		const std::string& toTag,
 		const char* logPrefix);
+	// Route an INVITE out the WAN anchor (3CX/loopback). `dialed` is the number
+	// handed to the trunk — the 9-prefix is already stripped by the dial plan.
+	void routeAnchorCall(const std::shared_ptr<SipMessage>& data,
+	                     const std::shared_ptr<SipClient>& caller,
+	                     const std::string& dialed);
 	void asyncMakeCall(const std::string& destination, const std::string& callId, const std::string& callerNumber);
 	void asyncDropCall(const std::string& participantId);
 
@@ -356,6 +378,11 @@ private:
 	// the previous detached thread captured `this` and outlived the handler in
 	// unit tests, segfaulting the suite nondeterministically.
 	std::thread _anchorStartThread;
+	// asyncMakeCall/asyncDropCall workers (host builds). Same lifetime rule as
+	// _anchorStartThread: they capture `this`, so they must be joined in the
+	// destructor — never detached.
+	std::mutex _anchorWorkMutex;
+	std::vector<std::thread> _anchorWorkThreads;
 #endif
 
 	// RequestsHandler.hpp: Issues #24 and #28 resolved.
@@ -477,6 +504,7 @@ private:
 	// store); on ESP they read/write the "pbxcfg" NVS namespace. Caller holds _mutex.
 	void loadPbxConfig();                 // boot-time reload into the maps
 	void loadThreeCxConfig();             // boot-time reload of 3CX settings
+	TrunkConfig _trunkCfg;                // last-loaded/saved trunk config (under _mutex)
 	void persistForwards();               // write-through after a setForward mutation
 	void persistRingGroups();             // write-through after a setRingGroup mutation
 	bool _pbxConfigLoaded = false;

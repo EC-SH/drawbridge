@@ -111,6 +111,20 @@ RequestsHandler::~RequestsHandler()
 	{
 		_anchorStartThread.join();
 	}
+	{
+		std::vector<std::thread> workers;
+		{
+			std::lock_guard<std::mutex> lock(_anchorWorkMutex);
+			workers = std::move(_anchorWorkThreads);
+		}
+		for (auto& t : workers)
+		{
+			if (t.joinable())
+			{
+				t.join();
+			}
+		}
+	}
 #endif
 	// Stop the anchor BEFORE member destruction begins: the loopback client's
 	// simulation threads call back into this handler (locking _mutex, touching
@@ -723,54 +737,26 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	// Dial plan: a leading '9' is the explicit trunk-access prefix. "101" rings
+	// LAN extension 101; "9101" strips the 9 and places 101 via the WAN anchor
+	// (3CX call-control API) — even if a local "9101" could exist. Checked before
+	// the registrar lookup so the prefix always means "go out the trunk".
+	if (destNumber.size() >= 2 && destNumber[0] == '9' &&
+	    _anchorClient && _anchorClient->isConnected())
+	{
+		routeAnchorCall(data, caller.value(), destNumber.substr(1));
+		return;
+	}
+
 	// Check if the called is registered
 	auto called = findClient(data->getToNumber());
 	if (!called.has_value())
 	{
-		// Outbound WAN call via 3CX Media Anchor
+		// Outbound WAN call via 3CX Media Anchor (legacy fallback: an unregistered
+		// destination without the 9-prefix still tries the trunk when one is up).
 		if (_anchorClient && _anchorClient->isConnected())
 		{
-			// Check if we already have an active external call/bridge
-			if (_mediaBridge.isActive())
-			{
-				std::shared_ptr<SipMessage> responseObj = getMessageFromPool(data->toString(), data->getSource());
-				responseObj->setHeader("SIP/2.0 486 Busy Here");
-				responseObj->clearBody();
-				responseObj->setContact(buildContact(caller.value()->getNumber()));
-				endHandle(data->getFromNumber(), responseObj);
-				return;
-			}
-
-			// Allocate session
-			auto newSession = allocateSession(std::string(data->getCallID()), caller.value());
-			if (!newSession)
-			{
-				std::shared_ptr<SipMessage> responseObj = getMessageFromPool(data->toString(), data->getSource());
-				responseObj->setHeader("SIP/2.0 503 Service Unavailable");
-				responseObj->clearBody();
-				responseObj->setContact(buildContact(caller.value()->getNumber()));
-				endHandle(data->getFromNumber(), responseObj);
-				return;
-			}
-
-			auto virtualClient = std::make_shared<SipClient>(destNumber, data->getSource(), 3600);
-			newSession->setDest(virtualClient);
-			newSession->setInviteMessage(data);
-			newSession->setState(Session::State::Invited);
-			newSession->setAnchor(true); // mark as WAN-anchor session — see Session::isAnchor()
-			_sessions.emplace(data->getCallID(), newSession);
-
-			// Send "180 Ringing" back to the handset. Generate the dialog To-tag ONCE
-			// here and store it on the session; the 200 OK (sent later from the 3CX
-			// Answered callback) MUST reuse this exact tag, or Yealink-class phones
-			// treat the 200 as a foreign dialog and never leave the ringing state.
-			std::string localTag = IDGen::GenerateID(9);
-			newSession->setLocalTag(localTag);
-			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-			sendRinging(data, activeIp, localTag, "[3CX]");
-
-			// Trigger outbound 3CX call asynchronously to avoid blocking the main SIP thread
-			asyncMakeCall(destNumber, std::string(data->getCallID()), caller.value()->getNumber());
+			routeAnchorCall(data, caller.value(), destNumber);
 			return;
 		}
 
@@ -3922,9 +3908,12 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			// Reroute to extension 777 (echo loopback) so the caller hears tones.
 			// Find the active session for this Call-ID and redirect its RTP to 777.
 			auto session = getSession(callId);
+			if (session.has_value())
+			{
 				auto virtualClient = std::make_shared<SipClient>("777", session.value()->getSrc()
 					? session.value()->getSrc()->getAddress() : sockaddr_in{}, 3600);
 				session.value()->setDest(virtualClient);
+			}
 		}
 		else
 		{
@@ -3976,6 +3965,57 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 		}
 		// else: keep accumulating (target not yet 4 digits)
 	}
+}
+
+RequestsHandler::TrunkConfig RequestsHandler::getTrunkConfig()
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _trunkCfg;
+}
+
+bool RequestsHandler::isTrunkConnected()
+{
+	// AnchorClient::isConnected() takes no RequestsHandler lock; safe off-thread.
+	return _anchorClient && _anchorClient->isConnected();
+}
+
+std::string RequestsHandler::setTrunkConfig(const TrunkConfig& cfg)
+{
+	if (!cfg.useLoopback)
+	{
+		if (cfg.baseUrl.rfind("https://", 0) != 0)
+		{
+			return "Base URL must start with https://";
+		}
+		if (cfg.clientId.empty() || cfg.clientSecret.empty() || cfg.sourceDn.empty())
+		{
+			return "Client ID, secret and source DN are all required";
+		}
+	}
+
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open("storage", NVS_READWRITE, &h) != ESP_OK)
+	{
+		return "NVS open failed";
+	}
+	bool ok = nvs_set_str(h, "3cx_base_url", cfg.baseUrl.c_str()) == ESP_OK &&
+	          nvs_set_str(h, "3cx_client_id", cfg.clientId.c_str()) == ESP_OK &&
+	          nvs_set_str(h, "3cx_secret", cfg.clientSecret.c_str()) == ESP_OK &&
+	          nvs_set_str(h, "3cx_source_dn", cfg.sourceDn.c_str()) == ESP_OK &&
+	          nvs_set_u8(h, "3cx_loopback", cfg.useLoopback ? 1 : 0) == ESP_OK;
+	ok = ok && nvs_commit(h) == ESP_OK;
+	nvs_close(h);
+	if (!ok)
+	{
+		return "NVS write failed";
+	}
+#endif
+
+	std::lock_guard<std::mutex> lock(_mutex);
+	_trunkCfg = cfg;
+	queueLog("[3CX] Trunk config saved (applies on next reboot)");
+	return "";
 }
 
 void RequestsHandler::loadThreeCxConfig()
@@ -4031,6 +4071,14 @@ void RequestsHandler::loadThreeCxConfig()
 #else
 	useLoopback = 1;
 #endif
+
+	// Mirror what we loaded into the config snapshot the SSH trunk screen reads.
+	// Construction is single-threaded, so no lock is needed here.
+	_trunkCfg.baseUrl = baseUrl;
+	_trunkCfg.clientId = clientId;
+	_trunkCfg.clientSecret = clientSecret;
+	_trunkCfg.sourceDn = sourceDn;
+	_trunkCfg.useLoopback = (useLoopback != 0);
 
 	_threeCxClient.init(baseUrl, clientId, clientSecret, sourceDn);
 	_loopbackClient.init(baseUrl, clientId, clientSecret, sourceDn);
@@ -4282,6 +4330,53 @@ void RequestsHandler::sendRinging(
 	_outbox.emplace_back(data->getSource(), std::move(ringing));
 }
 
+void RequestsHandler::routeAnchorCall(const std::shared_ptr<SipMessage>& data,
+                                      const std::shared_ptr<SipClient>& caller,
+                                      const std::string& dialed)
+{
+	// Check if we already have an active external call/bridge
+	if (_mediaBridge.isActive())
+	{
+		std::shared_ptr<SipMessage> responseObj = getMessageFromPool(data->toString(), data->getSource());
+		responseObj->setHeader("SIP/2.0 486 Busy Here");
+		responseObj->clearBody();
+		responseObj->setContact(buildContact(caller->getNumber()));
+		endHandle(data->getFromNumber(), responseObj);
+		return;
+	}
+
+	// Allocate session
+	auto newSession = allocateSession(std::string(data->getCallID()), caller);
+	if (!newSession)
+	{
+		std::shared_ptr<SipMessage> responseObj = getMessageFromPool(data->toString(), data->getSource());
+		responseObj->setHeader("SIP/2.0 503 Service Unavailable");
+		responseObj->clearBody();
+		responseObj->setContact(buildContact(caller->getNumber()));
+		endHandle(data->getFromNumber(), responseObj);
+		return;
+	}
+
+	auto virtualClient = std::make_shared<SipClient>(dialed, data->getSource(), 3600);
+	newSession->setDest(virtualClient);
+	newSession->setInviteMessage(data);
+	newSession->setState(Session::State::Invited);
+	newSession->setAnchor(true); // mark as WAN-anchor session — see Session::isAnchor()
+	_sessions.emplace(data->getCallID(), newSession);
+
+	// Send "180 Ringing" back to the handset. Generate the dialog To-tag ONCE
+	// here and store it on the session; the 200 OK (sent later from the 3CX
+	// Answered callback) MUST reuse this exact tag, or Yealink-class phones
+	// treat the 200 as a foreign dialog and never leave the ringing state.
+	std::string localTag = IDGen::GenerateID(9);
+	newSession->setLocalTag(localTag);
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	sendRinging(data, activeIp, localTag, "[3CX]");
+
+	// Trigger outbound 3CX call asynchronously to avoid blocking the main SIP thread
+	asyncMakeCall(dialed, std::string(data->getCallID()), caller->getNumber());
+}
+
 void RequestsHandler::asyncMakeCall(const std::string& destination, const std::string& callId, const std::string& callerNumber)
 {
 	if (!_anchorClient) return;
@@ -4312,7 +4407,7 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		// 12288: makeCall is a TLS HTTPS round trip — same overflow as 3cx_start.
 	}, "3cx_makecall", 12288, arg, 5, NULL);
 #else
-	std::thread([this, destination, callId, callerNumber]() {
+	std::thread worker([this, destination, callId, callerNumber]() {
 		if (!_anchorClient->makeCall(destination))
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
@@ -4324,7 +4419,11 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 			std::lock_guard<std::mutex> lock(_mutex);
 			queueLog("[3CX] Initiating outbound call to " + destination);
 		}
-	}).detach();
+	});
+	{
+		std::lock_guard<std::mutex> lock(_anchorWorkMutex);
+		_anchorWorkThreads.push_back(std::move(worker));
+	}
 #endif
 }
 
@@ -4346,9 +4445,13 @@ void RequestsHandler::asyncDropCall(const std::string& participantId)
 		// 12288: dropCall is a TLS HTTPS round trip — same overflow as 3cx_start.
 	}, "3cx_dropcall", 12288, arg, 5, NULL);
 #else
-	std::thread([this, participantId]() {
+	std::thread worker([this, participantId]() {
 		_anchorClient->dropCall(participantId);
-	}).detach();
+	});
+	{
+		std::lock_guard<std::mutex> lock(_anchorWorkMutex);
+		_anchorWorkThreads.push_back(std::move(worker));
+	}
 #endif
 }
 

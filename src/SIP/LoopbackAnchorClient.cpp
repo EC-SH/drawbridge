@@ -36,6 +36,18 @@ void LoopbackAnchorClient::stop()
 	_connected = false;
 	_stopSimThread = true;
 	g_activeCallId++;
+	reapSimThreads();
+	std::lock_guard<std::mutex> lock(_mutex);
+	_eventCb = nullptr;
+	_audioCb = nullptr;
+}
+
+void LoopbackAnchorClient::reapSimThreads()
+{
+	// Join the previous call's simulation threads so _simThreads doesn't grow
+	// unboundedly on a long-running instance. Callers bump g_activeCallId first,
+	// so every outstanding thread exits at its next checkpoint (≤ ~40ms). Joins
+	// happen outside _mutex — the sim threads lock it in their callbacks.
 	std::vector<std::thread> threadsToJoin;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
@@ -48,9 +60,6 @@ void LoopbackAnchorClient::stop()
 			t.join();
 		}
 	}
-	std::lock_guard<std::mutex> lock(_mutex);
-	_eventCb = nullptr;
-	_audioCb = nullptr;
 }
 
 bool LoopbackAnchorClient::isConnected() const
@@ -67,6 +76,7 @@ bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
 
 	_stopSimThread = true;
 	uint64_t myCallId = ++g_activeCallId;
+	reapSimThreads();
 	_stopSimThread = false;
 
 	{
@@ -126,6 +136,7 @@ bool LoopbackAnchorClient::dropCall(const std::string& participantId)
 
 	_stopSimThread = true;
 	g_activeCallId++;
+	reapSimThreads();
 
 	if (evCb)
 	{
