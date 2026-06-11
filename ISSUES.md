@@ -28,6 +28,12 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Severity**: Critical
 * **Description**: Wire the SIP state machine to the 3CX leg: intercept INVITEs on virtual extension blocks, negotiate `a=sendrecv` SDP, map SIP INVITE ➔ 3CX `makecall`, and bridge audio streams dynamically. Handle teardowns gracefully by mapping SIP BYE/CANCEL ↔ 3CX participant drops.
 
+#### 🔴 Issue #86: 3CX Anchor: Optimize WS Event Task Stack Size
+* **Status**: ⏳ Open / Planned
+* **Labels**: `performance`, `3cx`, `memory-safety`
+* **Severity**: Critical
+* **Description**: The WebSocket task stack is currently set to 16,384 bytes to accommodate blocking HTTP GET calls (like `getParticipantStatus`) executing directly inside the WebSocket callback thread. Move these blocking calls off the WebSocket thread by dispatching events asynchronously to an event loop/queue, allowing the task stack to shrink to ~4-6 KB.
+
 ---
 
 ### 🟡 High Priority: Platform Compatibility & Host Development
@@ -37,6 +43,12 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Labels**: `api-integration`, `media`, `desktop`
 * **Severity**: High
 * **Description**: Currently, the `RtpSender` socket and pacing are gated behind `#if ESP_PLATFORM`, leaving desktop builds with no-op stubs. Implement standard POSIX UDP socket writes and a platform-independent 20ms pacing loop to support audio bridging on desktop (Linux/Windows) gateway installations.
+
+#### 🟡 Issue #87: 3CX Anchor: Implement Desktop/Host Media Transport Support
+* **Status**: ⏳ Open / Planned
+* **Labels**: `api-integration`, `media`, `desktop`, `3cx`
+* **Severity**: High
+* **Description**: `ThreeCxAnchorClient` is currently completely stubbed out on host/desktop builds. Refactor the network socket, task, and HTTP/WebSocket client interfaces to use POSIX/Windows compatible headers (instead of `esp_websocket_client` / `esp_http_client`), allowing the 3CX gateway integration to be testable and runnable on local PCs.
 
 ---
 
@@ -75,6 +87,12 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Labels**: `build-system`, `compatibility`
 * **Severity**: Low
 * **Description**: Audit preprocessor directives (`ESP32`, `ARDUINO`, `ESP_PLATFORM`) to guarantee compiling out the box for hobbyists utilizing the Arduino IDE workspace instead of standard ESP-IDF.
+
+#### 🔵 Issue #88: 3CX Anchor: Compile-Gate Peak Amplitude Diagnostics on Hot Path
+* **Status**: ⏳ Open / Planned
+* **Labels**: `performance`, `3cx`
+* **Severity**: Low
+* **Description**: `writeAudio()` computes the peak amplitude of each PCM sample block. This runs on Core 1's real-time loop every 20ms. Compile-gate this diagnostic loop out in release builds (`#ifndef NDEBUG` or similar) to save CPU cycles on the hot path.
 
 ---
 
