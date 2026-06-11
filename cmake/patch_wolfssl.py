@@ -127,6 +127,22 @@ def apply_ptyreq_fixes(internal_c):
         '        }',
     )], "internal.c: GetStringRef 0-length string at buffer end",
         marker="pocket-dial B2a Fix5")
+    # Fix 6: live terminal resize. wolfSSH gates the "window-change" channel
+    # request behind WOLFSSH_SHELL && WOLFSSH_TERM, but neither build defines
+    # WOLFSSH_SHELL (we have no shell — the TUI is the session), so a client
+    # resize never updated ssh->widthChar/heightRows. The handler itself only
+    # needs WOLFSSH_TERM (it touches the same fields the pty-req handler does),
+    # so relax the guard. The matching #endif comment is left as-is (harmless).
+    ok &= patch_file(internal_c, [(
+        '        #if defined(WOLFSSH_SHELL) && defined(WOLFSSH_TERM)\n'
+        '        else if (WSTRNCMP(type, "window-change", typeSz) == 0) {',
+        '        /* pocket-dial Fix6: window-change needs only WOLFSSH_TERM (it updates\n'
+        '         * widthChar/heightRows like pty-req does); WOLFSSH_SHELL is unrelated\n'
+        '         * and never defined in our builds, so the guard ate live resizes. */\n'
+        '        #if defined(WOLFSSH_TERM)\n'
+        '        else if (WSTRNCMP(type, "window-change", typeSz) == 0) {',
+    )], "internal.c: window-change without WOLFSSH_SHELL",
+        marker="pocket-dial Fix6")
     return ok
 
 

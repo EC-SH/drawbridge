@@ -33,6 +33,9 @@ struct Harness {
             s.extCount = 12; s.maxExt = 32;
             s.uptimeSec = 4 * 3600 + 2 * 60 + 17;  // 04:02:17
             s.apMode = true;
+            // Provisioned: the banner routes to the HUB (the unprovisioned
+            // first-run routing has its own dedicated tests below).
+            s.provisioned = true;
             return s;
         });
         // A fixed monitor snapshot: one active call (101 → 102), one ringing
@@ -134,6 +137,16 @@ struct Harness {
         tui.setDeviceForgetter([this](const std::string& macOrExt) -> bool {
             lastForgetTarget = macOrExt; ++forgetCalls; return true;
         });
+        // [3]/TRUNK snapshot + apply capture. A mutable TrunkInfo so tests can
+        // flip loopback/connected; the setter records its last call.
+        tui.setTrunkProvider([this] { return trunkInfo; });
+        tui.setTrunkSetter([this](const std::string& url, const std::string& id,
+                                  const std::string& secret, const std::string& dn,
+                                  bool loopback) -> std::string {
+            lastTrkUrl = url; lastTrkId = id; lastTrkSecret = secret;
+            lastTrkDn = dn; lastTrkLoopback = loopback; ++trkCalls;
+            return trkError;   // "" by default; tests may inject an error
+        });
         tui.setUnicode(unicode);
         tui.setColor(color);
     }
@@ -149,6 +162,21 @@ struct Harness {
     Tui::RegMode lastRegMode = Tui::RegMode::Open;
     std::string  lastSecretExt, lastSecret, lastSecureTarget, lastForgetTarget;
     int regModeCalls = 0, secretCalls = 0, secureCalls = 0, forgetCalls = 0;
+
+    // [3]/TRUNK capture. Defaults: a stored loopback config with a secret set.
+    Tui::TrunkInfo trunkInfo = [] {
+        Tui::TrunkInfo t;
+        t.baseUrl = "https://pbx.example.com:5001";
+        t.clientId = "pd-client";
+        t.sourceDn = "900";
+        t.secretSet = true;
+        t.useLoopback = true;
+        t.connected = false;
+        return t;
+    }();
+    std::string lastTrkUrl, lastTrkId, lastTrkSecret, lastTrkDn, trkError;
+    bool lastTrkLoopback = true;
+    int  trkCalls = 0;
 
     void clear() { out.clear(); }
     // Drive the banner past its "press any key" greeting into the hub.
@@ -203,12 +231,15 @@ std::string stripSgr(const std::string& s) {
 TEST(Tui, BannerContainsNameplateAndDescriptor) {
     Harness h;
     h.tui.begin();   // draws the banner
-    // The FIGlet nameplate's last art row is unmistakable, and the descriptor line
-    // carries SYSOP TERMINAL + the single-board SIP PBX sub-line.
-    EXPECT_NE(h.out.find("|_|    \\___/ \\____|"), std::string::npos);
+    // The DRAWBRIDGE FIGlet nameplate's last art row is unmistakable, and the
+    // descriptor block carries SYSOP TERMINAL + the brand tagline.
+    EXPECT_NE(h.out.find("|____/|_| \\_\\/_/"), std::string::npos);
     EXPECT_NE(h.out.find("S Y S O P   T E R M I N A L"), std::string::npos);
     EXPECT_NE(h.out.find("single-board SIP PBX"), std::string::npos);
+    EXPECT_NE(h.out.find("an ENGAGE product"), std::string::npos);
     EXPECT_NE(h.out.find("Authorized sysops only"), std::string::npos);
+    // The old brand is gone from the banner.
+    EXPECT_EQ(h.out.find("POCKET-DIAL"), std::string::npos);
 }
 
 TEST(Tui, BannerMonoTierEmitsNoColor) {
@@ -577,11 +608,13 @@ TEST(Tui, PbxTabSwitchingCyclesTabs) {
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Forwards);
     h.tui.feedByte('\t'); h.tui.feedByte('\t');   // → IVR → Features
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Features);
+    h.tui.feedByte('\t');   // → TRUNK (the sixth tab)
+    EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Trunk);
     h.tui.feedByte('\t');   // wraps → Extensions
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Extensions);
-    // Left arrow wraps backward to Features.
+    // Left arrow wraps backward to TRUNK.
     h.tui.feed("\x1b[D", 3);
-    EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Features);
+    EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Trunk);
 }
 
 TEST(Tui, PbxFeaturesTabListsOnlyRealStarCodes) {
@@ -712,7 +745,7 @@ TEST(Tui, PbxConfigMonoTierEmitsNoColor) {
     h.toHub();
     h.tui.feedByte('3');
     // Walk every tab in the mono tier — none may emit colour SGR.
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         EXPECT_FALSE(hasColorSgr(h.out)) << "PBX tab " << i << " emitted color";
         h.clear();
         h.tui.feedByte('\t');
@@ -887,4 +920,276 @@ TEST(Tui, PbxExtensionsSecretActionOpensModal) {
     EXPECT_EQ(h.secretCalls, 1);
     EXPECT_EQ(h.lastSecretExt, "101");
     EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxConfig);
+}
+
+// ── Branding (DRAWBRIDGE rebrand) ─────────────────────────────────────────────
+
+TEST(Tui, TitleBarCarriesDrawbridgeBrand) {
+    Harness h;
+    h.toHub();
+    EXPECT_NE(h.out.find("DRAWBRIDGE v3.0"), std::string::npos);
+    EXPECT_EQ(h.out.find("POCKET-DIAL"), std::string::npos);
+}
+
+TEST(Tui, AboutCarriesDrawbridgeBrandAndTagline) {
+    Harness h;
+    h.toHub();
+    h.clear();
+    h.tui.feedByte('6');
+    const std::string vis = stripSgr(h.out);
+    EXPECT_NE(vis.find("DRAWBRIDGE"), std::string::npos);
+    EXPECT_NE(vis.find("an ENGAGE product"), std::string::npos);
+    EXPECT_EQ(vis.find("POCKET-DIAL"), std::string::npos);
+}
+
+// ── Terminal-size scaling + redraw() ──────────────────────────────────────────
+
+// At a larger pty the frame derives from fcols()/frows(): the mono-tier top rule
+// is '+' + (cols-2) '-' + '+', so a 100-col terminal must emit a 98-dash rule and
+// never the 78-dash one. redraw() repaints the CURRENT screen without state change.
+TEST(Tui, SetSizeScalesFrameAndRedrawRepaints) {
+    Harness h(/*unicode=*/false, /*color=*/false);
+    h.toHub();
+    EXPECT_NE(h.out.find("+" + std::string(78, '-') + "+"), std::string::npos);
+    h.tui.setSize(100, 30);
+    h.clear();
+    h.tui.redraw();
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Hub);          // state untouched
+    EXPECT_NE(h.out.find("+" + std::string(98, '-') + "+"), std::string::npos);
+    EXPECT_EQ(h.out.find("+" + std::string(78, '-') + "+"), std::string::npos);
+    // Taller terminal → taller body: the monitor grows its channel matrix
+    // (4 + (30-24) = 10 channels), so a CH 5 row exists only when tall.
+    h.clear();
+    h.tui.feedByte('1');                                   // monitor
+    EXPECT_NE(h.out.find(" 5  "), std::string::npos);      // CH 5 row exists
+    // Geometry clamps: undersized ptys floor at 80x24 (identical to default).
+    h.tui.setSize(40, 10);
+    h.clear();
+    h.tui.redraw();
+    EXPECT_NE(h.out.find("+" + std::string(78, '-') + "+"), std::string::npos);
+}
+
+// ── [3]/TRUNK tab ─────────────────────────────────────────────────────────────
+
+TEST(Tui, TrunkTabShowsConfigAndNeverTheSecret) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('3');
+    h.clear();
+    h.tui.feed("\x1b[D", 3);   // Left from Extensions wraps to TRUNK
+    EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Trunk);
+    const std::string vis = stripSgr(h.out);
+    // Status lexicon: the default snapshot is loopback -> the LOOPBACK MOCK chip.
+    EXPECT_NE(vis.find("LOOPBACK MOCK"), std::string::npos);
+    EXPECT_NE(vis.find("https://pbx.example.com:5001"), std::string::npos);
+    EXPECT_NE(vis.find("pd-client"), std::string::npos);
+    EXPECT_NE(vis.find("900"), std::string::npos);
+    // The secret renders as the SET chip only — never a value.
+    EXPECT_NE(vis.find("SET"), std::string::npos);
+    // The dial-plan explainer is present.
+    EXPECT_NE(vis.find("9<number> goes out"), std::string::npos);
+    EXPECT_NE(vis.find("dial-9 = PSTN access"), std::string::npos);
+}
+
+TEST(Tui, TrunkStatusChipReflectsLiveAndDown) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('3');
+    // LIVE + connected -> the LIVE TRUNK chip.
+    h.trunkInfo.useLoopback = false;
+    h.trunkInfo.connected = true;
+    h.clear();
+    h.tui.feed("\x1b[D", 3);   // wrap to TRUNK (renders with the new snapshot)
+    EXPECT_NE(stripSgr(h.out).find("LIVE TRUNK"), std::string::npos);
+    // LIVE + not connected -> the DOWN chip.
+    h.trunkInfo.connected = false;
+    h.clear();
+    h.tui.feed("\x0c", 1);     // Ctrl-L redraw
+    EXPECT_NE(stripSgr(h.out).find("DOWN"), std::string::npos);
+}
+
+TEST(Tui, TrunkEditorNeverEchoesSecretAndApplies) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('3');
+    h.tui.feed("\x1b[D", 3);   // -> TRUNK
+    h.tui.feedByte('E');       // open the editor
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxTrunkEdit);
+    // Focus order: URL -> ID -> Secret -> DN -> mode -> buttons. Move to Secret.
+    h.tui.feedByte('\t'); h.tui.feedByte('\t');
+    h.clear();
+    for (char c : {'t','0','p','s','3','c'}) h.tui.feedByte(c);
+    EXPECT_EQ(h.out.find("t0ps3c"), std::string::npos);   // bullets only
+    // Move to the mode radio and flip to LIVE.
+    h.tui.feedByte('\t'); h.tui.feedByte('\t');
+    h.tui.feed("\x1b[C", 3);   // Right -> LIVE
+    // Apply.
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.trkCalls, 1);
+    EXPECT_EQ(h.lastTrkUrl, "https://pbx.example.com:5001");  // seeded from snapshot
+    EXPECT_EQ(h.lastTrkId, "pd-client");
+    EXPECT_EQ(h.lastTrkSecret, "t0ps3c");
+    EXPECT_EQ(h.lastTrkDn, "900");
+    EXPECT_FALSE(h.lastTrkLoopback);
+    // Success returns to the TRUNK tab with the reboot note.
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxConfig);
+    EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Trunk);
+    EXPECT_NE(stripSgr(h.out).find("applies on next reboot"), std::string::npos);
+}
+
+TEST(Tui, TrunkEditorEmptySecretMeansKeepExisting) {
+    Harness h;
+    h.toHub();
+    h.tui.feedByte('3');
+    h.tui.feed("\x1b[D", 3);
+    h.tui.feedByte('E');
+    // Apply immediately: the untouched secret field passes through EMPTY — the
+    // wiring (SshServer) overlays "keep existing"; the Tui never invents one.
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.trkCalls, 1);
+    EXPECT_TRUE(h.lastTrkSecret.empty());
+    EXPECT_TRUE(h.lastTrkLoopback);   // unchanged mode
+}
+
+TEST(Tui, TrunkEditorGuardsLiveModeWithoutUrl) {
+    Harness h;
+    h.trunkInfo.baseUrl.clear();      // nothing stored yet
+    h.toHub();
+    h.tui.feedByte('3');
+    h.tui.feed("\x1b[D", 3);
+    h.tui.feedByte('E');
+    // Flip to LIVE with an empty URL -> guarded, no setter call.
+    for (int i = 0; i < 4; ++i) h.tui.feedByte('\t');   // -> mode radio
+    h.tui.feed("\x1b[C", 3);                             // Right -> LIVE
+    h.clear();
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxTrunkEdit);
+    EXPECT_EQ(h.trkCalls, 0);
+    EXPECT_NE(stripSgr(h.out).find("needs a Base URL"), std::string::npos);
+    // Esc cancels with no write.
+    h.tui.feedByte(0x1b); h.tui.feed("", 0);
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxConfig);
+    EXPECT_EQ(h.trkCalls, 0);
+}
+
+TEST(Tui, TrunkTabMonoTierEmitsNoColor) {
+    Harness h(/*unicode=*/false, /*color=*/false);
+    h.toHub();
+    h.tui.feedByte('3');
+    h.clear();
+    h.tui.feed("\x1b[D", 3);   // -> TRUNK
+    EXPECT_FALSE(hasColorSgr(h.out));
+    h.clear();
+    h.tui.feedByte('E');       // editor too
+    EXPECT_FALSE(hasColorSgr(h.out));
+}
+
+// ── FIRST RUN setup screen ────────────────────────────────────────────────────
+
+// An UNPROVISIONED harness: same fixtures, but the banner routes to FirstRun.
+struct UnprovHarness : Harness {
+    UnprovHarness() : Harness() {
+        tui.setStatsProvider([] {
+            Tui::LiveStats s;
+            s.online = 0; s.activeCalls = 0; s.maxCalls = 8;
+            s.uptimeSec = 60;
+            s.provisioned = false;            // <- the first-run branch
+            s.ip = "192.168.4.1"; s.netMode = 2;
+            return s;
+        });
+        tui.setSecurityProvider([] {
+            Tui::SecurityInfo s;
+            s.provisioned = false; s.sshEnabled = true;
+            return s;
+        });
+    }
+};
+
+TEST(Tui, UnprovisionedBannerRoutesToFirstRun) {
+    UnprovHarness h;
+    h.tui.begin();
+    h.clear();
+    h.tui.feedByte(' ');                      // any key
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::FirstRun);
+    const std::string vis = stripSgr(h.out);
+    EXPECT_NE(vis.find("FIRST RUN"), std::string::npos);
+    EXPECT_NE(vis.find("set up this device"), std::string::npos);
+    // The three numbered steps + the hub exit + the honest Esc hint.
+    EXPECT_NE(vis.find("[1] Set the admin PIN"), std::string::npos);
+    EXPECT_NE(vis.find("[2] Network"), std::string::npos);
+    EXPECT_NE(vis.find("[3] PSTN trunk"), std::string::npos);
+    EXPECT_NE(vis.find("[Enter] go to the hub"), std::string::npos);
+    EXPECT_NE(vis.find("Disconnecting is safe"), std::string::npos);
+}
+
+TEST(Tui, ProvisionedBannerStillRoutesToHub) {
+    Harness h;                                // provisioned fixture
+    h.tui.begin();
+    h.tui.feedByte(' ');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Hub);
+}
+
+TEST(Tui, FirstRunEscIsANoOp) {
+    UnprovHarness h;
+    h.tui.begin();
+    h.tui.feedByte(' ');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::FirstRun);
+    h.tui.feedByte(0x1b); h.tui.feed("", 0);  // bare Esc -> stays put
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::FirstRun);
+    EXPECT_TRUE(h.tui.running());
+}
+
+TEST(Tui, FirstRunStepOneOpensPinModalAndReturns) {
+    UnprovHarness h;
+    h.tui.setPinChanger([](const std::string&, const std::string&) {
+        return std::string("");
+    });
+    h.tui.begin();
+    h.tui.feedByte(' ');
+    h.tui.feedByte('1');                      // -> ChangePin modal
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::ChangePin);
+    // Esc returns to FIRST RUN (not Security).
+    h.tui.feedByte(0x1b); h.tui.feed("", 0);
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::FirstRun);
+    // Apply a valid PIN: also returns to FIRST RUN.
+    h.tui.feedByte('1');
+    h.tui.feedByte('\t');                     // skip Current (unprovisioned)
+    for (char c : {'1','2','3','4'}) h.tui.feedByte(c);
+    h.tui.feedByte('\t');
+    for (char c : {'1','2','3','4'}) h.tui.feedByte(c);
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::FirstRun);
+}
+
+TEST(Tui, FirstRunStepsRouteToNetworkAndTrunk) {
+    UnprovHarness h;
+    h.tui.begin();
+    h.tui.feedByte(' ');
+    h.tui.feedByte('2');                      // -> Network screen
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Network);
+    h.tui.feedByte(0x1b); h.tui.feed("", 0);  // Network Esc -> hub (existing flow)
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Hub);
+    // Back into first-run via a fresh banner pass: [3] lands on the TRUNK tab.
+    h.tui.begin();
+    h.tui.feedByte(' ');
+    h.tui.feedByte('3');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxConfig);
+    EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Trunk);
+    // [Enter] from first-run goes to the hub.
+    h.tui.feedByte(0x1b); h.tui.feed("", 0);  // PBX Esc -> hub
+    h.tui.begin();
+    h.tui.feedByte(' ');
+    h.tui.feedByte('\r');
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Hub);
+}
+
+TEST(Tui, FirstRunMonoTierEmitsNoColor) {
+    UnprovHarness h;
+    h.tui.setUnicode(false);
+    h.tui.setColor(false);
+    h.tui.begin();
+    h.clear();
+    h.tui.feedByte(' ');
+    EXPECT_FALSE(hasColorSgr(h.out));
+    EXPECT_NE(h.out.find("FIRST RUN"), std::string::npos);
 }

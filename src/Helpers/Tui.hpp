@@ -228,6 +228,21 @@ public:
         int      heapUsedPct = 0;      // real heap used % ([6] ABOUT vitals)
     };
 
+    // ── [3]/TRUNK — PSTN trunk config surface ─────────────────────────────────
+    // A display-safe flattening of the SIP-side TrunkConfig: the secret itself is
+    // NEVER carried here (only the fact one is stored), so the renderer cannot
+    // echo it even by accident. `connected` is the live anchor state; `useLoopback`
+    // selects the mock loopback anchor (no PSTN) vs the live trunk.
+    struct TrunkInfo
+    {
+        std::string baseUrl;          // https://pbx.example.com:5001 ("" = unset)
+        std::string clientId;         // trunk API client id ("" = unset)
+        std::string sourceDn;         // the DN the device originates calls as
+        bool secretSet   = false;     // a client secret is stored (◆ SET / · none)
+        bool useLoopback = true;      // true = loopback mock anchor (no PSTN)
+        bool connected   = false;     // live anchor connection state
+    };
+
     using WriteFn    = std::function<void(const char*, size_t)>;
     using StatsFn    = std::function<LiveStats()>;
     using MonitorFn  = std::function<MonitorSnapshot()>;
@@ -282,6 +297,19 @@ public:
     // on success. Wired to RequestsHandler::forgetDevice. Host stub returns false.
     using DeviceForgetFn = std::function<bool(const std::string& macOrExt)>;
 
+    // ── [3]/TRUNK providers + apply (mirrors the PbxConfigFn/RingGroupSetFn pattern) ─
+    // Snapshot the Trunk tab reads. Absent → an honest "(unset)" loopback panel.
+    using TrunkFn = std::function<TrunkInfo()>;
+    // Apply the trunk editor: (baseUrl, clientId, secret, sourceDn, useLoopback).
+    // An EMPTY secret means "keep the existing secret" (the wiring overlays it onto
+    // the stored config). Returns "" on success ("applies on next reboot") or a
+    // short operator-terse error to show inline.
+    using TrunkSetFn = std::function<std::string(const std::string& baseUrl,
+                                                 const std::string& clientId,
+                                                 const std::string& secret,
+                                                 const std::string& sourceDn,
+                                                 bool useLoopback)>;
+
     Tui() = default;
 
     // Wire the byte sink (transport send). Required before begin().
@@ -328,11 +356,22 @@ public:
     void setDeviceSecurer(DeviceSecureFn d) { _deviceSecure = std::move(d); }
     // Wire the forget-device action ([4]/[D]/[F], guarded). Optional; absent → no-op.
     void setDeviceForgetter(DeviceForgetFn d) { _deviceForget = std::move(d); }
+    // Wire the [3]/TRUNK snapshot source. Optional; absent → an honest unset panel.
+    void setTrunkProvider(TrunkFn t) { _trunk = std::move(t); }
+    // Wire the [3]/TRUNK editor apply. Optional; absent → the editor reports
+    // "not available on this build" instead of mutating anything.
+    void setTrunkSetter(TrunkSetFn t) { _trunkSet = std::move(t); }
 
     // Terminal geometry from the pty-req (SshServer::terminalCols/Rows). The
-    // renderer is authored at the 80×24 floor; larger terminals are letterboxed
-    // (content stays 80 wide, centered chrome). cols/rows of 0 → 80×24 default.
+    // renderer is authored at the 80×24 floor and SCALES UP with the pty: the
+    // frame derives from fcols()/frows() (clamped 80–132 × 24–50), so a larger
+    // terminal gets a wider frame and a taller body. cols/rows of 0 → 80×24.
     void setSize(uint16_t cols, uint16_t rows);
+
+    // Re-render the CURRENT screen (clear + full draw) without changing any state.
+    // Called by the transport after a live resize (window-change) so the frame
+    // re-fits the new geometry. Safe on any screen, including modals.
+    void redraw();
 
     // Rendering tiers (renderer contract, tui-style §6.1):
     //   unicode=true  → box-drawing + status glyphs;  false → ASCII fallback map.
@@ -395,12 +434,16 @@ public:
         //   RegModePick     — [4]/[D]/[M] registrar mode chooser (Standalone/Learn/New)
         //   SecretEntry     — [4]/[D]/[A] + Extensions [S] never-echoed secret modal
         //   DeviceForget    — [4]/[D]/[F] guarded forget-device confirm
-        Devices, RegModePick, SecretEntry, DeviceForget
+        Devices, RegModePick, SecretEntry, DeviceForget,
+        // TRUNK + first-run:
+        //   PbxTrunkEdit — [3]/TRUNK [E] editor modal (never-echoed secret)
+        //   FirstRun     — unprovisioned banner routes here: numbered setup steps
+        PbxTrunkEdit, FirstRun
     };
 
     // The active PBX tab (tui-style §2.5 tab strip). Public so host tests can assert
     // tab switching without reaching into private state.
-    enum class PbxTab { Extensions, RingGroups, Forwards, Ivr, Features };
+    enum class PbxTab { Extensions, RingGroups, Forwards, Ivr, Features, Trunk };
     PbxTab pbxTab() const { return _pbxTab; }
     Screen screen() const { return _screen; }
     // True while the monitor's 1 Hz repaint is frozen ([F]); test/observability hook.
@@ -413,6 +456,27 @@ public:
     static int dispWidth(const std::string& s);
 
 private:
+    // ── Frame geometry (derived from the pty size; 80×24 is the floor) ────────
+    // fcols()/frows() clamp the pty geometry to the supported envelope; every
+    // frame/pad calculation routes through them so a resize re-fits the spine.
+    int fcols() const
+    {
+        int c = _cols ? _cols : 80;
+        if (c < 80) c = 80;
+        if (c > 132) c = 132;
+        return c;
+    }
+    int frows() const
+    {
+        int r = _rows ? _rows : 24;
+        if (r < 24) r = 24;
+        if (r > 50) r = 50;
+        return r;
+    }
+    // The body-row budget between the 3-row title spine and the 3-row footer.
+    // 18 at the 80×24 floor; grows row-for-row with a taller terminal.
+    int bodyRows() const { return frows() - 6; }
+
     // ── ANSI primitives (emit through _write; honor _color) ──────────────────
     void put(const char* s);
     void put(const std::string& s);
@@ -498,6 +562,9 @@ private:
     void renderPbxForwards(int& bodyUsed);    // Forwards/DND tab body (§3.7)
     void renderPbxIvr(int& bodyUsed);         // IVR tab body (§3.8)
     void renderPbxFeatures(int& bodyUsed);    // Features tab body (§3.9)
+    void renderPbxTrunk(int& bodyUsed);       // TRUNK tab body (PSTN trunk config)
+    void renderPbxTrunkEdit();                // [3]/TRUNK [E] editor modal
+    void renderFirstRun();                    // first-boot setup checklist screen
     void renderPbxAddMenu();              // §3.5.1 single|range submenu
     void renderPbxAddSingle();            // §3.5.2 add-single form (honest stub)
     void renderPbxAddRange();             // §3.5.3 range-batch form (honest stub)
@@ -544,6 +611,8 @@ private:
     void onKeyPbxForwardEdit(Key k, unsigned char ch);
     void onKeyPbxForwardPick(Key k, unsigned char ch);
     void onKeyPbxIvrEdit(Key k, unsigned char ch);
+    void onKeyPbxTrunkEdit(Key k, unsigned char ch);
+    void onKeyFirstRun(Key k, unsigned char ch);
 
     void gotoScreen(Screen s);
     void toggleTheme();
@@ -553,6 +622,7 @@ private:
     SecurityInfo    security() const;     // call provider or return safe defaults
     PbxConfigSnapshot pbxConfig() const;  // call provider or return an empty panel
     RegistrarInfo   registrar() const;    // call provider or return Open + empty list
+    TrunkInfo       trunk() const;        // call provider or return an unset loopback
 
     // Build the forward-target picker list (every registered extension) plus the
     // trailing "(clear this forward)" option, from the current snapshot. Each entry
@@ -592,6 +662,9 @@ private:
     SecretSetFn    _secretSet;
     DeviceSecureFn _deviceSecure;
     DeviceForgetFn _deviceForget;
+    // [3]/TRUNK wiring.
+    TrunkFn        _trunk;
+    TrunkSetFn     _trunkSet;
     bool     _running   = false;
     bool     _unicode   = true;
     bool     _color     = true;
@@ -638,7 +711,9 @@ private:
     bool _reportsEventLog = false;   // false = Recent Calls, true = Event Log
     int  _cdrSel = 0;
     int  _cdrTop = 0;
-    static constexpr int kCdrRows = 8;   // CDR rows visible in the body at once
+    // CDR rows visible in the body at once: 8 at the 24-row floor, growing
+    // row-for-row with a taller terminal (the body budget grows the same way).
+    int  cdrRows() const { return 8 + (frows() - 24); }
 
     // ── [4] SECURITY · Change-PIN modal ([P]) state (§3.10.1) ────────────────
     // Three never-echoed fields (current / new / confirm). `_pinField` is the
@@ -648,6 +723,9 @@ private:
     int         _pinField = 0;
     std::string _pinCur, _pinNew, _pinConf;
     std::string _pinMsg;             // inline result/validation line ("" = none)
+    // Screen to return to after the ChangePin modal closes: Security normally,
+    // FirstRun when opened from the first-run checklist ([1] set the admin PIN).
+    Screen      _pinReturn = Screen::Security;
 
     // ── Factory-reset DOUBLE-confirm step ([4]/[X]) ──────────────────────────
     // 0 = first confirm pending, 1 = first passed → second (final) confirm pending.
@@ -661,7 +739,9 @@ private:
     PbxTab _pbxTab = PbxTab::Extensions;
     int    _pbxSel = 0;
     int    _pbxTop = 0;
-    static constexpr int kPbxRows = 8;   // table rows visible in the body at once
+    // Table rows visible in the body at once: 8 at the 24-row floor, growing
+    // with the terminal height like cdrRows().
+    int    pbxRows() const { return 8 + (frows() - 24); }
     // The screen to return to after a modal closes (always PbxConfig today; kept
     // explicit so a future cross-link entry point can set a different origin).
     Screen _pbxReturn = Screen::PbxConfig;
@@ -725,9 +805,10 @@ private:
     // _grpDelName). `_devMsg` is the inline result line on the Devices screen.
     int         _devSel = 0;
     int         _devTop = 0;
-    static constexpr int kDevRows = 7;   // device rows visible in the body at once
-                                         // (7, so the always-reserved result row keeps
-                                         //  renderDevices within the 18-row body budget)
+    // Device rows visible in the body at once: 7 at the 24-row floor (so the
+    // always-reserved result row keeps renderDevices within the body budget),
+    // growing with the terminal height like cdrRows().
+    int         devRows() const { return 7 + (frows() - 24); }
     int         _regPickSel = 0;
     std::string _devForgetTarget;        // MAC pinned at [F] time
     std::string _devForgetExt;           // its extension (for the confirm copy)
@@ -744,4 +825,17 @@ private:
     // Secret-entry bounds (operator-set passwords; the store also validates).
     static constexpr size_t kSecretMin = 6;
     static constexpr size_t kSecretMax = 32;
+
+    // ── [3]/TRUNK editor state (PbxTrunkEdit modal) ───────────────────────────
+    // `_trkFocus`: 0=Base URL 1=Client ID 2=Secret 3=Source DN 4=mode radio
+    // 5=buttons. The secret field is NEVER echoed (bullets only); leaving it
+    // empty means "keep the existing secret" — the wiring overlays it. `_trkMsg`
+    // is the inline guard/error line inside the modal; `_trkResult` is the
+    // result line shown back on the Trunk tab after a successful apply.
+    std::string _trkUrl, _trkId, _trkSecret, _trkDn;
+    bool        _trkLoopback = true;
+    int         _trkFocus = 0;
+    int         _trkBtn   = 0;       // 0 = Apply, 1 = Cancel (focus 5)
+    std::string _trkMsg;             // inline modal guard line ("" = none)
+    std::string _trkResult;          // Trunk tab result line ("" = none)
 };

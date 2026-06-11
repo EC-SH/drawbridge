@@ -22,8 +22,10 @@
 #include "nvs.h"          // nvs_open/set_u8 for the [2]/[M] wifi_mode switch
 #endif
 
-// ── Width constants (the 80×24 floor; brand §6.3 "80×24 is the floor") ────────
-static constexpr int kCols = 80;   // content frame width (cols 1..80)
+// ── Width (brand §6.3: "80×24 is the floor") ──────────────────────────────────
+// The frame width is no longer a file constant: every screen derives it from
+// fcols() (the pty width clamped to 80–132), so a wider terminal gets a wider
+// frame. At exactly 80 columns the output is identical to the historic fcols()=80.
 
 // CDR ring depth shown in the [5] REPORTS "n/32" headroom. Mirrors the SIP-side
 // POCKETDIAL_CDR_RECORDS default (CallDetailRecord.hpp) WITHOUT including that SIP
@@ -228,6 +230,12 @@ Tui::RegistrarInfo Tui::registrar() const
     return RegistrarInfo{};     // Open mode + empty device list (honest default)
 }
 
+Tui::TrunkInfo Tui::trunk() const
+{
+    if (_trunk) return _trunk();
+    return TrunkInfo{};         // unset loopback (an honest "(unset)" panel)
+}
+
 // Build the §3.7.2 forward-target list: every registered extension, then an
 // explicit "clear" sentinel. The tokens are what setForward() stores: a bare
 // extension or "" (clear). Ring groups are intentionally excluded — see the note
@@ -283,7 +291,7 @@ void Tui::setSize(uint16_t cols, uint16_t rows)
 // strlen() wrong). Used for centered body lines on the placeholder/confirm spine.
 void Tui::centerLine(const std::string& text, int vis)
 {
-    int pad = kCols - vis;
+    int pad = fcols() - vis;
     if (pad < 0) pad = 0;
     put(text);
     std::string sp(static_cast<size_t>(pad), ' ');
@@ -333,7 +341,7 @@ int Tui::dispWidth(const std::string& s)
 // ─────────────────────────────────────────────────────────────────────────────
 // Component: title bar (row 1) — the brand spine.  tui-style §2.1:
 //   ┌────────────────────────────────────────────────────────────────────┐
-//   │ POCKET-DIAL v3.0   [ MODE ]                              HH:MM:SS    │
+//   │ DRAWBRIDGE v3.0   [ MODE ]                              HH:MM:SS    │
 //   ├────────────────────────────────────────────────────────────────────┤
 // The clock is the only ⟳ live cell on this row. Content stays within 78 cols
 // with a frame at col 80 (brand §6.3 right-margin rule).
@@ -346,24 +354,22 @@ void Tui::drawSpineTop(const char* mode, const LiveStats& st)
     // Top rule:  ┌──…──┐   (78 horizontals between corners → 80 wide)
     {
         std::string line = glyph(Glyph::BoxTL);
-        for (int i = 0; i < kCols - 2; ++i) line += h;
+        for (int i = 0; i < fcols() - 2; ++i) line += h;
         line += glyph(Glyph::BoxTR);
         roled(Role::Border, line);
         put("\r\n");
     }
 
-    // Title row:  │ POCKET-DIAL v3.0   [ MODE ]                    HH:MM:SS │
-    // Build the inner 78-col content with exact spacing then frame it.
-    std::string brand = "POCKET-DIAL " + st.fw.substr(0, 4); // "v3.0" (vMAJOR.MINOR)
-    if (brand.size() < 12) brand = "POCKET-DIAL v3.0";
-    // Use the locked vMAJOR.MINOR human form regardless of patch in st.fw:
-    brand = "POCKET-DIAL v3.0";
+    // Title row:  │ DRAWBRIDGE v3.0   [ MODE ]                     HH:MM:SS │
+    // Build the inner content with exact spacing then frame it.
+    // The locked vMAJOR.MINOR human form regardless of patch in st.fw:
+    std::string brand = "DRAWBRIDGE v3.0";
     std::string modeTag = std::string("[ ") + mode + " ]";
     std::string clock   = fmtClock(st.uptimeSec);
 
     // Inner width = 78 (cols 2..79). Layout: " " + brand + gap + modeTag + gap +
     // clock + " ". We compute the two gaps so the clock ends flush at col 79.
-    const int inner = kCols - 2;                 // 78
+    const int inner = fcols() - 2;                 // 78
     int used = 1 /*lead sp*/ + (int)brand.size() + 3 /*sep*/ + (int)modeTag.size()
              + (int)clock.size() + 1 /*trail sp*/;
     int fill = inner - used;
@@ -384,7 +390,7 @@ void Tui::drawSpineTop(const char* mode, const LiveStats& st)
     // Separator rule:  ├──…──┤
     {
         std::string line = glyph(Glyph::BoxVR);
-        for (int i = 0; i < kCols - 2; ++i) line += h;
+        for (int i = 0; i < fcols() - 2; ++i) line += h;
         line += glyph(Glyph::BoxVL);
         roled(Role::Border, line);
         put("\r\n");
@@ -401,7 +407,7 @@ void Tui::drawFooter(const std::string& keys)
     // Separator above footer.
     {
         std::string line = glyph(Glyph::BoxVR);
-        for (int i = 0; i < kCols - 2; ++i) line += h;
+        for (int i = 0; i < fcols() - 2; ++i) line += h;
         line += glyph(Glyph::BoxVL);
         roled(Role::Border, line);
         put("\r\n");
@@ -414,7 +420,7 @@ void Tui::drawFooter(const std::string& keys)
     // is narrower than PHOSPHOR, so a fixed worst-case width left BRASS footers 3
     // cols short. Route through dispWidth() like every other framed row.
     int tlVis = dispWidth(tl);
-    const int inner = kCols - 2;      // 78
+    const int inner = fcols() - 2;      // 78
     // Budget for the keys field: the inner width less the lead space, the theme
     // label, the trail space, and a minimum 1-col gap. If the keys don't fit, we
     // truncate them (dispWidth-aware, never splitting a UTF-8 sequence or a CSI
@@ -475,7 +481,7 @@ void Tui::drawFooter(const std::string& keys)
     // Bottom rule:  └──…──┘
     {
         std::string line = glyph(Glyph::BoxBL);
-        for (int i = 0; i < kCols - 2; ++i) line += h;
+        for (int i = 0; i < fcols() - 2; ++i) line += h;
         line += glyph(Glyph::BoxBR);
         roled(Role::Border, line);
         // No trailing CRLF — keep the cursor at the bottom-right so a follow-up
@@ -585,8 +591,8 @@ void Tui::renderBanner()
     const char* VV = _unicode ? "\xe2\x95\x91" : "|";   // ║
     const char* SUB= _unicode ? "\xe2\x94\x80" : "-";   // ─ (sub-rule inside)
 
-    const int W = 78;            // frame width (≤78 content, margin at 80 — §3.1)
-    const int innerW = W - 2;    // 76 columns between the ║ rails
+    const int W = fcols() - 2;   // frame width (content ≤ W, margin at fcols() — §3.1)
+    const int innerW = W - 2;    // columns between the ║ rails (76 at the 80 floor)
 
     auto rule = [&](const char* l, const char* mid, const char* r) {
         if (_color) sgr(sgrFor(Role::Border));
@@ -622,11 +628,11 @@ void Tui::renderBanner()
     // The FIGlet nameplate (brand §2.1) — 5 art lines, each ≤ innerW. These are
     // pure ASCII art so they need no fallback; they are brass-colored chrome.
     static const char* art[5] = {
-        "   ____   ___   ____ _  _______ _____      ____  ___    _    _",
-        "  |  _ \\ / _ \\ / ___| |/ / ____|_   _|    |  _ \\|_ _|  / \\  | |",
-        "  | |_) | | | | |   | ' /|  _|   | |_____ | | | || |  / _ \\ | |",
-        "  |  __/| |_| | |___| . \\| |___  | |_____|| |_| || | / ___ \\| |___",
-        "  |_|    \\___/ \\____|_|\\_\\_____| |_|      |____/|___/_/   \\_\\_____|",
+        " ____  ____      ___        ______  ____  ___ ____   ____ _____",
+        "|  _ \\|  _ \\    / \\ \\      / / __ )|  _ \\|_ _|  _ \\ / ___| ____|",
+        "| | | | |_) |  / _ \\ \\ /\\ / /|  _ \\| |_) || || | | | |  _|  _|",
+        "| |_| |  _ <  / ___ \\ V  V / | |_) |  _ < | || |_| | |_| | |___",
+        "|____/|_| \\_\\/_/   \\_\\_/\\_/  |____/|_| \\_\\___|____/ \\____|_____|",
     };
 
     rule(TL, HH, TR);
@@ -658,6 +664,15 @@ void Tui::renderBanner()
         body += "     single-board SIP PBX"; vis += 24;
         if (_color) body += "\x1b[0m";
         row(body, vis);
+    }
+
+    // Brand tagline (its own line — keeps the descriptor row within the rail).
+    {
+        std::string body;
+        if (_color) body += std::string("\x1b[") + sgrFor(Role::Dim) + "m";
+        body += "   an ENGAGE product";
+        if (_color) body += "\x1b[0m";
+        row(body, 20);
     }
 
     // Inner sub-rule (single ─ line inside the double frame).
@@ -728,7 +743,7 @@ void Tui::renderBanner()
     }
     idLine("ADDR", st.ip + (st.mac.empty() ? "" : ("  " + (_unicode ?
             std::string("\xc2\xb7") : std::string(".")) + "  " + st.mac)), false);
-    idLine("FW  ", std::string("POCKET-DIAL ") + st.fw, false);
+    idLine("FW  ", std::string("DRAWBRIDGE ") + st.fw, false);
 
     // Inner sub-rule again.
     {
@@ -785,7 +800,7 @@ void Tui::renderHub()
     // A blank framed body row.
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -796,7 +811,7 @@ void Tui::renderHub()
         roled(Role::Border, v);
         put(" ");                                  // 1-col inner lead
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -898,11 +913,11 @@ void Tui::renderHub()
         bodyRow(body, vis);
     }
 
-    // Pad the body out so the footer lands on row 24 (the spine is fixed height).
-    // Geometry: 3 title rows + 18 body rows + 3 footer rows = 24 (mockup §3.2).
-    // Body rows so far: blank, 2 matrix, blank, R/L, blank, headroom, blank,
-    // prompt = 9. Add 9 blanks to reach 18.
-    for (int i = 0; i < 9; ++i) bodyBlank();
+    // Pad the body out so the footer lands on the last row (the spine is fixed
+    // height). Geometry: 3 title rows + bodyRows() body rows + 3 footer rows =
+    // frows() (18 body rows at the 80×24 floor, mockup §3.2). Body rows so far:
+    // blank, 2 matrix, blank, R/L, blank, headroom, blank, prompt = 9.
+    for (int i = 9; i < bodyRows(); ++i) bodyBlank();
 
     drawFooter("[1-6] Go  [R] Reboot  [L] Logout  [T] Theme  [?] Help");
 
@@ -924,7 +939,7 @@ void Tui::repaintHubLive()
     // The clock occupies the 8 cols ending at col 79 on row 1. Position and
     // overwrite in place (brass text), then restore. We do not move the visible
     // cursor parking spot meaningfully — the hub hides the cursor anyway.
-    moveTo(1, 71);                       // col 71..78 = "HH:MM:SS"
+    moveTo(1, fcols() - 9);              // the 8 clock cols end flush at fcols()-1
     if (_color) sgr(sgrFor(Role::Text));
     put(clock);
     if (_color) put("\x1b[0m");
@@ -970,6 +985,8 @@ void Tui::renderHelp()
         case Screen::PbxForwardEdit:
         case Screen::PbxForwardPick: mode = "PBX CONFIG"; title = "Help \xc2\xb7 Forwards / DND"; break;
         case Screen::PbxIvrEdit:  mode = "PBX CONFIG"; title = "Help \xc2\xb7 IVR digit"; break;
+        case Screen::PbxTrunkEdit: mode = "PBX CONFIG"; title = "Help \xc2\xb7 Trunk settings"; break;
+        case Screen::FirstRun:    mode = "FIRST RUN"; title = "Help \xc2\xb7 First-run setup"; break;
         default:                  break;   // Hub (and any other) → Master Hub help
     }
     drawSpineTop(mode, st);
@@ -977,7 +994,7 @@ void Tui::renderHelp()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -988,7 +1005,7 @@ void Tui::renderHelp()
         roled(Role::Border, v);
         put("   ");
         roled(Role::Text, text);
-        int pad = (kCols - 2) - 3 - dispWidth(text);
+        int pad = (fcols() - 2) - 3 - dispWidth(text);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -999,7 +1016,7 @@ void Tui::renderHelp()
     {
         roled(Role::Border, v); put("   ");
         roled(Role::Header, title);
-        int pad = (kCols - 2) - 3 - dispWidth(title);
+        int pad = (fcols() - 2) - 3 - dispWidth(title);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v); put("\r\n");
@@ -1067,6 +1084,15 @@ void Tui::renderHelp()
         line("Esc ........ back to the main hub");
         line("? .......... this help        Ctrl-L ... redraw screen");
     }
+    else if (_helpReturn == Screen::FirstRun)
+    {
+        line("1 .......... set the admin PIN  (never echoed)");
+        line("2 .......... network status / mode");
+        line("3 .......... PSTN trunk settings");
+        line("Enter ...... go to the main hub");
+        line("Esc ........ nothing \xe2\x80\x94 disconnecting is safe; setup resumes", 56);
+        line("? .......... this help        Ctrl-L ... redraw screen");
+    }
     else if (_helpReturn == Screen::PbxConfig)
     {
         line(_unicode ? "\xe2\x86\x90/\xe2\x86\x92 / Tab .. move between the five tabs" : "Left/Right . move between the five tabs");
@@ -1083,6 +1109,7 @@ void Tui::renderHelp()
              _helpReturn == Screen::PbxAddSingle ||
              _helpReturn == Screen::PbxAddRange ||
              _helpReturn == Screen::PbxIvrEdit ||
+             _helpReturn == Screen::PbxTrunkEdit ||
              _helpReturn == Screen::PbxGroupDelete)
     {
         line("Tab ........ next field        Space ... toggle / open");
@@ -1120,7 +1147,7 @@ void Tui::renderHelp()
     }
 
     // Pad the body to 18 rows so the footer lands on row 24 for every scope.
-    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
 
     // Footer key hint names the close action; the [ MODE ] tag above already tells
     // the operator which screen Esc returns to.
@@ -1141,14 +1168,14 @@ void Tui::renderRebootConfirm()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
 
     // Centered confirm box, 58 wide (tui-style §3.13 geometry), indented to center.
     const int boxW = 58;
-    const int indent = (kCols - 2 - boxW) / 2;       // ≈10
+    const int indent = (fcols() - 2 - boxW) / 2;       // ≈10
     const char* TL = glyph(Glyph::BoxTL);
     const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL);
@@ -1168,7 +1195,7 @@ void Tui::renderRebootConfirm()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW;
+        int pad = (fcols() - 2) - indent - boxW;
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -1184,7 +1211,7 @@ void Tui::renderRebootConfirm()
         if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW;
+        int pad = (fcols() - 2) - indent - boxW;
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -1228,10 +1255,10 @@ void Tui::renderRebootConfirm()
             _unicode ? 44 : 46);
     boxFrame(false, false);
 
-    // Geometry: 3 title + 18 body + 3 footer = 24. Body so far: 2 blanks +
+    // Geometry: 3 title + bodyRows() + 3 footer = frows(). Body so far: 2 blanks +
     // top-frame + ALERT + blank + 2 text + blank + buttons + sep-frame + keys +
-    // bottom-frame = 12. Add 6 blanks to reach 18.
-    for (int i = 0; i < 6; ++i) bodyBlank();
+    // bottom-frame = 12. Fill the rest with blanks.
+    for (int i = 12; i < bodyRows(); ++i) bodyBlank();
 
     drawFooter("[\xe2\x86\x90/\xe2\x86\x92] Choose  [Enter] Confirm  [Esc] Cancel");
 }
@@ -1260,7 +1287,7 @@ void Tui::renderPlaceholder()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -1268,7 +1295,7 @@ void Tui::renderPlaceholder()
     // right rail stays flush; the caller's `vis` is ignored (kept for compat).
     auto centered = [&](const std::string& colored, int /*vis*/) {
         roled(Role::Border, v);
-        int total = kCols - 2;
+        int total = fcols() - 2;
         int w = dispWidth(colored);
         int left = (total - w) / 2;
         if (left < 0) left = 0;
@@ -1304,9 +1331,9 @@ void Tui::renderPlaceholder()
         centered(c, vis);
     }
 
-    // Geometry: 3 title + 18 body + 3 footer = 24. Body: 9 + "coming soon" + blank
-    // + "[Esc] back" + 6 = 18.
-    for (int i = 0; i < 6; ++i) bodyBlank();
+    // Geometry: 3 title + bodyRows() + 3 footer = frows(). Body: 9 + "coming soon"
+    // + blank + "[Esc] back" = 12; fill the rest with blanks.
+    for (int i = 12; i < bodyRows(); ++i) bodyBlank();
 
     drawFooter("[Esc] Back  [?] Help");
 }
@@ -1393,7 +1420,7 @@ void Tui::drawMonitorFrame()
 
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -1403,7 +1430,7 @@ void Tui::drawMonitorFrame()
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -1425,7 +1452,7 @@ void Tui::drawMonitorFrame()
             : (_unicode ? "\xe2\x9f\xb3 1 Hz" : "(*) 1 Hz");                 // ⟳
         std::string right = col(_monFrozen ? Role::Dim : Role::Text,
                                 std::string(act) + "   " + dot + "  " + badge);
-        int gap = (kCols - 2) - 1 - dispWidth(left) - dispWidth(right) - 1;
+        int gap = (fcols() - 2) - 1 - dispWidth(left) - dispWidth(right) - 1;
         if (gap < 1) gap = 1;
         bodyRow(left + std::string((size_t)gap, ' ') + right);
     }
@@ -1442,8 +1469,10 @@ void Tui::drawMonitorFrame()
         bodyRow(col(Role::Border, r));
     }
 
-    // Rows 7..10: four channel rows. A live session lights its slot; the rest idle.
-    for (int ch = 1; ch <= kMonMaxChans; ++ch)
+    // Rows 7..10: the channel rows (4 at the 24-row floor, growing with a taller
+    // terminal). A live session lights its slot; the rest idle.
+    const int nChans = kMonMaxChans + (frows() - 24);
+    for (int ch = 1; ch <= nChans; ++ch)
     {
         const CallRow* cr = nullptr;
         for (const auto& c : ms.calls) { if (c.ch == ch) { cr = &c; break; } }
@@ -1552,8 +1581,8 @@ void Tui::drawMonitorFrame()
             "   place a call on any phone to watch it light up."));
     }
 
-    // Rows 18..21: four blanks → body total = 18 (rows 4..21).
-    for (int i = 0; i < 4; ++i) bodyBlank();
+    // Trailing blanks → body total = bodyRows() (10 fixed rows + nChans so far).
+    for (int i = 10 + nChans; i < bodyRows(); ++i) bodyBlank();
 
     drawFooter("[F] Freeze  [C] Clear  [Esc] Main  [?] Help");
     _lastClock = fmtClock(ms.uptimeSec);
@@ -1634,7 +1663,7 @@ void Tui::renderNetwork()
     const std::string dot = _unicode ? "\xc2\xb7" : ".";
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -1642,7 +1671,7 @@ void Tui::renderNetwork()
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -1716,7 +1745,7 @@ void Tui::renderNetwork()
         emit(body);
     }
     emitBlank();
-    emit(col(Role::Text, " To move pocket-dial onto your office network, switch"));
+    emit(col(Role::Text, " To move this device onto your office network, switch"));
     emit(col(Role::Text, " modes below. Phones re-register after the link returns."));
     emitBlank();
     // The guarded mode-switch action line.
@@ -1734,7 +1763,7 @@ void Tui::renderNetwork()
         emit(body);
     }
 
-    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[M] Mode switch  [Esc] Back  [?] Help");
     _lastClock = fmtClock(st.uptimeSec);
 }
@@ -1752,7 +1781,7 @@ void Tui::renderSecurity()
     const std::string dot = _unicode ? "\xc2\xb7" : ".";
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -1760,7 +1789,7 @@ void Tui::renderSecurity()
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -1866,7 +1895,7 @@ void Tui::renderSecurity()
         emit(body);
     }
 
-    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
     // Keep ≤58 cols (Phosphor theme-label budget) so the footer truncator never
     // drops [?] Help: dropped the explicit "[Esc] Back" chip (Esc-to-back still works).
     drawFooter("[P] PIN  [K] SSH  [D] Devices  [X] Reset  [?] Help");
@@ -1885,7 +1914,7 @@ void Tui::renderReports()
     const std::string dot = _unicode ? "\xc2\xb7" : ".";
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -1893,7 +1922,7 @@ void Tui::renderReports()
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -1966,18 +1995,18 @@ void Tui::renderReports()
         if (_cdrSel >= total) _cdrSel = total > 0 ? total - 1 : 0;
         if (_cdrSel < 0) _cdrSel = 0;
         if (_cdrSel < _cdrTop) _cdrTop = _cdrSel;
-        if (_cdrSel >= _cdrTop + kCdrRows) _cdrTop = _cdrSel - kCdrRows + 1;
+        if (_cdrSel >= _cdrTop + cdrRows()) _cdrTop = _cdrSel - cdrRows() + 1;
         if (_cdrTop < 0) _cdrTop = 0;
 
         if (total == 0)
         {
             bodyRow(col(Role::Dim, " (no calls recorded yet \xe2\x80\x94 place a call to populate the CDR)"));
             ++bodyUsed;
-            for (int i = 0; i < kCdrRows - 1; ++i) { bodyBlank(); ++bodyUsed; }
+            for (int i = 0; i < cdrRows() - 1; ++i) { bodyBlank(); ++bodyUsed; }
         }
         else
         {
-            for (int i = 0; i < kCdrRows; ++i)
+            for (int i = 0; i < cdrRows(); ++i)
             {
                 int idx = _cdrTop + i;
                 if (idx >= total) { bodyBlank(); ++bodyUsed; continue; }
@@ -2034,14 +2063,14 @@ void Tui::renderReports()
         {
             char b[24]; std::snprintf(b, sizeof(b), "%d/%d", total, POCKETDIAL_CDR_RECORDS_UI);
             std::string body;
-            int gap = (kCols - 2) - 1 - (int)std::strlen(b) - 2;
+            int gap = (fcols() - 2) - 1 - (int)std::strlen(b) - 2;
             if (gap < 1) gap = 1;
             body += std::string((size_t)gap, ' ');
             body += col(Role::Text, b);
             bodyRow(body);
             ++bodyUsed;
         }
-        for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+        for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
         drawFooter("[Tab] Log  [\xe2\x86\x91/\xe2\x86\x93] Sel  [Enter] Detail  [Esc] Back  [?] Help");
     }
     else
@@ -2054,7 +2083,7 @@ void Tui::renderReports()
         {
             const char* H = glyph(Glyph::BoxH);
             std::string r = " ";
-            for (int i = 0; i < kCols - 4; ++i) r += H;
+            for (int i = 0; i < fcols() - 4; ++i) r += H;
             bodyRow(col(Role::Border, r));
             ++bodyUsed;
         }
@@ -2063,7 +2092,7 @@ void Tui::renderReports()
         // so print the most-recent kLogRows window with the OLDER index at the top and
         // index 0 last — i.e. walk indices high→low. `win` is the oldest index shown.
         int shown = 0;
-        const int kLogRows = 10;
+        const int kLogRows = 10 + (frows() - 24);   // grows with a taller terminal
         int win = std::min((int)rs.cdr.size(), kLogRows) - 1;   // oldest visible index
         for (int idx = win; idx >= 0; --idx)
         {
@@ -2090,7 +2119,7 @@ void Tui::renderReports()
             bodyRow(col(Role::Dim, " (derived from the CDR ring \xe2\x80\x94 a dedicated event log lands in a later build)"));
             ++bodyUsed;
         }
-        for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+        for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
         drawFooter("[Tab] Recent Calls  [Esc] Back  [?] Help");
     }
     _lastClock = fmtClock(st.uptimeSec);
@@ -2108,7 +2137,7 @@ void Tui::renderCdrDetail()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -2118,7 +2147,7 @@ void Tui::renderCdrDetail()
     };
 
     const int boxW = 56;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -2134,7 +2163,7 @@ void Tui::renderCdrDetail()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -2148,7 +2177,7 @@ void Tui::renderCdrDetail()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -2204,7 +2233,7 @@ void Tui::renderCdrDetail()
 
     // Body so far: 2 blank + frame + (1 or 8 lines) + frame + key + frame.
     int used = (total == 0) ? (2 + 1 + 1 + 1 + 1 + 1) : (2 + 1 + 8 + 1 + 1 + 1);
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[\xe2\x86\x91/\xe2\x86\x93] Records  [Esc] Back  [?] Help");
 }
 
@@ -2220,7 +2249,7 @@ void Tui::renderAbout()
     const std::string dot = _unicode ? "\xc2\xb7" : ".";
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -2228,7 +2257,7 @@ void Tui::renderAbout()
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -2252,28 +2281,28 @@ void Tui::renderAbout()
     int bodyUsed = 0;
     auto emit = [&](const std::string& body) { bodyRow(body); ++bodyUsed; };
 
-    // Brand wordmark + descriptor (▌▐ POCKET-DIAL ▐▌ · sysop terminal ·).
+    // Brand wordmark + descriptor (▌▐ DRAWBRIDGE ▐▌ · sysop terminal ·).
     {
         std::string body = "  ";
         if (_color) body += std::string("\x1b[") + sgrFor(Role::Header) + "m";
         body += glyph(Glyph::WordmarkL);
-        body += " POCKET-DIAL ";
+        body += " DRAWBRIDGE ";
         body += glyph(Glyph::WordmarkR);
         if (_color) body += "\x1b[0m";
         body += col(Role::Text, std::string("  ") + dot + " sysop terminal " + dot);
         emit(body);
     }
-    emit(col(Role::Text, "  single-board SIP PBX \xe2\x80\x94 operator on duty"));
+    emit(col(Role::Text, "  single-board SIP PBX \xe2\x80\x94 an ENGAGE product"));
     {
         const char* H = glyph(Glyph::BoxH);
         std::string r = "  ";
-        for (int i = 0; i < kCols - 6; ++i) r += H;
+        for (int i = 0; i < fcols() - 6; ++i) r += H;
         bodyRow(col(Role::Border, r));
         ++bodyUsed;
     }
     leader("Hardware", col(Role::Text, std::string("ESP32-S3 ") + dot +
             " Guition JC3248W535 " + dot + " 8 MB PSRAM " + dot + " 16 MB flash")); ++bodyUsed;
-    leader("Firmware", col(Role::Text, std::string("POCKET-DIAL ") + st.fw +
+    leader("Firmware", col(Role::Text, std::string("DRAWBRIDGE ") + st.fw +
             "   " + dot + "   build " + __DATE__)); ++bodyUsed;
     leader("Host", col(Role::Text, st.host + "   " + dot + "   " + st.mac)); ++bodyUsed;
     leader("Uptime", col(Role::Text, fmtClock(st.uptimeSec) +
@@ -2287,7 +2316,7 @@ void Tui::renderAbout()
     bodyBlank(); ++bodyUsed;
     emit(col(Role::Text, "  This is an ESP32-S3. It does what it says, and says what it does."));
 
-    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[Esc] Back  [?] Help");
     _lastClock = fmtClock(st.uptimeSec);
 }
@@ -2304,12 +2333,12 @@ void Tui::drawConfirmBox(const char* title, const char* glyphLabel, Role glyphRo
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
     const int boxW = 58;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -2325,7 +2354,7 @@ void Tui::drawConfirmBox(const char* title, const char* glyphLabel, Role glyphRo
         for (int i = 0; i < boxW - 2 - used; ++i) put(Hh);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -2339,7 +2368,7 @@ void Tui::drawConfirmBox(const char* title, const char* glyphLabel, Role glyphRo
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -2382,7 +2411,7 @@ void Tui::drawConfirmBox(const char* title, const char* glyphLabel, Role glyphRo
     boxLine(col(Role::Dim, keyLine)); ++used;
     boxFrame(false, false); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
 }
 
 // ── [2]/[M] Wi-Fi mode switch confirm (reboots) ───────────────────────────────
@@ -2456,7 +2485,7 @@ void Tui::renderChangePin()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -2466,7 +2495,7 @@ void Tui::renderChangePin()
     };
 
     const int boxW = 56;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -2482,7 +2511,7 @@ void Tui::renderChangePin()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -2496,7 +2525,7 @@ void Tui::renderChangePin()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -2554,7 +2583,7 @@ void Tui::renderChangePin()
 
     // Body: 2 blank + frame + 3 fields + blank + msg + blank + buttons + frame + key
     // + frame = 13. Pad to 18.
-    for (int i = 13; i < 18; ++i) bodyBlank();
+    for (int i = 13; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[Tab] Field  [Enter] Apply  [Esc] Cancel  [?] Help");
 }
 
@@ -2600,7 +2629,17 @@ void Tui::gotoScreen(Screen s)
         case Screen::RegModePick:    renderRegModePick();    break;
         case Screen::SecretEntry:    renderSecretEntry();    break;
         case Screen::DeviceForget:   renderDeviceForget();   break;
+        case Screen::PbxTrunkEdit:   renderPbxTrunkEdit();   break;
+        case Screen::FirstRun:       renderFirstRun();       break;
     }
+}
+
+// Re-render the current screen after a live resize (window-change). Pure repaint:
+// gotoScreen(_screen) re-dispatches without touching any navigation state (the
+// Help-origin and monitor-freeze guards only trigger on a screen CHANGE).
+void Tui::redraw()
+{
+    gotoScreen(_screen);
 }
 
 void Tui::toggleTheme()
@@ -2666,7 +2705,11 @@ bool Tui::feed(const char* data, size_t len)
             case Screen::RegModePick:    onKeyRegModePick(Key::Esc, 0); break;
             case Screen::SecretEntry:    onKeySecretEntry(Key::Esc, 0); break;
             case Screen::DeviceForget:   onKeyDeviceForget(Key::Esc, 0); break;
-            case Screen::Banner:         gotoScreen(Screen::Hub); break;
+            case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(Key::Esc, 0); break;
+            case Screen::FirstRun:       onKeyFirstRun(Key::Esc, 0); break;
+            case Screen::Banner:
+                gotoScreen(stats().provisioned ? Screen::Hub : Screen::FirstRun);
+                break;
             case Screen::Hub:            /* Esc = no-op at home */ break;
         }
     }
@@ -2714,8 +2757,12 @@ bool Tui::feedByte(unsigned char c)
             case Screen::RegModePick:    onKeyRegModePick(esc, 0); break;
             case Screen::SecretEntry:    onKeySecretEntry(esc, 0); break;
             case Screen::DeviceForget:   onKeyDeviceForget(esc, 0); break;
+            case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(esc, 0); break;
+            case Screen::FirstRun:       onKeyFirstRun(esc, 0); break;
             case Screen::Hub:            onKeyHub(esc, 0); break;
-            case Screen::Banner:         gotoScreen(Screen::Hub); break;
+            case Screen::Banner:
+                gotoScreen(stats().provisioned ? Screen::Hub : Screen::FirstRun);
+                break;
         }
         // fall through to handle `c` below
     }
@@ -2761,6 +2808,8 @@ bool Tui::feedByte(unsigned char c)
                 case Screen::RegModePick:    onKeyRegModePick(k, 0); break;
                 case Screen::SecretEntry:    onKeySecretEntry(k, 0); break;
                 case Screen::DeviceForget:   onKeyDeviceForget(k, 0); break;
+                case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(k, 0); break;
+                case Screen::FirstRun:       onKeyFirstRun(k, 0); break;
                 case Screen::Banner:         break;
             }
         }
@@ -2776,10 +2825,11 @@ bool Tui::feedByte(unsigned char c)
     else if (c == 0x0c) k = Key::CtrlL;     // Ctrl-L → redraw
     else if (c == '\t') k = Key::Tab;
 
-    // Banner: any key advances into the hub (brief greeting → hub).
+    // Banner: any key advances into the hub — or, on an UNPROVISIONED box, into
+    // the first-run setup checklist (README Reconciled #4: first session = setup).
     if (_screen == Screen::Banner)
     {
-        gotoScreen(Screen::Hub);
+        gotoScreen(stats().provisioned ? Screen::Hub : Screen::FirstRun);
         return _running;
     }
 
@@ -2811,6 +2861,8 @@ bool Tui::feedByte(unsigned char c)
         case Screen::RegModePick:    onKeyRegModePick(k, c); break;
         case Screen::SecretEntry:    onKeySecretEntry(k, c); break;
         case Screen::DeviceForget:   onKeyDeviceForget(k, c); break;
+        case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(k, c); break;
+        case Screen::FirstRun:       onKeyFirstRun(k, c); break;
         case Screen::Banner:         break;   // handled above
     }
     return _running;
@@ -3024,6 +3076,7 @@ void Tui::onKeySecurity(Key k, unsigned char ch)
             case 'P': case 'p':
                 _pinCur.clear(); _pinNew.clear(); _pinConf.clear();
                 _pinField = 0; _pinMsg.clear();
+                _pinReturn = Screen::Security;
                 gotoScreen(Screen::ChangePin);
                 return;
             case 'K': case 'k':
@@ -3097,7 +3150,7 @@ void Tui::applyFactoryReset()
 void Tui::onKeyChangePin(Key k, unsigned char ch)
 {
     if (k == Key::CtrlL) { gotoScreen(Screen::ChangePin); return; }
-    if (k == Key::Esc)   { gotoScreen(Screen::Security); return; }
+    if (k == Key::Esc)   { gotoScreen(_pinReturn); return; }
     auto curField = [&]() -> std::string& {
         return (_pinField == 0) ? _pinCur : (_pinField == 1) ? _pinNew : _pinConf;
     };
@@ -3121,7 +3174,7 @@ void Tui::onKeyChangePin(Key k, unsigned char ch)
         if (err.empty())
         {
             _pinCur.clear(); _pinNew.clear(); _pinConf.clear(); _pinField = 0; _pinMsg.clear();
-            gotoScreen(Screen::Security);   // success → back to the security screen
+            gotoScreen(_pinReturn);   // success → back to the opener (Security/FirstRun)
         }
         else
         {
@@ -3231,7 +3284,7 @@ void Tui::renderDevices()
     const std::string dot = _unicode ? "\xc2\xb7" : ".";
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -3239,7 +3292,7 @@ void Tui::renderDevices()
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -3296,7 +3349,7 @@ void Tui::renderDevices()
     if (_devSel >= total) _devSel = total > 0 ? total - 1 : 0;
     if (_devSel < 0) _devSel = 0;
     if (_devSel < _devTop) _devTop = _devSel;
-    if (_devSel >= _devTop + kDevRows) _devTop = _devSel - kDevRows + 1;
+    if (_devSel >= _devTop + devRows()) _devTop = _devSel - devRows() + 1;
     if (_devTop < 0) _devTop = 0;
 
     // Resolve a device row → its lexicon (glyph, role, label). Online beats the stored
@@ -3327,11 +3380,11 @@ void Tui::renderDevices()
     if (total == 0)
     {
         emit(col(Role::Dim, " (no devices adopted yet \xe2\x80\x94 set Learn mode and register a phone)"));
-        for (int i = 0; i < kDevRows - 1; ++i) { bodyBlank(); ++bodyUsed; }
+        for (int i = 0; i < devRows() - 1; ++i) { bodyBlank(); ++bodyUsed; }
     }
     else
     {
-        for (int i = 0; i < kDevRows; ++i)
+        for (int i = 0; i < devRows(); ++i)
         {
             int idx = _devTop + i;
             if (idx >= total) { bodyBlank(); ++bodyUsed; continue; }
@@ -3372,7 +3425,7 @@ void Tui::renderDevices()
     {
         char b[24]; std::snprintf(b, sizeof(b), "dev %d", total);
         std::string body;
-        int gap = (kCols - 2) - 1 - (int)std::strlen(b) - 2;
+        int gap = (fcols() - 2) - 1 - (int)std::strlen(b) - 2;
         if (gap < 1) gap = 1;
         body += std::string((size_t)gap, ' ');
         body += col(Role::Text, b);
@@ -3384,7 +3437,7 @@ void Tui::renderDevices()
     if (_devMsg.empty()) { bodyBlank(); ++bodyUsed; }
     else                 { emit(col(Role::Text, " " + _devMsg)); }
 
-    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[M] Mode  [A] Secret  [S] Secure  [F] Forget  [?] Help");
     _lastClock = fmtClock(st.uptimeSec);
 }
@@ -3401,7 +3454,7 @@ void Tui::renderRegModePick()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -3409,7 +3462,7 @@ void Tui::renderRegModePick()
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -3460,7 +3513,7 @@ void Tui::renderRegModePick()
     if (!_regModeSet)
         emit(col(Role::Alert, " Mode change not available on this build."));
 
-    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
     drawFooter(_unicode ? "[\xe2\x86\x91/\xe2\x86\x93] Choose  [Enter] Apply  [Esc] Cancel  [?] Help"
                         : "[Up/Dn] Choose  [Enter] Apply  [Esc] Cancel  [?] Help");
     _lastClock = fmtClock(st.uptimeSec);
@@ -3478,7 +3531,7 @@ void Tui::renderSecretEntry()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -3488,7 +3541,7 @@ void Tui::renderSecretEntry()
     };
 
     const int boxW = 56;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -3504,7 +3557,7 @@ void Tui::renderSecretEntry()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -3518,7 +3571,7 @@ void Tui::renderSecretEntry()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -3571,7 +3624,7 @@ void Tui::renderSecretEntry()
 
     // Body rows: 2 blank + frame + note(2) + blank + entry + blank + msg + blank +
     // buttons + frame + key + frame = 14. Pad to 18.
-    for (int i = 14; i < 18; ++i) bodyBlank();
+    for (int i = 14; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[G] Generate  [Enter] Apply  [Esc] Cancel  [?] Help");
 }
 
@@ -3792,7 +3845,7 @@ void Tui::drawPbxTabStrip(int& bodyUsed)
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -3803,15 +3856,15 @@ void Tui::drawPbxTabStrip(int& bodyUsed)
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
 
-    // The five tab names + the active-tab underline (§2.5: underline AND bright name —
+    // The six tab names + the active-tab underline (§2.5: underline AND bright name —
     // never colour alone). Separators '│' in the border role.
-    static const char* kTabs[5] = { "Extensions", "Ring Groups", "Forwards/DND", "IVR", "Features" };
+    static const char* kTabs[6] = { "Extensions", "Ring Groups", "Forwards/DND", "IVR", "Features", "TRUNK" };
     int active = (int)_pbxTab;
     const std::string sep = std::string(" ") + glyph(Glyph::BoxV) + " ";
     std::string strip;
     // Track the start column of the active tab name so the underline lands under it.
     int activeStartCol = 0, activeWidth = 0, runCol = 0;
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
     {
         if (i)
         {
@@ -3857,16 +3910,17 @@ void Tui::renderPbxConfig()
         case PbxTab::Forwards:   renderPbxForwards(bodyUsed);   break;
         case PbxTab::Ivr:        renderPbxIvr(bodyUsed);        break;
         case PbxTab::Features:   renderPbxFeatures(bodyUsed);   break;
+        case PbxTab::Trunk:      renderPbxTrunk(bodyUsed);      break;
     }
 
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
-    for (int i = bodyUsed; i < 18; ++i) bodyBlank();
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
 
     // Per-tab footer (names exactly the keys live on this tab; ends in the theme
     // label via drawFooter). [←/→]/[Tab] always move tabs.
@@ -3884,6 +3938,9 @@ void Tui::renderPbxConfig()
             break;
         case PbxTab::Ivr:
             foot = "[\xe2\x86\x90/\xe2\x86\x92]Tabs [\xe2\x86\x91/\xe2\x86\x93]Sel [Enter]Edit [Esc]Back";
+            break;
+        case PbxTab::Trunk:
+            foot = "[\xe2\x86\x90/\xe2\x86\x92] Tabs  [E] Edit  [Esc] Back  [?] Help";
             break;
         default:   // Features (read-only)
             foot = "[\xe2\x86\x90/\xe2\x86\x92] Tabs  [Esc] Back  [?] Help";
@@ -3904,7 +3961,7 @@ void Tui::renderPbxExtensions(int& bodyUsed)
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
         ++bodyUsed;
@@ -3913,7 +3970,7 @@ void Tui::renderPbxExtensions(int& bodyUsed)
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -3941,17 +3998,17 @@ void Tui::renderPbxExtensions(int& bodyUsed)
     if (_pbxSel >= total) _pbxSel = total > 0 ? total - 1 : 0;
     if (_pbxSel < 0) _pbxSel = 0;
     if (_pbxSel < _pbxTop) _pbxTop = _pbxSel;
-    if (_pbxSel >= _pbxTop + kPbxRows) _pbxTop = _pbxSel - kPbxRows + 1;
+    if (_pbxSel >= _pbxTop + pbxRows()) _pbxTop = _pbxSel - pbxRows() + 1;
     if (_pbxTop < 0) _pbxTop = 0;
 
     if (total == 0)
     {
         bodyRow(col(Role::Dim, " (no extensions registered yet \xe2\x80\x94 register a phone to populate this list)"));
-        for (int i = 0; i < kPbxRows - 1; ++i) bodyBlank();
+        for (int i = 0; i < pbxRows() - 1; ++i) bodyBlank();
     }
     else
     {
-        for (int i = 0; i < kPbxRows; ++i)
+        for (int i = 0; i < pbxRows(); ++i)
         {
             int idx = _pbxTop + i;
             if (idx >= total) { bodyBlank(); continue; }
@@ -4016,7 +4073,7 @@ void Tui::renderPbxExtensions(int& bodyUsed)
     {
         char b[24]; std::snprintf(b, sizeof(b), "ext %d/%d", total, cfg.maxExt);
         std::string body;
-        int gap = (kCols - 2) - 1 - (int)std::strlen(b) - 2;
+        int gap = (fcols() - 2) - 1 - (int)std::strlen(b) - 2;
         if (gap < 1) gap = 1;
         body += std::string((size_t)gap, ' ');
         body += col(Role::Text, b);
@@ -4041,7 +4098,7 @@ void Tui::renderPbxRingGroups(int& bodyUsed)
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
         ++bodyUsed;
@@ -4050,7 +4107,7 @@ void Tui::renderPbxRingGroups(int& bodyUsed)
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -4075,17 +4132,17 @@ void Tui::renderPbxRingGroups(int& bodyUsed)
     if (_pbxSel >= total) _pbxSel = total > 0 ? total - 1 : 0;
     if (_pbxSel < 0) _pbxSel = 0;
     if (_pbxSel < _pbxTop) _pbxTop = _pbxSel;
-    if (_pbxSel >= _pbxTop + kPbxRows) _pbxTop = _pbxSel - kPbxRows + 1;
+    if (_pbxSel >= _pbxTop + pbxRows()) _pbxTop = _pbxSel - pbxRows() + 1;
     if (_pbxTop < 0) _pbxTop = 0;
 
     if (total == 0)
     {
         bodyRow(col(Role::Dim, " (no ring groups yet \xe2\x80\x94 press [A] to create one)"));
-        for (int i = 0; i < kPbxRows - 1; ++i) bodyBlank();
+        for (int i = 0; i < pbxRows() - 1; ++i) bodyBlank();
     }
     else
     {
-        for (int i = 0; i < kPbxRows; ++i)
+        for (int i = 0; i < pbxRows(); ++i)
         {
             int idx = _pbxTop + i;
             if (idx >= total) { bodyBlank(); continue; }
@@ -4134,7 +4191,7 @@ void Tui::renderPbxRingGroups(int& bodyUsed)
     {
         char b[24]; std::snprintf(b, sizeof(b), "groups %d", total);
         std::string body;
-        int gap = (kCols - 2) - 1 - (int)std::strlen(b) - 2;
+        int gap = (fcols() - 2) - 1 - (int)std::strlen(b) - 2;
         if (gap < 1) gap = 1;
         body += std::string((size_t)gap, ' ');
         body += col(Role::Text, b);
@@ -4149,7 +4206,7 @@ void Tui::renderPbxForwards(int& bodyUsed)
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
         ++bodyUsed;
@@ -4158,7 +4215,7 @@ void Tui::renderPbxForwards(int& bodyUsed)
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -4188,17 +4245,17 @@ void Tui::renderPbxForwards(int& bodyUsed)
     if (_pbxSel >= total) _pbxSel = total > 0 ? total - 1 : 0;
     if (_pbxSel < 0) _pbxSel = 0;
     if (_pbxSel < _pbxTop) _pbxTop = _pbxSel;
-    if (_pbxSel >= _pbxTop + kPbxRows) _pbxTop = _pbxSel - kPbxRows + 1;
+    if (_pbxSel >= _pbxTop + pbxRows()) _pbxTop = _pbxSel - pbxRows() + 1;
     if (_pbxTop < 0) _pbxTop = 0;
 
     if (total == 0)
     {
         bodyRow(col(Role::Dim, " (no extensions registered yet \xe2\x80\x94 register a phone to set forwards/DND)"));
-        for (int i = 0; i < kPbxRows - 1; ++i) bodyBlank();
+        for (int i = 0; i < pbxRows() - 1; ++i) bodyBlank();
     }
     else
     {
-        for (int i = 0; i < kPbxRows; ++i)
+        for (int i = 0; i < pbxRows(); ++i)
         {
             int idx = _pbxTop + i;
             if (idx >= total) { bodyBlank(); continue; }
@@ -4225,7 +4282,7 @@ void Tui::renderPbxForwards(int& bodyUsed)
     {
         char b[24]; std::snprintf(b, sizeof(b), "ext %d/%d", total, cfg.maxExt);
         std::string body;
-        int gap = (kCols - 2) - 1 - (int)std::strlen(b) - 2;
+        int gap = (fcols() - 2) - 1 - (int)std::strlen(b) - 2;
         if (gap < 1) gap = 1;
         body += std::string((size_t)gap, ' ');
         body += col(Role::Text, b);
@@ -4239,7 +4296,7 @@ void Tui::renderPbxIvr(int& bodyUsed)
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
         ++bodyUsed;
@@ -4248,7 +4305,7 @@ void Tui::renderPbxIvr(int& bodyUsed)
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -4310,7 +4367,7 @@ void Tui::renderPbxFeatures(int& bodyUsed)
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
         ++bodyUsed;
@@ -4319,7 +4376,7 @@ void Tui::renderPbxFeatures(int& bodyUsed)
         roled(Role::Border, v);
         put(" ");
         put(body);
-        int pad = (kCols - 2) - 1 - dispWidth(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
         if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
@@ -4335,7 +4392,7 @@ void Tui::renderPbxFeatures(int& bodyUsed)
     {
         const char* H = glyph(Glyph::BoxH);
         std::string r = " ";
-        for (int i = 0; i < kCols - 4; ++i) r += H;
+        for (int i = 0; i < fcols() - 4; ++i) r += H;
         bodyRow(col(Role::Border, r));
     }
     auto code = [&](const char* c, const char* desc) {
@@ -4357,6 +4414,112 @@ void Tui::renderPbxFeatures(int& bodyUsed)
     bodyRow(col(Role::Text, " from the terminal, use the Forwards/DND tab."));
 }
 
+// ── TRUNK tab body — PSTN trunk (dial-9) configuration ────────────────────────
+// Shows the live trunk status chip (glyph+LABEL, never colour alone), the stored
+// config (secret rendered as ◆ SET / · none — NEVER echoed), and the dial-plan
+// explainer. [E] opens the PbxTrunkEdit modal. Changes apply on the next reboot.
+void Tui::renderPbxTrunk(int& bodyUsed)
+{
+    TrunkInfo t = trunk();
+    const std::string v = glyph(Glyph::BoxV);
+    const std::string dot = _unicode ? "\xc2\xb7" : ".";
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(fcols() - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+        ++bodyUsed;
+    };
+    auto bodyRow = [&](const std::string& body) {
+        roled(Role::Border, v);
+        put(" ");
+        put(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+        ++bodyUsed;
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+    auto leader = [&](const char* label, const std::string& value) {
+        std::string l = " ";
+        l += label;
+        l += " ";
+        int dots = 11 - (int)std::strlen(label); if (dots < 1) dots = 1;
+        l += std::string((size_t)dots, '.');
+        l += " ";
+        bodyRow(col(Role::Text, l) + value);
+    };
+
+    // Status chip: ○ LOOPBACK MOCK (dim) / ● LIVE TRUNK (lamp) / ⊘ DOWN (alert).
+    {
+        std::string body = col(Role::Text, " Status ...... ");
+        if (t.useLoopback)
+        {
+            if (_color) body += std::string("\x1b[") + sgrFor(Role::Dim) + "m";
+            body += glyph(Glyph::Unreach);
+            body += " LOOPBACK MOCK";
+            if (_color) body += "\x1b[0m";
+            body += col(Role::Dim, "   (no PSTN \xe2\x80\x94 calls anchor on-box)");
+        }
+        else if (t.connected)
+        {
+            if (_color) body += std::string("\x1b[") + sgrFor(Role::Lamp) + "m";
+            body += glyph(Glyph::Online);
+            body += " LIVE TRUNK";
+            if (_color) body += "\x1b[0m";
+            body += col(Role::Text, "   (anchor connected)");
+        }
+        else
+        {
+            if (_color) body += std::string("\x1b[") + sgrFor(Role::Alert) + "m";
+            body += glyph(Glyph::Dnd);
+            body += " DOWN";
+            if (_color) body += "\x1b[0m";
+            body += col(Role::Dim, "   (live mode set, anchor not connected)");
+        }
+        bodyRow(body);
+    }
+    leader("Base URL", t.baseUrl.empty()  ? col(Role::Dim, "(unset)") : col(Role::Text, t.baseUrl));
+    leader("Client ID", t.clientId.empty() ? col(Role::Dim, "(unset)") : col(Role::Text, t.clientId));
+    leader("Source DN", t.sourceDn.empty() ? col(Role::Dim, "(unset)") : col(Role::Text, t.sourceDn));
+    {
+        // Secret state — the value itself is NEVER carried to the renderer.
+        std::string body = col(Role::Text, " Secret ...... ");
+        if (t.secretSet)
+        {
+            if (_color) body += std::string("\x1b[") + sgrFor(Role::Lamp) + "m";
+            body += glyph(Glyph::Active);   // ◆
+            body += " SET";
+            if (_color) body += "\x1b[0m";
+            body += col(Role::Dim, "   (stored \xe2\x80\x94 never shown)");
+        }
+        else
+        {
+            body += col(Role::Dim, dot + " none");
+        }
+        bodyRow(body);
+    }
+    bodyBlank();
+    bodyRow(col(Role::Text, " Dial plan: <ext> rings the LAN extension; 9<number> goes out"));
+    bodyRow(col(Role::Text, " the trunk (dial-9 = PSTN access)."));
+    bodyBlank();
+    {
+        std::string body;
+        if (_color) body += std::string("\x1b[") + sgrFor(Role::Header) + "m";
+        body += " [E] Edit trunk settings";
+        if (_color) body += "\x1b[0m";
+        body += col(Role::Dim, "   (changes apply on the next reboot)");
+        bodyRow(body);
+    }
+    // Result line from the last apply ("saved — applies on next reboot").
+    if (!_trkResult.empty()) bodyRow(col(Role::Text, " " + _trkResult));
+}
+
 // ── Shared modal-box prelude ──────────────────────────────────────────────────
 // Every PBX modal centers a box of a given width on the PBX-CONFIG spine and pads to
 // 18 body rows. To avoid repeating the frame/line lambdas in each render, this helper
@@ -4375,7 +4538,7 @@ void Tui::renderPbxAddMenu()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -4384,7 +4547,7 @@ void Tui::renderPbxAddMenu()
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
     const int boxW = 44;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -4399,7 +4562,7 @@ void Tui::renderPbxAddMenu()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4413,7 +4576,7 @@ void Tui::renderPbxAddMenu()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4447,7 +4610,7 @@ void Tui::renderPbxAddMenu()
     line(col(Role::Dim, "[\xe2\x86\x90/\xe2\x86\x92] Choose  [Enter] Next  [Esc] Cancel")); ++used;
     frame(false, false, nullptr); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[\xe2\x86\x90/\xe2\x86\x92] Choose  [Enter] Next  [Esc] Cancel");
 }
 
@@ -4463,7 +4626,7 @@ void Tui::renderPbxAddSingle()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -4472,7 +4635,7 @@ void Tui::renderPbxAddSingle()
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
     const int boxW = 54;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -4487,7 +4650,7 @@ void Tui::renderPbxAddSingle()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4501,7 +4664,7 @@ void Tui::renderPbxAddSingle()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4527,7 +4690,7 @@ void Tui::renderPbxAddSingle()
     line(col(Role::Dim, "[Esc] Back")); ++used;
     frame(false, false, nullptr); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[Esc] Back  [?] Help");
 }
 
@@ -4543,7 +4706,7 @@ void Tui::renderPbxAddRange()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -4552,7 +4715,7 @@ void Tui::renderPbxAddRange()
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
     const int boxW = 54;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -4567,7 +4730,7 @@ void Tui::renderPbxAddRange()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4581,7 +4744,7 @@ void Tui::renderPbxAddRange()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4607,7 +4770,7 @@ void Tui::renderPbxAddRange()
     line(col(Role::Dim, "[Esc] Back")); ++used;
     frame(false, false, nullptr); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[Esc] Back  [?] Help");
 }
 
@@ -4622,7 +4785,7 @@ void Tui::renderPbxIvrEdit()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -4631,7 +4794,7 @@ void Tui::renderPbxIvrEdit()
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
     const int boxW = 52;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -4646,7 +4809,7 @@ void Tui::renderPbxIvrEdit()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4660,7 +4823,7 @@ void Tui::renderPbxIvrEdit()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4690,7 +4853,7 @@ void Tui::renderPbxIvrEdit()
     line(col(Role::Dim, "[\xe2\x86\x91/\xe2\x86\x93] Action  [Esc] Back")); ++used;
     frame(false, false, ""); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[\xe2\x86\x91/\xe2\x86\x93] Action  [Esc] Back  [?] Help");
 }
 
@@ -4741,7 +4904,7 @@ void Tui::renderPbxGroupEdit()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -4750,7 +4913,7 @@ void Tui::renderPbxGroupEdit()
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
     const int boxW = 58;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -4765,7 +4928,7 @@ void Tui::renderPbxGroupEdit()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4779,7 +4942,7 @@ void Tui::renderPbxGroupEdit()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4889,7 +5052,7 @@ void Tui::renderPbxGroupEdit()
          + (_grpCreate ? "Create" : "Apply"))); ++used;
     frame(false, false, ""); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter(_grpCreate
         ? "[Tab] Field  [Space] Toggle  [Enter] Create  [Esc] Cancel"
         : "[Tab] Field  [Space] Toggle  [Enter] Apply  [Esc] Cancel");
@@ -4906,7 +5069,7 @@ void Tui::renderPbxForwardEdit()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -4915,7 +5078,7 @@ void Tui::renderPbxForwardEdit()
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
     const int boxW = 58;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -4930,7 +5093,7 @@ void Tui::renderPbxForwardEdit()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -4944,7 +5107,7 @@ void Tui::renderPbxForwardEdit()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -5003,7 +5166,7 @@ void Tui::renderPbxForwardEdit()
     line(col(Role::Dim, "[Tab] Field [Space] Open/DND [Enter] Apply [Esc] Back")); ++used;
     frame(false, false, ""); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[Tab] Field  [Space] Open/DND  [Enter] Apply  [Esc] Back");
 }
 
@@ -5019,7 +5182,7 @@ void Tui::renderPbxForwardPick()
     const std::string v = glyph(Glyph::BoxV);
     auto bodyBlank = [&]() {
         roled(Role::Border, v);
-        put(std::string((size_t)(kCols - 2), ' '));
+        put(std::string((size_t)(fcols() - 2), ' '));
         roled(Role::Border, v);
         put("\r\n");
     };
@@ -5028,7 +5191,7 @@ void Tui::renderPbxForwardPick()
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
     const int boxW = 58;
-    const int indent = (kCols - 2 - boxW) / 2;
+    const int indent = (fcols() - 2 - boxW) / 2;
     const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
     const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
     const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
@@ -5043,7 +5206,7 @@ void Tui::renderPbxForwardPick()
         for (int i = 0; i < boxW - 2 - used; ++i) put(H);
         if (sep) put(VL); else put(top ? TR : BR);
         if (_color) put("\x1b[0m");
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -5057,7 +5220,7 @@ void Tui::renderPbxForwardPick()
         int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
         put(std::string((size_t)ipad, ' '));
         roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (kCols - 2) - indent - boxW; if (pad < 0) pad = 0;
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
         put(std::string((size_t)pad, ' '));
         roled(Role::Border, v);
         put("\r\n");
@@ -5127,7 +5290,7 @@ void Tui::renderPbxForwardPick()
     line(col(Role::Dim, "[\xe2\x86\x91/\xe2\x86\x93] Pick   [Enter] Choose   [Esc] Keep current")); ++used;
     frame(false, false, ""); ++used;
 
-    for (int i = used; i < 18; ++i) bodyBlank();
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[\xe2\x86\x91/\xe2\x86\x93] Pick  [Enter] Choose  [Esc] Keep current");
 }
 
@@ -5137,7 +5300,7 @@ void Tui::renderPbxForwardPick()
 
 // Move the active tab left/right (wrapping), resetting the per-list cursor so a tab
 // switch never lands the selection out of range on a shorter list.
-static int pbxTabCount() { return 5; }
+static int pbxTabCount() { return 6; }
 
 // Open the Forward editor pre-filled from the selected extension's current config.
 // (Defined as a member-style helper here so onKeyPbxConfig can reuse it.)
@@ -5168,6 +5331,7 @@ void Tui::onKeyPbxConfig(Key k, unsigned char ch)
         case PbxTab::Forwards:   rows = (int)cfg.extensions.size(); break;
         case PbxTab::Ivr:        rows = 6;                          break;  // fixed digit map
         case PbxTab::Features:   rows = 0;                          break;
+        case PbxTab::Trunk:      rows = 0;                          break;  // no selectable rows
     }
     if (k == Key::Up)   { if (_pbxSel > 0) --_pbxSel; gotoScreen(Screen::PbxConfig); return; }
     if (k == Key::Down) { if (_pbxSel < rows - 1) ++_pbxSel; gotoScreen(Screen::PbxConfig); return; }
@@ -5312,6 +5476,21 @@ void Tui::onKeyPbxConfig(Key k, unsigned char ch)
             return;
         }
         if (k == Key::Char && (ch == 'T' || ch == 't')) { /* set/test: no store yet (stub) */ return; }
+    }
+    else if (_pbxTab == PbxTab::Trunk)
+    {
+        if (k == Key::Char && (ch == 'E' || ch == 'e'))
+        {
+            // Seed the editor from the current snapshot. The secret field starts
+            // EMPTY by design: empty on apply means "keep the existing secret".
+            TrunkInfo t = trunk();
+            _trkUrl = t.baseUrl; _trkId = t.clientId; _trkDn = t.sourceDn;
+            _trkSecret.clear();
+            _trkLoopback = t.useLoopback;
+            _trkFocus = 0; _trkBtn = 0; _trkMsg.clear();
+            gotoScreen(Screen::PbxTrunkEdit);
+            return;
+        }
     }
     // Features tab: read-only — only Tabs/Esc/?, all handled above.
 }
@@ -5561,4 +5740,369 @@ void Tui::onKeyPbxIvrEdit(Key k, unsigned char ch)
     if (k == Key::Up)    { if (_ivrAction > 0) --_ivrAction; gotoScreen(Screen::PbxIvrEdit); return; }
     if (k == Key::Down)  { if (_ivrAction < 3) ++_ivrAction; gotoScreen(Screen::PbxIvrEdit); return; }
     if (k == Key::Char && ch == '?') { gotoScreen(Screen::Help); return; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// [3]/TRUNK [E] — trunk settings editor (PbxTrunkEdit). Modeled on the Ring Group
+// editor: field focus cycling (Tab/↑/↓), text entry, a mode radio, Apply/Cancel
+// buttons, and an inline guard line. The secret field is NEVER echoed (bullets);
+// leaving it empty keeps the stored secret (the wiring overlays it on apply).
+// ═══════════════════════════════════════════════════════════════════════════════
+void Tui::renderPbxTrunkEdit()
+{
+    LiveStats st = stats();
+    clearScreen();
+    hideCursor();
+    drawSpineTop("PBX CONFIG", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(fcols() - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+    const int boxW = 58;
+    const int indent = (fcols() - 2 - boxW) / 2;
+    const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
+    const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
+    const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
+    const std::string H = glyph(Glyph::BoxH);
+    auto frame = [&](bool top, bool sep, const std::string& title) {
+        roled(Role::Border, v);
+        put(std::string((size_t)indent, ' '));
+        if (_color) sgr(sgrFor(Role::Border));
+        if (sep) put(VR); else put(top ? TL : BL);
+        int used = 0;
+        if (top && !title.empty()) { put(H); put(" "); put(title); put(" "); used = 1 + 1 + dispWidth(title) + 1; }
+        for (int i = 0; i < boxW - 2 - used; ++i) put(H);
+        if (sep) put(VL); else put(top ? TR : BR);
+        if (_color) put("\x1b[0m");
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto line = [&](const std::string& inner) {
+        roled(Role::Border, v);
+        put(std::string((size_t)indent, ' '));
+        roled(Role::Border, glyph(Glyph::BoxV));
+        put(" ");
+        put(inner);
+        int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
+        put(std::string((size_t)ipad, ' '));
+        roled(Role::Border, glyph(Glyph::BoxV));
+        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    // A windowed text field: shows the TAIL of an over-long value (…suffix) so
+    // the operator always sees what they are typing. Width is display columns.
+    auto fieldWin = [&](const std::string& val, int width) -> std::string {
+        if (dispWidth(val) <= width) return padCols(val, width);
+        // ASCII entry only (the key handler filters), so byte math is column math
+        // for the tail — but keep the ellipsis glyph single-column via the tier.
+        std::string ell = _unicode ? "\xe2\x80\xa6" : "~";
+        return ell + val.substr(val.size() - (size_t)(width - 1));
+    };
+    // A labeled entry row: "Label .... [ value… ]"; the box reverses when focused.
+    auto field = [&](const char* label, const std::string& shown, int idx) {
+        std::string row = col(Role::Text, label);
+        std::string boxIn = std::string("[ ") + shown + " ]";
+        if (_trkFocus == idx && _color) row += "\x1b[7m";
+        row += col(Role::Text, boxIn);
+        if (_trkFocus == idx && _color) row += "\x1b[0m";
+        line(row);
+    };
+
+    int used = 0;
+    bodyBlank(); ++used;
+    frame(true, false, "Trunk settings"); ++used;
+    field("Base URL ... ", fieldWin(_trkUrl, 28), 0); ++used;
+    field("Client ID .. ", fieldWin(_trkId, 28), 1); ++used;
+    {
+        // The never-echoed secret entry (bullets only; empty = keep existing).
+        std::string bul;
+        for (size_t i = 0; i < _trkSecret.size() && i < 28; ++i)
+            bul += _unicode ? "\xe2\x80\xa2" : "*";
+        field("Secret ..... ", padCols(bul, 28), 2); ++used;
+        line(col(Role::Dim, "             (never echoed \xc2\xb7 empty = keep existing)")); ++used;
+    }
+    field("Source DN .. ", fieldWin(_trkDn, 28), 3); ++used;
+    line(""); ++used;
+    {
+        // Mode radio: LOOPBACK (mock) / LIVE. Reverse-video span marks focus.
+        std::string a = std::string(_trkLoopback  ? (_unicode ? "(\xe2\x80\xa2)" : "(*)") : "( )") + " LOOPBACK (mock)";
+        std::string b = std::string(!_trkLoopback ? (_unicode ? "(\xe2\x80\xa2)" : "(*)") : "( )") + " LIVE";
+        std::string row = col(Role::Text, "Mode ....... ");
+        if (_trkFocus == 4 && _color) row += "\x1b[7m";
+        row += a; row += "   "; row += b;
+        if (_trkFocus == 4 && _color) row += "\x1b[0m";
+        line(_trkFocus == 4 ? row
+                            : (col(Role::Text, "Mode ....... ") + a + "   " + b)); ++used;
+    }
+    line(""); ++used;
+    if (!_trkMsg.empty())
+        line(col(Role::Alert, _trkMsg));
+    else
+        line(col(Role::Dim, "Applies on the next reboot \xc2\xb7 [Tab] next field"));
+    ++used;
+    {
+        // Apply / Cancel buttons (focus 5).
+        std::string inner = "        ";
+        bool aFocus = (_trkFocus == 5 && _trkBtn == 0);
+        bool cFocus = (_trkFocus == 5 && _trkBtn == 1);
+        if (aFocus && _color) inner += "\x1b[7m";
+        else if (_color) inner += std::string("\x1b[") + sgrFor(Role::Text) + "m";
+        inner += "< Apply >";
+        if (_color) inner += "\x1b[0m";
+        inner += "        ";
+        if (cFocus && _color) inner += "\x1b[7m";
+        else if (_color) inner += std::string("\x1b[") + sgrFor(Role::Text) + "m";
+        inner += "[ Cancel ]";
+        if (_color) inner += "\x1b[0m";
+        line(inner); ++used;
+    }
+    frame(false, true, ""); ++used;
+    line(col(Role::Dim, "[Tab] Field  [\xe2\x86\x90/\xe2\x86\x92] Radio  [Enter] Apply  [Esc] Cancel")); ++used;
+    frame(false, false, ""); ++used;
+
+    for (int i = used; i < bodyRows(); ++i) bodyBlank();
+    drawFooter("[Tab] Field  [Enter] Apply  [Esc] Cancel  [?] Help");
+}
+
+// ── [3]/TRUNK editor keys ─────────────────────────────────────────────────────
+void Tui::onKeyPbxTrunkEdit(Key k, unsigned char ch)
+{
+    if (k == Key::CtrlL) { gotoScreen(Screen::PbxTrunkEdit); return; }
+    if (k == Key::Esc)   { gotoScreen(Screen::PbxConfig); return; }   // D7: no write
+
+    if (k == Key::Tab || k == Key::Down)
+    { _trkFocus = (_trkFocus + 1) % 6; _trkMsg.clear(); gotoScreen(Screen::PbxTrunkEdit); return; }
+    if (k == Key::Up)
+    { _trkFocus = (_trkFocus + 5) % 6; _trkMsg.clear(); gotoScreen(Screen::PbxTrunkEdit); return; }
+
+    auto applyTrunk = [&]() {
+        if (!_trkLoopback && _trkUrl.empty())
+        { _trkMsg = "LIVE mode needs a Base URL."; gotoScreen(Screen::PbxTrunkEdit); return; }
+        if (!_trunkSet)
+        { _trkMsg = "Trunk config not available on this build."; gotoScreen(Screen::PbxTrunkEdit); return; }
+        // Empty secret = keep the stored one (the wiring overlays it).
+        std::string err = _trunkSet(_trkUrl, _trkId, _trkSecret, _trkDn, _trkLoopback);
+        if (!err.empty()) { _trkMsg = err; gotoScreen(Screen::PbxTrunkEdit); return; }
+        _trkSecret.clear();                      // drop the plaintext immediately
+        _trkResult = "saved \xe2\x80\x94 applies on next reboot";
+        gotoScreen(Screen::PbxConfig);           // back to the TRUNK tab
+    };
+    if (k == Key::Enter)
+    {
+        if (_trkFocus == 5 && _trkBtn == 1) { gotoScreen(Screen::PbxConfig); return; }
+        applyTrunk(); return;
+    }
+
+    if (_trkFocus == 4)   // mode radio
+    {
+        if (k == Key::Left)  { _trkLoopback = true;  gotoScreen(Screen::PbxTrunkEdit); return; }
+        if (k == Key::Right) { _trkLoopback = false; gotoScreen(Screen::PbxTrunkEdit); return; }
+        if (k == Key::Char && ch == ' ')
+        { _trkLoopback = !_trkLoopback; gotoScreen(Screen::PbxTrunkEdit); return; }
+        if (k == Key::Char && ch == '?') { gotoScreen(Screen::Help); return; }
+    }
+    else if (_trkFocus == 5)   // buttons
+    {
+        if (k == Key::Left)  { _trkBtn = 0; gotoScreen(Screen::PbxTrunkEdit); return; }
+        if (k == Key::Right) { _trkBtn = 1; gotoScreen(Screen::PbxTrunkEdit); return; }
+        if (k == Key::Char && ch == ' ')
+        {
+            if (_trkBtn == 0) applyTrunk();
+            else gotoScreen(Screen::PbxConfig);
+            return;
+        }
+        if (k == Key::Char && ch == '?') { gotoScreen(Screen::Help); return; }
+    }
+    else   // text fields 0..3 — every printable char is data (incl. '?')
+    {
+        std::string& f = (_trkFocus == 0) ? _trkUrl
+                       : (_trkFocus == 1) ? _trkId
+                       : (_trkFocus == 2) ? _trkSecret : _trkDn;
+        const size_t cap = (_trkFocus == 0) ? 96 : 64;
+        if (k == Key::Backspace)
+        { if (!f.empty()) f.pop_back(); _trkMsg.clear(); gotoScreen(Screen::PbxTrunkEdit); return; }
+        if (k == Key::Char)
+        {
+            // Printable, non-space ASCII (URLs/ids/DNs/secrets carry no spaces).
+            if (ch > 0x20 && ch < 0x7f && f.size() < cap)
+            { f.push_back((char)ch); _trkMsg.clear(); gotoScreen(Screen::PbxTrunkEdit); }
+            return;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FIRST RUN — the unprovisioned banner routes here instead of the hub. A terse,
+// honest checklist (like a Pi first boot) whose hotkeys jump to the EXISTING
+// screens; nothing here mutates state itself. Esc is a deliberate no-op — the
+// hint line says disconnecting is safe and setup resumes on the next login.
+// ═══════════════════════════════════════════════════════════════════════════════
+void Tui::renderFirstRun()
+{
+    LiveStats st = stats();
+    SecurityInfo si = security();
+    TrunkInfo t = trunk();
+    clearScreen();
+    hideCursor();
+    drawSpineTop("FIRST RUN", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    const std::string dot = _unicode ? "\xc2\xb7" : ".";
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(fcols() - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto bodyRow = [&](const std::string& body) {
+        roled(Role::Border, v);
+        put(" ");
+        put(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+
+    int bodyUsed = 0;
+    auto emit = [&](const std::string& body) { bodyRow(body); ++bodyUsed; };
+    auto emitBlank = [&]() { bodyBlank(); ++bodyUsed; };
+
+    emitBlank();
+    emit(col(Role::Header, " FIRST RUN \xe2\x80\x94 let's set up this device"));
+    {
+        std::string r = " ";
+        const char* H = glyph(Glyph::BoxH);
+        for (int i = 0; i < 38; ++i) r += H;
+        bodyRow(col(Role::Border, r)); ++bodyUsed;
+    }
+    emit(col(Role::Text, " This box is unprovisioned. Three steps, in any order:"));
+    emitBlank();
+
+    // A numbered step row: [n] label ..... status chip (glyph+LABEL).
+    auto step = [&](const char* num, const char* label, const std::string& chip) {
+        std::string body = " ";
+        if (_color) body += std::string("\x1b[") + sgrFor(Role::Header) + "m";
+        body += num;
+        if (_color) body += "\x1b[0m";
+        body += " ";
+        std::string l = label;
+        body += col(Role::Text, l);
+        int dots = 26 - (int)l.size(); if (dots < 1) dots = 1;
+        body += col(Role::Text, " " + std::string((size_t)dots, '.') + " ");
+        body += chip;
+        emit(body);
+    };
+    // [1] admin PIN state (the same fact the SECURITY screen shows).
+    {
+        std::string chip;
+        if (si.provisioned || st.provisioned)
+        {
+            if (_color) chip += std::string("\x1b[") + sgrFor(Role::Lamp) + "m";
+            chip += glyph(Glyph::Online); chip += " SET";
+            if (_color) chip += "\x1b[0m";
+        }
+        else
+        {
+            if (_color) chip += std::string("\x1b[") + sgrFor(Role::Dim) + "m";
+            chip += glyph(Glyph::Unreach); chip += " none";
+            if (_color) chip += "\x1b[0m";
+            chip += col(Role::Dim, "   (SSH is OPEN until set)");
+        }
+        step("[1]", "Set the admin PIN", chip);
+    }
+    // [2] network identity.
+    {
+        const char* modeWord = (st.netMode == 1) ? "STATION"
+                             : (st.netMode == 0) ? "SETUP" : "AP";
+        step("[2]", "Network", col(Role::Text, st.ip + "   " + dot + "   " + modeWord));
+    }
+    // [3] PSTN trunk state (same lexicon as the TRUNK tab).
+    {
+        std::string chip;
+        if (t.useLoopback)
+        {
+            if (_color) chip += std::string("\x1b[") + sgrFor(Role::Dim) + "m";
+            chip += glyph(Glyph::Unreach); chip += " LOOPBACK MOCK";
+            if (_color) chip += "\x1b[0m";
+        }
+        else if (t.connected)
+        {
+            if (_color) chip += std::string("\x1b[") + sgrFor(Role::Lamp) + "m";
+            chip += glyph(Glyph::Online); chip += " LIVE TRUNK";
+            if (_color) chip += "\x1b[0m";
+        }
+        else
+        {
+            if (_color) chip += std::string("\x1b[") + sgrFor(Role::Alert) + "m";
+            chip += glyph(Glyph::Dnd); chip += " DOWN";
+            if (_color) chip += "\x1b[0m";
+        }
+        step("[3]", "PSTN trunk", chip);
+    }
+    emitBlank();
+    {
+        std::string body = " ";
+        if (_color) body += std::string("\x1b[") + sgrFor(Role::Header) + "m";
+        body += "[Enter]";
+        if (_color) body += "\x1b[0m";
+        body += col(Role::Text, " go to the hub");
+        emit(body);
+    }
+    emitBlank();
+    emit(col(Role::Dim, " Esc does nothing here. Disconnecting is safe \xe2\x80\x94 setup"));
+    emit(col(Role::Dim, " resumes on your next SSH login."));
+
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
+    drawFooter("[1-3] Step  [Enter] Hub  [?] Help");
+    _lastClock = fmtClock(st.uptimeSec);
+}
+
+// ── FIRST RUN keys: [1] PIN modal, [2] Network, [3] Trunk tab, [Enter] hub. ────
+void Tui::onKeyFirstRun(Key k, unsigned char ch)
+{
+    if (k == Key::CtrlL) { gotoScreen(Screen::FirstRun); return; }
+    if (k == Key::Esc)   { /* deliberate no-op — the hint line explains */ return; }
+    if (k == Key::Enter) { gotoScreen(Screen::Hub); return; }
+    if (k == Key::Char)
+    {
+        switch (ch)
+        {
+            case '1':
+                _pinCur.clear(); _pinNew.clear(); _pinConf.clear();
+                _pinField = 0; _pinMsg.clear();
+                _pinReturn = Screen::FirstRun;   // come back to the checklist
+                gotoScreen(Screen::ChangePin);
+                return;
+            case '2':
+                gotoScreen(Screen::Network);
+                return;
+            case '3':
+                _pbxTab = PbxTab::Trunk; _pbxSel = 0; _pbxTop = 0;
+                gotoScreen(Screen::PbxConfig);
+                return;
+            case '?':
+                gotoScreen(Screen::Help);
+                return;
+            default:
+                return;
+        }
+    }
 }

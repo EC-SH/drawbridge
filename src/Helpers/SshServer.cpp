@@ -909,6 +909,40 @@ static void runTuiSession(WOLFSSH* ssh)
         return hh ? hh->forgetDevice(macOrExt) : false;
     });
 
+    // ── [3]/TRUNK provider + apply (WAN trunk / dial-9 PSTN access) ───────────
+    // Snapshot: flatten RequestsHandler::TrunkConfig onto the display-safe
+    // Tui::TrunkInfo — the secret itself NEVER crosses (only `secretSet`).
+    tui.setTrunkProvider([]() -> Tui::TrunkInfo {
+        Tui::TrunkInfo t;
+        RequestsHandler* hh = SshServer::instance().handler();
+        if (!hh) return t;
+        RequestsHandler::TrunkConfig cfg = hh->getTrunkConfig();
+        t.baseUrl     = cfg.baseUrl;
+        t.clientId    = cfg.clientId;
+        t.sourceDn    = cfg.sourceDn;
+        t.secretSet   = !cfg.clientSecret.empty();
+        t.useLoopback = cfg.useLoopback;
+        t.connected   = hh->isTrunkConnected();
+        return t;
+    });
+    // Apply: overlay the edited fields on the stored config. An EMPTY secret
+    // means "keep the existing secret" (the modal never echoes it, so the
+    // operator cannot re-type-to-confirm a value they cannot see). setTrunkConfig
+    // validates + persists; it returns "" on success (applies on reboot).
+    tui.setTrunkSetter([](const std::string& baseUrl, const std::string& clientId,
+                          const std::string& secret, const std::string& sourceDn,
+                          bool useLoopback) -> std::string {
+        RequestsHandler* hh = SshServer::instance().handler();
+        if (!hh) return "PBX not attached.";
+        RequestsHandler::TrunkConfig cfg = hh->getTrunkConfig();
+        cfg.baseUrl     = baseUrl;
+        cfg.clientId    = clientId;
+        if (!secret.empty()) cfg.clientSecret = secret;   // empty = keep existing
+        cfg.sourceDn    = sourceDn;
+        cfg.useLoopback = useLoopback;
+        return hh->setTrunkConfig(cfg);
+    });
+
     // ── Per-session SECURITY context ([4]) ───────────────────────────────────
     // Capture the connected operator's peer "ip:port" and the session-start uptime
     // ONCE at accept time (cheap, stable for the session). The provider then folds in
@@ -968,12 +1002,36 @@ static void runTuiSession(WOLFSSH* ssh)
     tui.begin();   // banner → hub
 
     // The session loop must wake ~1 Hz to drive the live monitor's repaint even when
-    // the operator is not typing. We keep wolfSSH in BLOCKING mode (no WS_WANT_READ
-    // handling) and gate the blocking read behind a select() with a 1 s timeout on
-    // the raw socket: select returns immediately on a keystroke, or times out so we
-    // can tickLive() and loop. The cadence is the brief's ~1 Hz wallboard refresh.
+    // the operator is not typing. We keep wolfSSH in BLOCKING mode and gate it behind
+    // a select() with a 1 s timeout on the raw socket: select returns immediately on
+    // inbound bytes, or times out so we can tickLive() and loop.
+    //
+    // LIVE RESIZE: when select fires we run wolfSSH_worker() — it processes exactly
+    // ONE inbound packet and returns. A "window-change" channel request (parsed by
+    // the patched wolfSSH — see cmake/patch_wolfssl.py fix 6) updates the session's
+    // widthChar/heightRows and worker returns WS_SUCCESS with no channel data, so
+    // the loop pass completes and the resize check below fires the same pass. (The
+    // old direct wolfSSH_stream_read() blocked inside DoReceive after consuming a
+    // window-change, deferring the redraw until the next keystroke.) Channel DATA
+    // makes worker return WS_CHAN_RXD with the bytes buffered, which the now-non-
+    // blocking wolfSSH_stream_read drains immediately.
     const int fd = wolfSSH_get_fd(ssh);
     char rbuf[256];
+    uint16_t lastCols = self.terminalCols();
+    uint16_t lastRows = self.terminalRows();
+    // Re-read the pty geometry off the live session each pass; on a change, re-fit
+    // the TUI and repaint the current screen (state untouched).
+    auto checkResize = [&]() {
+        const uint16_t c = static_cast<uint16_t>(ssh->widthChar);
+        const uint16_t r = static_cast<uint16_t>(ssh->heightRows);
+        if (c > 0 && r > 0 && (c != lastCols || r != lastRows))
+        {
+            lastCols = c;
+            lastRows = r;
+            tui.setSize(c, r);
+            tui.redraw();
+        }
+    };
     while (tui.running())
     {
         fd_set rfds;
@@ -982,11 +1040,23 @@ static void runTuiSession(WOLFSSH* ssh)
         struct timeval tv{ 1, 0 };          // 1 s
         int sel = select(fd + 1, &rfds, nullptr, nullptr, &tv);
         if (sel < 0) break;                 // socket error → end session
-        if (sel == 0) { tui.tickLive(); continue; }  // idle tick (1 Hz repaint)
+        if (sel == 0) { tui.tickLive(); checkResize(); continue; }  // idle tick (1 Hz)
 
-        int n = wolfSSH_stream_read(ssh, reinterpret_cast<byte*>(rbuf), sizeof(rbuf));
-        if (n <= 0) break;                  // EOF / error / disconnect
-        if (!tui.feed(rbuf, static_cast<size_t>(n))) break;  // logout
+        // Process exactly one inbound packet (keystroke data, window-change, …).
+        int rc = wolfSSH_worker(ssh, nullptr);
+        if (ssh->channelList == nullptr || ssh->channelList->eofRxd) break;  // EOF
+        if (rc == WS_CHAN_RXD)
+        {
+            // Channel data is buffered — drain it (returns without re-blocking).
+            int n = wolfSSH_stream_read(ssh, reinterpret_cast<byte*>(rbuf), sizeof(rbuf));
+            if (n <= 0) break;              // EOF / error / disconnect
+            if (!tui.feed(rbuf, static_cast<size_t>(n))) break;  // logout
+        }
+        else if (rc != WS_SUCCESS && rc != WS_REKEYING)
+        {
+            break;                          // transport error → end session
+        }
+        checkResize();                      // window-change lands here, same pass
     }
 }
 
