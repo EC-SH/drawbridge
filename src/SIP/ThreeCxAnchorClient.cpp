@@ -628,6 +628,7 @@ esp_http_client_handle_t ThreeCxAnchorClient::makeAuthedClient(const std::string
 	config.crt_bundle_attach = esp_crt_bundle_attach;
 	config.buffer_size = 4096;
 	config.buffer_size_tx = txBufSize;
+	config.timeout_ms = 2000; // 2 seconds timeout to bound blocking calls
 
 	esp_http_client_handle_t client = esp_http_client_init(&config);
 	if (!client)
@@ -802,9 +803,23 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										break;
 									}
 
-									ESP_LOGI(TAG, "Call control event: Participant Upset %s", partId.c_str());
-									std::string statusStr = getParticipantStatus(partId);
-									ESP_LOGI(TAG, "Participant %s status: %s", partId.c_str(), statusStr.c_str());
+									cJSON* attached = cJSON_GetObjectItem(eventObj, "attached_data");
+									std::string statusStr = "";
+									if (attached)
+									{
+										cJSON* statusObj = cJSON_GetObjectItem(attached, "status");
+										if (statusObj && statusObj->valuestring)
+										{
+											statusStr = statusObj->valuestring;
+											ESP_LOGI(TAG, "Call control event: Participant Upset %s (parsed status: %s)", partId.c_str(), statusStr.c_str());
+										}
+									}
+									if (statusStr.empty())
+									{
+										ESP_LOGI(TAG, "Call control event: Participant Upset %s (querying HTTP fallback)", partId.c_str());
+										statusStr = getParticipantStatus(partId);
+										ESP_LOGI(TAG, "Participant %s status: %s", partId.c_str(), statusStr.c_str());
+									}
 
 									if (statusStr == "Connected")
 									{
@@ -1077,7 +1092,7 @@ void ThreeCxAnchorClient::runRxLoop()
 	// startMediaStreams() can fire slightly ahead of that, so retry the open
 	// rather than giving up — otherwise inbound audio is lost for the whole call.
 	constexpr int        kMaxAttempts = 40;                  // ~20s ceiling
-	const TickType_t     kRetryDelay  = pdMS_TO_TICKS(500);
+	TickType_t           delay        = pdMS_TO_TICKS(50);   // Start fast at 50ms
 	bool opened = false;
 
 	for (int attempt = 0; attempt < kMaxAttempts && _rxTaskHandle != nullptr; ++attempt)
@@ -1089,7 +1104,8 @@ void ThreeCxAnchorClient::runRxLoop()
 		}
 		if (!_getClient)
 		{
-			vTaskDelay(kRetryDelay);
+			vTaskDelay(delay);
+			delay = (delay * 2 > pdMS_TO_TICKS(500)) ? pdMS_TO_TICKS(500) : delay * 2;
 			continue;
 		}
 
@@ -1113,7 +1129,8 @@ void ThreeCxAnchorClient::runRxLoop()
 		teardownGetClient();
 		if (_rxTaskHandle != nullptr)
 		{
-			vTaskDelay(kRetryDelay);
+			vTaskDelay(delay);
+			delay = (delay * 2 > pdMS_TO_TICKS(500)) ? pdMS_TO_TICKS(500) : delay * 2;
 		}
 	}
 

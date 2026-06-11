@@ -73,7 +73,7 @@ bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
 		std::lock_guard<std::mutex> lock(_mutex);
 		_simThreads.emplace_back([this, myCallId]() {
 			// Simulate network delay for ringing
-			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			if (myCallId != g_activeCallId.load()) return;
 
 			EventCallback evCb;
@@ -90,7 +90,7 @@ bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
 			}
 
 			// Simulate call answering
-			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+			std::this_thread::sleep_for(std::chrono::milliseconds(30));
 			if (myCallId != g_activeCallId.load()) return;
 
 			if (evCb)

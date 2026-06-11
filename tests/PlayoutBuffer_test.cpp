@@ -112,7 +112,7 @@ TEST(LoopbackAnchorClientTest, SimEventsAndAudioLoop)
 	EXPECT_TRUE(client.makeCall("102"));
 
 	// Sleep to let ringing and answer events fire
-	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	std::this_thread::sleep_for(std::chrono::milliseconds(60));
 
 	EXPECT_EQ(ringingCount, 1);
 	EXPECT_EQ(answerCount, 1);
