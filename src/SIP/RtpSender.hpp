@@ -65,6 +65,11 @@ public:
 	// implementation: bias 0x84, segment search, 8-bit companded byte (inverted).
 	static uint8_t linearToUlaw(int16_t pcm);
 
+	// Encode `count` PCM16 samples from `in` into `out` (µ-law). `out` must hold
+	// `count` uint8_t. No allocation, fully bounds-driven by `count`. Safe no-op
+	// on null/empty. Returns the number of samples written.
+	static size_t ulawEncodeBuffer(const int16_t* in, size_t count, uint8_t* out);
+
 	// Fill `out` with `count` µ-law samples of a sine tone at `freqHz`, advancing the
 	// caller's running phase `phase` (in radians) so successive frames are continuous
 	// (no click at the 20 ms boundary). amplitude is 0..1 of full scale.

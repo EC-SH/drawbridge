@@ -70,6 +70,19 @@ uint8_t RtpSender::linearToUlaw(int16_t pcm)
 	return ulaw;
 }
 
+size_t RtpSender::ulawEncodeBuffer(const int16_t* in, size_t count, uint8_t* out)
+{
+	if (in == nullptr || out == nullptr || count == 0)
+	{
+		return 0;
+	}
+	for (size_t i = 0; i < count; ++i)
+	{
+		out[i] = linearToUlaw(in[i]);
+	}
+	return count;
+}
+
 // ── Continuous sine-tone synthesis → µ-law ──────────────────────────────────
 void RtpSender::synthTone(uint8_t* out, int count, double freqHz,
 	double& phase, double amplitude)

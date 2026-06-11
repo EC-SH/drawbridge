@@ -6,6 +6,7 @@
 #include <thread>
 #include <atomic>
 #include <string>
+#include <vector>
 
 class LoopbackAnchorClient : public AnchorClient
 {
@@ -40,7 +41,7 @@ private:
 
 	mutable std::mutex _mutex;
 
-	std::thread       _simThread;
+	std::vector<std::thread> _simThreads;
 	std::atomic<bool> _stopSimThread{false};
 };
 

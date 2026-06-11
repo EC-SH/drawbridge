@@ -2,6 +2,7 @@
 #include "RequestsHandler.hpp"
 #include <atomic>
 #include <sstream>
+#include <thread>
 #include <cctype>
 #include <cstdlib>
 #include <algorithm>
@@ -82,7 +83,6 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 			_messagePool.push_back(std::make_shared<SipSdpMessage>("", sockaddr_in{}));
 		}
 	}
-	_dummyClient = std::make_shared<SipClient>();
 
 	// Reload persisted PBX config (call-forward / ring groups) and the CDR ring from
 	// NVS so they survive reboot. No-ops on host. Construction is single-threaded
@@ -195,9 +195,7 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 		// handset ACKs our 200 OK (vs CANCEL/re-INVITE). REGISTER/OPTIONS excluded.
 		if (handlerKey == "ACK" || handlerKey == "BYE" || handlerKey == "CANCEL" || handlerKey == "INVITE")
 		{
-			queueLog("[SIP IN] " + handlerKey +
-			         " callID=" + std::string(request->getCallID()) +
-			         " to=" + std::string(request->getToNumber()));
+			dumpWire("[SIP IN] ", handlerKey, request->getCallID(), request->getToNumber());
 		}
 
 		// Surface inbound client-error (4xx) responses once. Deferred via _logQueue
@@ -470,11 +468,10 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 
 	{
 		auto session = getSession(data->getCallID());
-		if (session.has_value() && session.value()->getDest() == _dummyClient)
+		if (session.has_value() && isDummyClient(session.value()->getDest()))
 		{
 			_mediaBridge.stopBridge();
-			if (_anchorClient)
-				_anchorClient->dropCall("");
+			asyncDropCall("");
 			auto response = getMessageFromPool(data->toString(), data->getSource());
 			response->setHeader(SipMessageTypes::OK);
 			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
@@ -561,11 +558,11 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		okResponse->enforceG711();
 		_outbox.emplace_back(data->getSource(), std::move(okResponse));
 
-		_dummyClient->reset("777", data->getSource(), 3600);
+		auto virtualClient = std::make_shared<SipClient>("777", data->getSource(), 3600);
 		auto newSession = allocateSession(std::string(data->getCallID()), caller.value());
 		if (newSession)
 		{
-			newSession->setDest(_dummyClient);
+			newSession->setDest(virtualClient);
 			_sessions.emplace(data->getCallID(), newSession);
 			newSession->setState(Session::State::Connected);
 		}
@@ -738,8 +735,8 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 				return;
 			}
 
-			_dummyClient->reset(destNumber, data->getSource(), 3600);
-			newSession->setDest(_dummyClient);
+			auto virtualClient = std::make_shared<SipClient>(destNumber, data->getSource(), 3600);
+			newSession->setDest(virtualClient);
 			newSession->setInviteMessage(data);
 			newSession->setState(Session::State::Invited);
 			_sessions.emplace(data->getCallID(), newSession);
@@ -750,26 +747,11 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 			// treat the 200 as a foreign dialog and never leave the ringing state.
 			std::string localTag = IDGen::GenerateID(9);
 			newSession->setLocalTag(localTag);
-			std::shared_ptr<SipMessage> ringing = getMessageFromPool(data->toString(), data->getSource());
-			ringing->setHeader("SIP/2.0 180 Ringing");
-			ringing->clearBody();
 			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-			ringing->setVia(std::string(data->getVia()) + ";received=" + activeIp);
-			ringing->setTo(std::string(data->getTo()) + ";tag=" + localTag);
-			ringing->setContact(buildContact(destNumber));
-			queueLog(std::string("[3CX] 180 Ringing ->\n") + ringing->toString());
-			_outbox.emplace_back(data->getSource(), std::move(ringing));
+			sendRinging(data, activeIp, localTag, "[3CX]");
 
-			// Trigger outbound 3CX call
-			if (!_anchorClient->makeCall(destNumber))
-			{
-				queueLog("[3CX] Failed to initiate outbound call to " + destNumber, true);
-				endCall(data->getCallID(), caller.value()->getNumber(), destNumber, "3CX call fail");
-			}
-			else
-			{
-				queueLog("[3CX] Initiating outbound call to " + destNumber);
-			}
+			// Trigger outbound 3CX call asynchronously to avoid blocking the main SIP thread
+			asyncMakeCall(destNumber, std::string(data->getCallID()), caller.value()->getNumber());
 			return;
 		}
 
@@ -945,46 +927,16 @@ void RequestsHandler::onMediaInvite(std::shared_ptr<SipMessage> data,
 	std::string toTag = IDGen::GenerateID(9);
 	std::string sdpBody = buildMediaSdp(activeIp, _rtpSender.serverRtpPort());
 
-	// Assemble the OK from the INVITE's headers + our body. clearBody() leaves the
-	// header/blank-line boundary intact; we then append Content-Type + the SDP and
-	// let syncContentLength() (invoked by enforceG711) fix the length.
-	auto ok = getMessageFromPool(data->toString(), data->getSource());
-	ok->setHeader(SipMessageTypes::OK);
-	ok->setVia(std::string(data->getVia()) + ";received=" + activeIp);
-	ok->setTo(std::string(data->getTo()) + ";tag=" + toTag);
-	ok->setContact(buildContact("440"));
-	ok->clearBody();
-	// Append our SDP body after the header/body separator. We rebuild the raw string
-	// because clearBody() emptied the body and zeroed length. The cloned INVITE
-	// already carries "Content-Type: application/sdp" (which clearBody() does NOT
-	// strip), so only add the header if it is somehow absent — never duplicate it.
-	{
-		std::string raw = ok->toString();
-		size_t sep = raw.find("\r\n\r\n");
-		if (sep != std::string::npos)
-		{
-			std::string_view headerView(raw.data(), sep);
-			if (headerView.find("application/sdp") == std::string_view::npos)
-			{
-				// No SDP Content-Type yet: splice one in just before the blank line.
-				raw.insert(sep, "\r\nContent-Type: application/sdp");
-				sep = raw.find("\r\n\r\n");   // separator moved by the inserted bytes
-			}
-			raw.erase(sep + 4);          // drop anything stale after the separator
-			raw += sdpBody;              // append our SDP body
-		}
-		ok->reset(std::move(raw), data->getSource());
-	}
-	ok->enforceG711();                   // collapse codec list (no-op here) + sync length
-	ok->syncContentLength();             // belt-and-suspenders: length == body bytes
+	auto ok = buildOkWithSdp(data, activeIp, toTag, sdpBody);
+	dumpWire("[media] 200 OK ->", ok);
 	_outbox.emplace_back(data->getSource(), std::move(ok));
 
 	// Track a Session so the dashboard shows the call and CDR is recorded on teardown.
-	_dummyClient->reset("440", data->getSource(), 3600);
+	auto virtualClient = std::make_shared<SipClient>("440", data->getSource(), 3600);
 	auto newSession = allocateSession(std::string(data->getCallID()), caller);
 	if (newSession)
 	{
-		newSession->setDest(_dummyClient);
+		newSession->setDest(virtualClient);
 		_sessions.emplace(data->getCallID(), newSession);
 		newSession->setState(Session::State::Connected);
 	}
@@ -1176,13 +1128,10 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-	if (session.has_value() && session.value()->getDest() == _dummyClient)
+	if (session.has_value() && isDummyClient(session.value()->getDest()))
 	{
 		_mediaBridge.stopBridge();
-		if (_anchorClient)
-		{
-			_anchorClient->dropCall("");
-		}
+		asyncDropCall("");
 		auto response = getMessageFromPool(data->toString(), data->getSource());
 		response->setHeader(SipMessageTypes::OK);
 		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
@@ -1365,7 +1314,7 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 	// DIAGNOSTIC: an ACK for a 3CX-routed (_dummyClient) session means the handset
 	// ACCEPTED our 200 OK and the SIP call is fully connected — so any remaining
 	// silence is purely an RTP/media problem, not a SIP one.
-	if (session.value()->getDest() == _dummyClient)
+	if (isDummyClient(session.value()->getDest()))
 	{
 		queueLog("[3CX] Handset ACK received — SIP dialog CONNECTED for " + std::string(data->getCallID()));
 	}
@@ -3967,12 +3916,9 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			// Reroute to extension 777 (echo loopback) so the caller hears tones.
 			// Find the active session for this Call-ID and redirect its RTP to 777.
 			auto session = getSession(callId);
-			if (session.has_value())
-			{
-				_dummyClient->reset("777", session.value()->getSrc()
+				auto virtualClient = std::make_shared<SipClient>("777", session.value()->getSrc()
 					? session.value()->getSrc()->getAddress() : sockaddr_in{}, 3600);
-				session.value()->setDest(_dummyClient);
-			}
+				session.value()->setDest(virtualClient);
 		}
 		else
 		{
@@ -3991,8 +3937,8 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			auto src = session.value()->getSrc();
 			if (src)
 			{
-				_dummyClient->reset("777", src->getAddress(), 3600);
-				session.value()->setDest(_dummyClient);
+				auto virtualClient = std::make_shared<SipClient>("777", src->getAddress(), 3600);
+				session.value()->setDest(virtualClient);
 				queueLog("*11 echo loopback for call " + callId);
 			}
 		}
@@ -4101,15 +4047,42 @@ void RequestsHandler::loadThreeCxConfig()
 
 	_mediaBridge.init(&_rtpReceiver, &_rtpSender, _anchorClient);
 
-	// Start the anchor client
-	if (_anchorClient->start())
-	{
-		queueLog("[3CX] Anchor client started");
-	}
-	else
-	{
-		queueLog("[3CX] Failed to start anchor client", true);
-	}
+	// Start the anchor client asynchronously to avoid blocking the constructor with TLS fetchToken
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	struct StartClientArg {
+		AnchorClient* anchor;
+		RequestsHandler* handler;
+	};
+	auto* arg = new StartClientArg{ _anchorClient, this };
+	xTaskCreate([](void* p) {
+		auto* sca = static_cast<StartClientArg*>(p);
+		if (sca->anchor->start())
+		{
+			std::lock_guard<std::mutex> lock(sca->handler->_mutex);
+			sca->handler->queueLog("[3CX] Anchor client started");
+		}
+		else
+		{
+			std::lock_guard<std::mutex> lock(sca->handler->_mutex);
+			sca->handler->queueLog("[3CX] Failed to start anchor client", true);
+		}
+		delete sca;
+		vTaskDelete(NULL);
+	}, "3cx_start", 4096, arg, 5, NULL);
+#else
+	std::thread([this]() {
+		if (_anchorClient->start())
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			queueLog("[3CX] Anchor client started");
+		}
+		else
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			queueLog("[3CX] Failed to start anchor client", true);
+		}
+	}).detach();
+#endif
 
 	// Set event callback
 	_anchorClient->setEventCallback([this](const AnchorClient::CallEvent& ev) {
@@ -4120,7 +4093,7 @@ void RequestsHandler::loadThreeCxConfig()
 			// Find the active ringing session.
 			for (auto& [callId, session] : _sessions)
 			{
-				if (session->getState() == Session::State::Invited && session->getDest() == _dummyClient)
+				if (session->getState() == Session::State::Invited && isDummyClient(session->getDest()))
 				{
 					// Found the session!
 					auto caller = session->getSrc();
@@ -4153,33 +4126,8 @@ void RequestsHandler::loadThreeCxConfig()
 							         std::to_string(handsetPort) + " <-> 3CX (rx port " + std::to_string(rxPort) + ")");
 							std::string sdpBody = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
 
-							auto ok = getMessageFromPool(inviteMsg->toString(), inviteMsg->getSource());
-							ok->setHeader(SipMessageTypes::OK);
-							ok->setVia(std::string(inviteMsg->getVia()) + ";received=" + activeIp);
-							ok->setTo(std::string(inviteMsg->getTo()) + ";tag=" + toTag);
-							ok->setContact(buildContact(inviteMsg->getToNumber()));
-							ok->clearBody();
-							{
-								std::string raw = ok->toString();
-								size_t sep = raw.find("\r\n\r\n");
-								if (sep != std::string::npos)
-								{
-									std::string_view headerView(raw.data(), sep);
-									if (headerView.find("application/sdp") == std::string_view::npos)
-									{
-										raw.insert(sep, "\r\nContent-Type: application/sdp");
-										sep = raw.find("\r\n\r\n");
-									}
-									raw.erase(sep + 4);
-									raw += sdpBody;
-								}
-								ok->reset(std::move(raw), inviteMsg->getSource());
-							}
-							ok->enforceG711();
-							ok->syncContentLength();
-
-							// DIAGNOSTIC: dump the exact 200 OK wire bytes.
-							queueLog(std::string("[3CX] 200 OK ->\n") + ok->toString());
+							auto ok = buildOkWithSdp(inviteMsg, activeIp, toTag, sdpBody);
+							dumpWire("[3CX] 200 OK ->", ok);
 
 							// This callback runs on the WS event task, NOT the SIP receive
 							// thread — use _asyncOutbox so the start-of-body _outbox.clear() in
@@ -4198,7 +4146,7 @@ void RequestsHandler::loadThreeCxConfig()
 			// Find the active session and terminate it
 			for (auto& [callId, session] : _sessions)
 			{
-				if (session->getDest() == _dummyClient)
+				if (isDummyClient(session->getDest()))
 				{
 					_mediaBridge.stopBridge();
 
@@ -4207,31 +4155,195 @@ void RequestsHandler::loadThreeCxConfig()
 					auto inviteMsg = session->getInviteMessage();
 					if (caller && inviteMsg)
 					{
-						// Build BYE
-						std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-						std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-						char ipBuf[INET_ADDRSTRLEN]{};
-						inet_ntop(AF_INET, &caller->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
-						std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(caller->getAddress().sin_port));
-
-						std::ostringstream ss;
-						ss << "BYE sip:" << caller->getNumber() << "@" << destIpPort << " SIP/2.0\r\n"
-						   << "Via: SIP/2.0/UDP " << srcIpPort << "\r\n"
-						   << "From: <sip:" << inviteMsg->getToNumber() << "@" << activeIp << ">\r\n"
-						   << "To: " << inviteMsg->getFrom() << "\r\n"
-						   << "Call-ID: " << callId << "\r\n"
-						   << "CSeq: 2 BYE\r\n"
-						   << "Max-Forwards: 70\r\n"
-						   << "Content-Length: 0\r\n\r\n";
-
-						auto bye = getMessageFromPool(ss.str(), caller->getAddress());
-						_asyncOutbox.emplace_back(caller->getAddress(), std::move(bye)); // WS task — see _asyncOutbox
+						auto bye = buildServerBye(caller, inviteMsg, callId);
+						if (bye)
+						{
+							_asyncOutbox.emplace_back(caller->getAddress(), std::move(bye)); // WS task — see _asyncOutbox
+						}
 					}
 
-					endCall(callId, session->getSrc() ? session->getSrc()->getNumber() : "", inviteMsg ? inviteMsg->getToNumber() : "", "3CX hangup");
+					// Copy callId to a local std::string before calling endCall to avoid dangling reference
+					std::string localCallId = callId;
+					endCall(localCallId, session->getSrc() ? session->getSrc()->getNumber() : "", inviteMsg ? inviteMsg->getToNumber() : "", "3CX hangup");
 					break;
 				}
 			}
 		}
 	});
 }
+
+bool RequestsHandler::isDummyClient(const std::shared_ptr<SipClient>& client) const
+{
+	if (!client) return false;
+	for (const auto& poolClient : _clientPool)
+	{
+		if (poolClient == client)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+void RequestsHandler::dumpWire(const char* label, const std::shared_ptr<SipMessage>& msg)
+{
+	if (!msg) return;
+	queueLog(std::string(label) + "\n" + msg->toString());
+}
+
+void RequestsHandler::dumpWire(const char* label, std::string_view method, std::string_view callID, std::string_view to)
+{
+	queueLog(std::string(label) + std::string(method) + " callID=" + std::string(callID) + " to=" + std::string(to));
+}
+
+std::shared_ptr<SipMessage> RequestsHandler::buildOkWithSdp(
+	const std::shared_ptr<SipMessage>& inviteMsg,
+	const std::string& activeIp,
+	const std::string& toTag,
+	const std::string& sdpBody)
+{
+	auto ok = getMessageFromPool(inviteMsg->toString(), inviteMsg->getSource());
+	ok->setHeader(SipMessageTypes::OK);
+	ok->setVia(std::string(inviteMsg->getVia()) + ";received=" + activeIp);
+	ok->setTo(std::string(inviteMsg->getTo()) + ";tag=" + toTag);
+	ok->setContact(buildContact(inviteMsg->getToNumber()));
+	ok->clearBody();
+	{
+		std::string raw = ok->toString();
+		size_t sep = raw.find("\r\n\r\n");
+		if (sep != std::string::npos)
+		{
+			std::string_view headerView(raw.data(), sep);
+			if (headerView.find("application/sdp") == std::string_view::npos)
+			{
+				raw.insert(sep, "\r\nContent-Type: application/sdp");
+				sep = raw.find("\r\n\r\n");
+			}
+			raw.erase(sep + 4);
+			raw += sdpBody;
+		}
+		ok->reset(std::move(raw), inviteMsg->getSource());
+	}
+	ok->enforceG711();
+	ok->syncContentLength();
+	return ok;
+}
+
+std::shared_ptr<SipMessage> RequestsHandler::buildServerBye(
+	const std::shared_ptr<SipClient>& caller,
+	const std::shared_ptr<SipMessage>& inviteMsg,
+	const std::string& callId)
+{
+	if (!caller || !inviteMsg)
+	{
+		return nullptr;
+	}
+
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+	char ipBuf[INET_ADDRSTRLEN]{};
+	inet_ntop(AF_INET, &caller->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
+	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(caller->getAddress().sin_port));
+	std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
+
+	std::ostringstream ss;
+	ss << "BYE sip:" << caller->getNumber() << "@" << destIpPort << " SIP/2.0\r\n"
+	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << branch << "\r\n"
+	   << "From: <sip:" << inviteMsg->getToNumber() << "@" << activeIp << ">\r\n"
+	   << "To: " << inviteMsg->getFrom() << "\r\n"
+	   << "Call-ID: " << callId << "\r\n"
+	   << "CSeq: 2 BYE\r\n"
+	   << "Max-Forwards: 70\r\n"
+	   << "Content-Length: 0\r\n\r\n";
+
+	return getMessageFromPool(ss.str(), caller->getAddress());
+}
+
+void RequestsHandler::sendRinging(
+	const std::shared_ptr<SipMessage>& data,
+	const std::string& activeIp,
+	const std::string& toTag,
+	const char* logPrefix)
+{
+	auto ringing = getMessageFromPool(data->toString(), data->getSource());
+	ringing->setHeader(SipMessageTypes::RINGING);
+	ringing->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+	ringing->setTo(std::string(data->getTo()) + ";tag=" + toTag);
+	ringing->setContact(buildContact(data->getToNumber()));
+	ringing->clearBody();
+	ringing->syncContentLength();
+
+	std::string label = std::string(logPrefix) + " 180 Ringing ->";
+	dumpWire(label.c_str(), ringing);
+
+	_outbox.emplace_back(data->getSource(), std::move(ringing));
+}
+
+void RequestsHandler::asyncMakeCall(const std::string& destination, const std::string& callId, const std::string& callerNumber)
+{
+	if (!_anchorClient) return;
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	struct MakeCallArg {
+		AnchorClient* anchor;
+		std::string dest;
+		std::string callId;
+		std::string callerNumber;
+		RequestsHandler* handler;
+	};
+	auto* arg = new MakeCallArg{ _anchorClient, destination, callId, callerNumber, this };
+	xTaskCreate([](void* p) {
+		auto* mca = static_cast<MakeCallArg*>(p);
+		if (!mca->anchor->makeCall(mca->dest))
+		{
+			std::lock_guard<std::mutex> lock(mca->handler->_mutex);
+			mca->handler->queueLog("[3CX] Failed to initiate outbound call to " + mca->dest, true);
+			mca->handler->endCall(mca->callId, mca->callerNumber, mca->dest, "3CX call fail");
+		}
+		else
+		{
+			std::lock_guard<std::mutex> lock(mca->handler->_mutex);
+			mca->handler->queueLog("[3CX] Initiating outbound call to " + mca->dest);
+		}
+		delete mca;
+		vTaskDelete(NULL);
+	}, "3cx_makecall", 4096, arg, 5, NULL);
+#else
+	std::thread([this, destination, callId, callerNumber]() {
+		if (!_anchorClient->makeCall(destination))
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			queueLog("[3CX] Failed to initiate outbound call to " + destination, true);
+			endCall(callId, callerNumber, destination, "3CX call fail");
+		}
+		else
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			queueLog("[3CX] Initiating outbound call to " + destination);
+		}
+	}).detach();
+#endif
+}
+
+void RequestsHandler::asyncDropCall(const std::string& participantId)
+{
+	if (!_anchorClient) return;
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	struct DropCallArg {
+		AnchorClient* anchor;
+		std::string partId;
+		RequestsHandler* handler;
+	};
+	auto* arg = new DropCallArg{ _anchorClient, participantId, this };
+	xTaskCreate([](void* p) {
+		auto* dca = static_cast<DropCallArg*>(p);
+		dca->anchor->dropCall(dca->partId);
+		delete dca;
+		vTaskDelete(NULL);
+	}, "3cx_dropcall", 4096, arg, 5, NULL);
+#else
+	std::thread([this, participantId]() {
+		_anchorClient->dropCall(participantId);
+	}).detach();
+#endif
+}
+

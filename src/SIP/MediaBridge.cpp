@@ -87,12 +87,10 @@ bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort
 		bool readOk = _playoutBuffer.read(pcmSamples, toRead);
 
 		// Encode linear PCM16 samples to µ-law
-		for (size_t i = 0; i < toRead; ++i)
-		{
-			outUlaw[i] = RtpSender::linearToUlaw(pcmSamples[i]);
-		}
+		RtpSender::ulawEncodeBuffer(pcmSamples, toRead, outUlaw);
 
-		return readOk; // Returns false if underrun occurred, but outUlaw is still filled with comfort noise
+		// Returns true even if underrun occurred so that the RtpSender does not wipe the G.711 comfort noise samples.
+		return true;
 	});
 
 	if (!senderStarted)

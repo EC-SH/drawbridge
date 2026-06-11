@@ -57,6 +57,7 @@ void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback)
 
 // ── ESP-IDF Implementation: real mTLS, WSS and chunked HTTPS streams ─────────
 #include "esp_log.h"
+#include "lwip/sockets.h"
 #include "cJSON.h"
 #include <sstream>
 #include <cstring>
@@ -142,6 +143,11 @@ ThreeCxAnchorClient::ThreeCxAnchorClient() = default;
 ThreeCxAnchorClient::~ThreeCxAnchorClient()
 {
 	stop();
+	if (_rxDoneSem)
+	{
+		vSemaphoreDelete(_rxDoneSem);
+		_rxDoneSem = nullptr;
+	}
 }
 
 bool ThreeCxAnchorClient::init(const std::string& baseUrl,
@@ -159,18 +165,20 @@ bool ThreeCxAnchorClient::init(const std::string& baseUrl,
 
 bool ThreeCxAnchorClient::start()
 {
-	std::lock_guard<std::mutex> lock(_mutex);
-	if (_running)
 	{
-		return false;
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (_running)
+		{
+			return false;
+		}
+		_running = true;
 	}
-
-	_running = true;
 
 	// 1. Fetch OAuth token
 	if (!fetchToken())
 	{
 		ESP_LOGE(TAG, "Failed to retrieve OAuth token");
+		std::lock_guard<std::mutex> lock(_mutex);
 		_running = false;
 		return false;
 	}
@@ -179,6 +187,7 @@ bool ThreeCxAnchorClient::start()
 	if (!connectWs())
 	{
 		ESP_LOGE(TAG, "Failed to connect control WebSocket");
+		std::lock_guard<std::mutex> lock(_mutex);
 		_running = false;
 		return false;
 	}
@@ -225,59 +234,50 @@ bool ThreeCxAnchorClient::isStreaming() const
 
 bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 {
-	std::lock_guard<std::mutex> lock(_mutex);
-	if (!_connected.load(std::memory_order_acquire))
 	{
-		ESP_LOGW(TAG, "Cannot make call: not connected to 3CX");
-		return false;
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (!_connected.load(std::memory_order_acquire))
+		{
+			ESP_LOGW(TAG, "Cannot make call: not connected to 3CX");
+			return false;
+		}
 	}
 
 	// Refresh the OAuth token if it's near expiry. Safe here: no media streams are
 	// open at call-origination time, so a re-issue can't kill a live stream.
 	ensureToken();
 
+	std::string baseUrl, sourceDn, token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		baseUrl = _baseUrl;
+		sourceDn = _sourceDn;
+		token = _accessToken;
+	}
+
 	// Trigger outbound call via HTTP POST /callcontrol/{sourceDn}/makecall
-	std::string makeCallUrl = _baseUrl + "/callcontrol/" + _sourceDn + "/makecall";
-
-	esp_http_client_config_t config = {};
-	config.url = makeCallUrl.c_str();
-	config.method = HTTP_METHOD_POST;
-	config.crt_bundle_attach = esp_crt_bundle_attach;
-	config.buffer_size = 4096;
-	config.buffer_size_tx = 1024;
-
-	esp_http_client_handle_t client = esp_http_client_init(&config);
+	std::string makeCallUrl = baseUrl + "/callcontrol/" + sourceDn + "/makecall";
+	esp_http_client_handle_t client = makeAuthedClient(makeCallUrl, HTTP_METHOD_POST, 1024, token);
 	if (!client)
 	{
 		ESP_LOGE(TAG, "Failed to init HTTP client for makeCall");
 		return false;
 	}
 
-	std::string authHeader = "Bearer " + _accessToken;
-	esp_http_client_set_header(client, "Authorization", authHeader.c_str());
 	esp_http_client_set_header(client, "Content-Type", "application/json");
 
 	std::string postData = "{\"destination\":\"" + destination + "\"}";
 	esp_http_client_set_post_field(client, postData.c_str(), postData.length());
 
-	esp_err_t err = esp_http_client_perform(client);
-	bool success = false;
-	if (err == ESP_OK)
+	int status = 0;
+	bool success = performAuthedRequest(client, &status);
+	if (success)
 	{
-		int status = esp_http_client_get_status_code(client);
-		if (status >= 200 && status < 300)
-		{
-			success = true;
-			ESP_LOGI(TAG, "Successfully initiated call to %s", destination.c_str());
-		}
-		else
-		{
-			ESP_LOGE(TAG, "makeCall returned HTTP status %d", status);
-		}
+		ESP_LOGI(TAG, "Successfully initiated call to %s", destination.c_str());
 	}
 	else
 	{
-		ESP_LOGE(TAG, "makeCall HTTP POST request failed: %s", esp_err_to_name(err));
+		ESP_LOGE(TAG, "makeCall request failed (status=%d)", status);
 	}
 
 	esp_http_client_cleanup(client);
@@ -286,47 +286,42 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 
 bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 {
-	std::lock_guard<std::mutex> lock(_mutex);
-	if (!_connected.load(std::memory_order_acquire))
+	std::string partId;
+	std::string baseUrl, sourceDn, token;
 	{
-		return false;
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (!_connected.load(std::memory_order_acquire))
+		{
+			return false;
+		}
+		partId = participantId.empty() ? _activeParticipantId : participantId;
+		baseUrl = _baseUrl;
+		sourceDn = _sourceDn;
+		token = _accessToken;
 	}
 
-	std::string partId = participantId.empty() ? _activeParticipantId : participantId;
 	if (partId.empty())
 	{
 		return false;
 	}
 
 	// Trigger drop via HTTP POST /callcontrol/{sourceDn}/participants/{participantId}/drop
-	std::string dropUrl = _baseUrl + "/callcontrol/" + _sourceDn + "/participants/" + partId + "/drop";
-
-	esp_http_client_config_t config = {};
-	config.url = dropUrl.c_str();
-	config.method = HTTP_METHOD_POST;
-	config.crt_bundle_attach = esp_crt_bundle_attach;
-	config.buffer_size = 4096;
-	config.buffer_size_tx = 1024;
-
-	esp_http_client_handle_t client = esp_http_client_init(&config);
+	std::string dropUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + partId + "/drop";
+	esp_http_client_handle_t client = makeAuthedClient(dropUrl, HTTP_METHOD_POST, 1024, token);
 	if (!client)
 	{
 		return false;
 	}
 
-	std::string authHeader = "Bearer " + _accessToken;
-	esp_http_client_set_header(client, "Authorization", authHeader.c_str());
-
-	esp_err_t err = esp_http_client_perform(client);
-	bool success = false;
-	if (err == ESP_OK)
+	int status = 0;
+	bool success = performAuthedRequest(client, &status);
+	if (success)
 	{
-		int status = esp_http_client_get_status_code(client);
-		if (status >= 200 && status < 300)
-		{
-			success = true;
-			ESP_LOGI(TAG, "Successfully dropped participant %s", participantId.c_str());
-		}
+		ESP_LOGI(TAG, "Successfully dropped participant %s", partId.c_str());
+	}
+	else
+	{
+		ESP_LOGE(TAG, "dropCall request failed for participant %s (status=%d)", partId.c_str(), status);
 	}
 
 	esp_http_client_cleanup(client);
@@ -408,16 +403,16 @@ void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback cb)
 
 bool ThreeCxAnchorClient::fetchToken()
 {
-	std::string tokenUrl = _baseUrl + "/connect/token";
+	std::string tokenUrl;
+	std::string clientId, clientSecret;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		tokenUrl = _baseUrl + "/connect/token";
+		clientId = _clientId;
+		clientSecret = _clientSecret;
+	}
 
-	esp_http_client_config_t config = {};
-	config.url = tokenUrl.c_str();
-	config.method = HTTP_METHOD_POST;
-	config.crt_bundle_attach = esp_crt_bundle_attach;
-	config.buffer_size = 4096;
-	config.buffer_size_tx = 1024;
-
-	esp_http_client_handle_t client = esp_http_client_init(&config);
+	esp_http_client_handle_t client = makeAuthedClient(tokenUrl, HTTP_METHOD_POST, 1024);
 	if (!client)
 	{
 		ESP_LOGE(TAG, "Failed to init HTTP client for fetchToken");
@@ -426,8 +421,8 @@ bool ThreeCxAnchorClient::fetchToken()
 
 	esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
 
-	std::string body = "grant_type=client_credentials&client_id=" + _clientId +
-	                   "&client_secret=" + _clientSecret;
+	std::string body = "grant_type=client_credentials&client_id=" + clientId +
+	                   "&client_secret=" + clientSecret;
 
 	bool success = false;
 	esp_err_t err = esp_http_client_open(client, body.length());
@@ -442,45 +437,22 @@ bool ThreeCxAnchorClient::fetchToken()
 			         status, fetch_res, esp_http_client_is_chunked_response(client));
 			if (status == 200)
 			{
-				std::vector<char> buffer;
-				char tempBuf[512];
-				int readBytes = 0;
-				// Loop reads into an accumulator until EOF (0) or error (<0)
-				while ((readBytes = esp_http_client_read(client, tempBuf, sizeof(tempBuf))) > 0)
+				std::string tokenStr;
+				if (readJsonStringField(client, "access_token", tokenStr))
 				{
-					buffer.insert(buffer.end(), tempBuf, tempBuf + readBytes);
-				}
-				if (readBytes < 0)
-				{
-					ESP_LOGE(TAG, "Token read error: %d", readBytes);
-				}
-				else if (!buffer.empty())
-				{
-					buffer.push_back('\0');
-					cJSON* root = cJSON_Parse(buffer.data());
-					if (root)
+					std::lock_guard<std::mutex> lock(_mutex);
+					_accessToken = tokenStr;
+					_tokenObtainedUs = esp_timer_get_time();
+					_tokenLifetimeUs = decodeJwtLifetimeUs(_accessToken);
+					if (_wsClient)
 					{
-						cJSON* tokenItem = cJSON_GetObjectItem(root, "access_token");
-						if (tokenItem && tokenItem->valuestring)
-						{
-							_accessToken = tokenItem->valuestring;
-							_tokenObtainedUs = esp_timer_get_time();
-							_tokenLifetimeUs = decodeJwtLifetimeUs(_accessToken);
-							ESP_LOGI(TAG, "Retrieved access token (len=%d, lifetime=%llds)",
-							         (int)_accessToken.length(),
-							         (long long)(_tokenLifetimeUs / 1000000));
-							success = true;
-						}
-						cJSON_Delete(root);
+						std::string wsHeaders = "Authorization: Bearer " + _accessToken + "\r\n";
+						esp_websocket_client_set_headers(_wsClient, wsHeaders.c_str());
 					}
-					else
-					{
-						ESP_LOGE(TAG, "Failed to parse JSON response: %s", buffer.data());
-					}
-				}
-				else
-				{
-					ESP_LOGE(TAG, "Empty token response body");
+					ESP_LOGI(TAG, "Retrieved access token (len=%d, lifetime=%llds)",
+					         (int)_accessToken.length(),
+					         (long long)(_tokenLifetimeUs / 1000000));
+					success = true;
 				}
 			}
 			else
@@ -514,16 +486,19 @@ bool ThreeCxAnchorClient::tokenExpiringSoon() const
 
 bool ThreeCxAnchorClient::ensureToken()
 {
-	if (!tokenExpiringSoon()) return true;
-
-	// Never re-issue a token while media streams are live: 3CX invalidates the
-	// previous token the instant a new one is granted, which would tear down the
-	// chunked GET/POST streams holding the old token mid-call. Refresh only
-	// happens between calls (makeCall is invoked before any stream is opened).
-	if (_postClient != nullptr || _getClient != nullptr)
 	{
-		ESP_LOGW(TAG, "Token near expiry but media streams active — deferring refresh");
-		return true;
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (!tokenExpiringSoon()) return true;
+
+		// Never re-issue a token while media streams are live: 3CX invalidates the
+		// previous token the instant a new one is granted, which would tear down the
+		// chunked GET/POST streams holding the old token mid-call. Refresh only
+		// happens between calls (makeCall is invoked before any stream is opened).
+		if (_postClient != nullptr || _getClient != nullptr)
+		{
+			ESP_LOGW(TAG, "Token near expiry but media streams active — deferring refresh");
+			return true;
+		}
 	}
 
 	ESP_LOGI(TAG, "Access token near expiry — refreshing");
@@ -533,7 +508,14 @@ bool ThreeCxAnchorClient::ensureToken()
 bool ThreeCxAnchorClient::connectWs()
 {
 	// Convert base https:// URL to wss:// for call control websocket
-	std::string wsUrl = _baseUrl;
+	std::string wsUrl;
+	std::string token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		wsUrl = _baseUrl;
+		token = _accessToken;
+	}
+
 	if (wsUrl.rfind("https://", 0) == 0)
 	{
 		wsUrl = "wss://" + wsUrl.substr(8) + "/callcontrol/ws";
@@ -553,7 +535,7 @@ bool ThreeCxAnchorClient::connectWs()
 	// client is already CONNECTED, so calling it before start() silently set no
 	// header and 3CX rejected the unauthenticated upgrade with HTTP 401. Each header
 	// line must be CRLF-terminated. init() strdup's this string, so the local is safe.
-	std::string authHeader = "Authorization: Bearer " + _accessToken + "\r\n";
+	std::string authHeader = "Authorization: Bearer " + token + "\r\n";
 
 	esp_websocket_client_config_t wsCfg = {};
 	wsCfg.uri = wsUrl.c_str();
@@ -562,25 +544,30 @@ bool ThreeCxAnchorClient::connectWs()
 	wsCfg.task_stack = 16384; // needs headroom for two blocking HTTP sessions fired from event handler
 	wsCfg.buffer_size = 4096;
 
-	_wsClient = esp_websocket_client_init(&wsCfg);
-	if (!_wsClient)
+	esp_websocket_client_handle_t wsClient = esp_websocket_client_init(&wsCfg);
+	if (!wsClient)
 	{
 		return false;
 	}
 
-	esp_err_t err = esp_websocket_register_events(_wsClient, WEBSOCKET_EVENT_ANY,
+	esp_err_t err = esp_websocket_register_events(wsClient, WEBSOCKET_EVENT_ANY,
 	                                               &ThreeCxAnchorClient::wsEventTrampoline, this);
 	if (err != ESP_OK)
 	{
-		esp_websocket_client_destroy(_wsClient);
-		_wsClient = nullptr;
+		esp_websocket_client_destroy(wsClient);
 		return false;
 	}
 
-	err = esp_websocket_client_start(_wsClient);
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		_wsClient = wsClient;
+	}
+
+	err = esp_websocket_client_start(wsClient);
 	if (err != ESP_OK)
 	{
-		esp_websocket_client_destroy(_wsClient);
+		esp_websocket_client_destroy(wsClient);
+		std::lock_guard<std::mutex> lock(_mutex);
 		_wsClient = nullptr;
 		return false;
 	}
@@ -590,24 +577,21 @@ bool ThreeCxAnchorClient::connectWs()
 
 std::string ThreeCxAnchorClient::getParticipantStatus(const std::string& participantId)
 {
-	std::string getUrl = _baseUrl + "/callcontrol/" + _sourceDn + "/participants/" + participantId;
+	std::string baseUrl, sourceDn, token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		baseUrl = _baseUrl;
+		sourceDn = _sourceDn;
+		token = _accessToken;
+	}
 
-	esp_http_client_config_t config = {};
-	config.url = getUrl.c_str();
-	config.method = HTTP_METHOD_GET;
-	config.crt_bundle_attach = esp_crt_bundle_attach;
-	config.buffer_size = 4096;
-	config.buffer_size_tx = 1024;
-
-	esp_http_client_handle_t client = esp_http_client_init(&config);
+	std::string getUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + participantId;
+	esp_http_client_handle_t client = makeAuthedClient(getUrl, HTTP_METHOD_GET, 1024, token);
 	if (!client)
 	{
 		ESP_LOGE(TAG, "Failed to init HTTP client for getParticipantStatus");
 		return "";
 	}
-
-	std::string authHeader = "Bearer " + _accessToken;
-	esp_http_client_set_header(client, "Authorization", authHeader.c_str());
 
 	std::string statusStr = "";
 	esp_err_t err = esp_http_client_open(client, 0);
@@ -619,32 +603,7 @@ std::string ThreeCxAnchorClient::getParticipantStatus(const std::string& partici
 		         status, fetch_res, esp_http_client_is_chunked_response(client));
 		if (status == 200)
 		{
-			std::vector<char> buffer;
-			char tempBuf[256];
-			int readBytes = 0;
-			// Loop reads into an accumulator until EOF (0) or error (<0)
-			while ((readBytes = esp_http_client_read(client, tempBuf, sizeof(tempBuf))) > 0)
-			{
-				buffer.insert(buffer.end(), tempBuf, tempBuf + readBytes);
-			}
-			if (readBytes < 0)
-			{
-				ESP_LOGE(TAG, "getParticipantStatus read error: %d", readBytes);
-			}
-			else if (!buffer.empty())
-			{
-				buffer.push_back('\0');
-				cJSON* root = cJSON_Parse(buffer.data());
-				if (root)
-				{
-					cJSON* statusItem = cJSON_GetObjectItem(root, "status");
-					if (statusItem && statusItem->valuestring)
-					{
-						statusStr = statusItem->valuestring;
-					}
-					cJSON_Delete(root);
-				}
-			}
+			readJsonStringField(client, "status", statusStr);
 		}
 		else
 		{
@@ -659,6 +618,90 @@ std::string ThreeCxAnchorClient::getParticipantStatus(const std::string& partici
 
 	esp_http_client_cleanup(client);
 	return statusStr;
+}
+
+esp_http_client_handle_t ThreeCxAnchorClient::makeAuthedClient(const std::string& url, esp_http_client_method_t method, int txBufSize, const std::string& token)
+{
+	esp_http_client_config_t config = {};
+	config.url = url.c_str();
+	config.method = method;
+	config.crt_bundle_attach = esp_crt_bundle_attach;
+	config.buffer_size = 4096;
+	config.buffer_size_tx = txBufSize;
+
+	esp_http_client_handle_t client = esp_http_client_init(&config);
+	if (!client)
+	{
+		return nullptr;
+	}
+
+	if (!token.empty())
+	{
+		std::string authHeader = "Bearer " + token;
+		esp_http_client_set_header(client, "Authorization", authHeader.c_str());
+	}
+
+	return client;
+}
+
+bool ThreeCxAnchorClient::performAuthedRequest(esp_http_client_handle_t client, int* statusCodeOut)
+{
+	esp_err_t err = esp_http_client_perform(client);
+	int status = -1;
+	if (err == ESP_OK)
+	{
+		status = esp_http_client_get_status_code(client);
+		if (statusCodeOut)
+		{
+			*statusCodeOut = status;
+		}
+		return (status >= 200 && status < 300);
+	}
+	else
+	{
+		ESP_LOGE(TAG, "HTTP perform failed: %s", esp_err_to_name(err));
+		if (statusCodeOut)
+		{
+			*statusCodeOut = -1;
+		}
+		return false;
+	}
+}
+
+bool ThreeCxAnchorClient::readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out)
+{
+	std::vector<char> buffer;
+	char tempBuf[512];
+	int readBytes = 0;
+	while ((readBytes = esp_http_client_read(client, tempBuf, sizeof(tempBuf))) > 0)
+	{
+		buffer.insert(buffer.end(), tempBuf, tempBuf + readBytes);
+	}
+	if (readBytes < 0)
+	{
+		ESP_LOGE(TAG, "HTTP read error: %d", readBytes);
+		return false;
+	}
+	if (buffer.empty())
+	{
+		return false;
+	}
+	buffer.push_back('\0');
+	cJSON* root = cJSON_Parse(buffer.data());
+	if (!root)
+	{
+		ESP_LOGE(TAG, "Failed to parse JSON response");
+		return false;
+	}
+	bool found = false;
+	cJSON* item = cJSON_GetObjectItem(root, field.c_str());
+	if (item && item->valuestring)
+	{
+		out = item->valuestring;
+		found = true;
+	}
+	cJSON_Delete(root);
+	return found;
 }
 
 void ThreeCxAnchorClient::wsEventTrampoline(void* handlerArgs, esp_event_base_t /*base*/,
@@ -703,6 +746,10 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 				std::string payload(data->data_ptr, data->data_len);
 				cJSON* root = cJSON_Parse(payload.c_str());
 				if (!root) break;
+				struct CJsonDeleter {
+					cJSON* r;
+					~CJsonDeleter() { if (r) cJSON_Delete(r); }
+				} deleter{root};
 
 				cJSON* eventObj = cJSON_GetObjectItem(root, "event");
 				if (eventObj)
@@ -745,7 +792,12 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 									// are already streaming this participant, skip the work:
 									// getParticipantStatus is a blocking TLS GET on this WS task,
 									// and re-firing Answered would re-send 200 OK to the handset.
-									if (_activeParticipantId == partId)
+									bool isSameActivePart = false;
+									{
+										std::lock_guard<std::mutex> lock(_mutex);
+										isSameActivePart = (_activeParticipantId == partId);
+									}
+									if (isSameActivePart)
 									{
 										break;
 									}
@@ -758,19 +810,30 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 									{
 										// Set _activeParticipantId BEFORE the callback so any
 										// Upset that races in behind us takes the skip path above.
-										startMediaStreams(partId);
-
-										if (evCb)
+										if (startMediaStreams(partId))
 										{
-											CallEvent ev{CallEvent::Answered, partId, ""};
-											evCb(ev);
+											if (evCb)
+											{
+												CallEvent ev{CallEvent::Answered, partId, ""};
+												evCb(ev);
+											}
+										}
+										else
+										{
+											ESP_LOGE(TAG, "Failed to start media streams for participant %s", partId.c_str());
+											stopMediaStreams();
 										}
 									}
 								}
 								else if (evTypeNum == TCX_EV_REMOVE)
 								{
 									ESP_LOGI(TAG, "Call control event: Participant Remove %s", partId.c_str());
-									if (_activeParticipantId == partId)
+									bool isSameActivePart = false;
+									{
+										std::lock_guard<std::mutex> lock(_mutex);
+										isSameActivePart = (_activeParticipantId == partId);
+									}
+									if (isSameActivePart)
 									{
 										stopMediaStreams();
 									}
@@ -798,7 +861,6 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 						}
 					}
 				}
-				cJSON_Delete(root);
 			}
 			break;
 
@@ -810,84 +872,128 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 {
 	ESP_LOGI(TAG, "Starting media streams for participant %s", participantId.c_str());
-	_activeParticipantId = participantId;
 
-	// 1. Initialize HTTP POST client for outbound audio
-	std::string postUrl = _baseUrl + "/callcontrol/" + _sourceDn + "/participants/" + participantId + "/stream";
-	esp_http_client_config_t postCfg = {};
-	postCfg.url = postUrl.c_str();
-	postCfg.method = HTTP_METHOD_POST;
-	postCfg.crt_bundle_attach = esp_crt_bundle_attach;
-	postCfg.buffer_size = 4096;
-	postCfg.buffer_size_tx = 4096; // streaming POST chunked needs large tx buffer
-
-	_postClient = esp_http_client_init(&postCfg);
-	if (!_postClient)
+	// Single-call guard
 	{
-		return false;
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (_rxTaskHandle != nullptr)
+		{
+			ESP_LOGW(TAG, "startMediaStreams: Media streams already active/starting");
+			return false;
+		}
 	}
 
-	std::string authHeader = "Bearer " + _accessToken;
-	esp_http_client_set_header(_postClient, "Authorization", authHeader.c_str());
-	esp_http_client_set_header(_postClient, "Content-Type", "application/octet-stream");
-
-	// write_len = -1 puts esp_http_client into chunked transfer-encoding mode (it
-	// adds the Transfer-Encoding header and frames each esp_http_client_write as a
-	// chunk). Passing 0 here was the outbound-audio bug: it sent Content-Length: 0,
-	// so 3CX saw an empty body and closed the stream and every writeAudio() wrote
-	// into a dead socket. Do NOT set Transfer-Encoding manually — IDF owns it now.
-	esp_err_t err = esp_http_client_open(_postClient, -1); // -1 => chunked
-	if (err != ESP_OK)
+	std::string baseUrl, sourceDn, token;
 	{
-		ESP_LOGE(TAG, "Failed to open chunked HTTP POST stream: %s", esp_err_to_name(err));
-		esp_http_client_cleanup(_postClient);
-		_postClient = nullptr;
-		return false;
+		std::lock_guard<std::mutex> lock(_mutex);
+		_activeParticipantId = participantId;
+		baseUrl = _baseUrl;
+		sourceDn = _sourceDn;
+		token = _accessToken;
+	}
+
+	// 1. Initialize HTTP POST client for outbound audio
+	std::string postUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + participantId + "/stream";
+	
+	esp_http_client_handle_t postClient = nullptr;
+	{
+		std::lock_guard<std::mutex> postLock(_postMutex);
+		_postClient = makeAuthedClient(postUrl, HTTP_METHOD_POST, 4096, token);
+		if (!_postClient)
+		{
+			ESP_LOGE(TAG, "Failed to init POST HTTP client");
+			return false;
+		}
+		postClient = _postClient;
+
+		esp_http_client_set_header(postClient, "Content-Type", "application/octet-stream");
+
+		// write_len = -1 puts esp_http_client into chunked transfer-encoding mode (it
+		// adds the Transfer-Encoding header and frames each esp_http_client_write as a
+		// chunk). Passing 0 here was the outbound-audio bug: it sent Content-Length: 0,
+		// so 3CX saw an empty body and closed the stream and every writeAudio() wrote
+		// into a dead socket. Do NOT set Transfer-Encoding manually — IDF owns it now.
+		esp_err_t err = esp_http_client_open(postClient, -1); // -1 => chunked
+		if (err != ESP_OK)
+		{
+			ESP_LOGE(TAG, "Failed to open chunked HTTP POST stream: %s", esp_err_to_name(err));
+			esp_http_client_cleanup(postClient);
+			_postClient = nullptr;
+			return false;
+		}
 	}
 	ESP_LOGI(TAG, "POST (device->3CX) audio stream OPEN: %s", postUrl.c_str());
 
 	// 2. Initialize HTTP GET client and launch Rx task for inbound audio
-	if (_rxDoneSem)
 	{
-		vSemaphoreDelete(_rxDoneSem);
+		std::lock_guard<std::mutex> lock(_mutex);
+		if (_rxDoneSem)
+		{
+			vSemaphoreDelete(_rxDoneSem);
+		}
+		_rxDoneSem = xSemaphoreCreateBinary();
+		BaseType_t rc = xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
+		if (rc != pdPASS)
+		{
+			ESP_LOGE(TAG, "Failed to create Rx task");
+			_rxTaskHandle = nullptr;
+			{
+				std::lock_guard<std::mutex> postLock(_postMutex);
+				if (_postClient)
+				{
+					esp_http_client_close(_postClient);
+					esp_http_client_cleanup(_postClient);
+					_postClient = nullptr;
+				}
+			}
+			return false;
+		}
 	}
-	_rxDoneSem = xSemaphoreCreateBinary();
-	xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, this, 6, &_rxTaskHandle, 1);
-
-	// Outbound audio (device->3CX) is driven by MediaBridge: the LAN RTP receiver
-	// decodes the handset's µ-law, converts to PCM16, and calls writeAudio() which
-	// posts into the chunked stream opened above. There is intentionally no local
-	// tone/audio generator here — anything this task wrote would be mixed into the
-	// far party's audio alongside the real handset stream.
 
 	return true;
 }
 
 void ThreeCxAnchorClient::stopMediaStreams()
 {
-	_activeParticipantId.clear();
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		_activeParticipantId.clear();
+	}
 
 	if (_rxTaskHandle)
 	{
-		// Signal the rx loop to exit, then close the connection so the blocking
-		// read()/open() call returns immediately. The close is taken under
-		// _getMutex so it can never interleave with the rx task's own
-		// close+cleanup of the same handle (double-free). The rx task owns the
-		// cleanup; we only close to unblock, then wait on the semaphore for it
-		// to finish before returning.
-		_rxTaskHandle = nullptr;
+		TaskHandle_t taskToKill = _rxTaskHandle;
+		_rxTaskHandle = nullptr; // signal task to exit
 		{
 			std::lock_guard<std::mutex> lock(_getMutex);
 			if (_getClient)
 			{
-				esp_http_client_close(_getClient); // unblocks runRxLoop
+				int fd = esp_http_client_get_socket(_getClient);
+				if (fd >= 0)
+				{
+					shutdown(fd, SHUT_RDWR);
+				}
 			}
 		}
+
 		if (_rxDoneSem)
 		{
-			xSemaphoreTake(_rxDoneSem, pdMS_TO_TICKS(2000));
+			if (xSemaphoreTake(_rxDoneSem, pdMS_TO_TICKS(2000)) != pdTRUE)
+			{
+				ESP_LOGE(TAG, "Rx task failed to exit in time! Forcing task deletion.");
+				vTaskDelete(taskToKill);
+				// Force cleanup since task was killed and won't clean up itself
+				{
+					std::lock_guard<std::mutex> lock(_getMutex);
+					if (_getClient)
+					{
+						esp_http_client_close(_getClient);
+						esp_http_client_cleanup(_getClient);
+						_getClient = nullptr;
+					}
+				}
+			}
 		}
-		// runRxLoop() called cleanup and nulled _getClient on its exit path.
 	}
 	else
 	{
@@ -929,8 +1035,18 @@ void ThreeCxAnchorClient::rxTaskTrampoline(void* arg)
 
 void ThreeCxAnchorClient::runRxLoop()
 {
-	std::string getUrl = _baseUrl + "/callcontrol/" + _sourceDn + "/participants/" + _activeParticipantId + "/stream";
-	std::string authHeader = "Bearer " + _accessToken;
+	std::string activePartId;
+	std::string baseUrl, sourceDn;
+	std::string token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		activePartId = _activeParticipantId;
+		baseUrl = _baseUrl;
+		sourceDn = _sourceDn;
+		token = _accessToken;
+	}
+
+	std::string getUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + activePartId + "/stream";
 
 	// _getClient lifecycle (init/close/cleanup) is serialized with
 	// stopMediaStreams() via _getMutex so the unblock-close and our teardown can
@@ -960,21 +1076,13 @@ void ThreeCxAnchorClient::runRxLoop()
 		{
 			std::lock_guard<std::mutex> lock(_getMutex);
 			if (_rxTaskHandle == nullptr) break; // stop requested mid-retry
-			esp_http_client_config_t getCfg = {};
-			getCfg.url = getUrl.c_str();
-			getCfg.method = HTTP_METHOD_GET;
-			getCfg.crt_bundle_attach = esp_crt_bundle_attach;
-			getCfg.buffer_size = 4096;
-			getCfg.buffer_size_tx = 1024;
-			_getClient = esp_http_client_init(&getCfg);
+			_getClient = makeAuthedClient(getUrl, HTTP_METHOD_GET, 1024, token);
 		}
 		if (!_getClient)
 		{
 			vTaskDelay(kRetryDelay);
 			continue;
 		}
-
-		esp_http_client_set_header(_getClient, "Authorization", authHeader.c_str());
 
 		esp_err_t err = esp_http_client_open(_getClient, 0);
 		if (err == ESP_OK)
@@ -1008,15 +1116,44 @@ void ThreeCxAnchorClient::runRxLoop()
 	}
 	ESP_LOGI(TAG, "GET (3CX->device) audio stream OPEN: %s", getUrl.c_str());
 
-	char readBuf[512];
+	char readBuf[513]; // +1 for carry byte prepending
+	bool hasCarry = false;
+	char carryByte = 0;
 	int rxReads = 0;
 	while (_rxTaskHandle != nullptr)
 	{
-		int bytesRead = esp_http_client_read(_getClient, readBuf, sizeof(readBuf));
-		if (bytesRead <= 0)
+		int bytesRead = 0;
+		if (hasCarry)
 		{
-			// End of stream or connection closed
-			break;
+			readBuf[0] = carryByte;
+			int res = esp_http_client_read(_getClient, readBuf + 1, sizeof(readBuf) - 1);
+			if (res <= 0)
+			{
+				break;
+			}
+			bytesRead = 1 + res;
+			hasCarry = false;
+		}
+		else
+		{
+			int res = esp_http_client_read(_getClient, readBuf, sizeof(readBuf) - 1);
+			if (res <= 0)
+			{
+				break;
+			}
+			bytesRead = res;
+		}
+
+		if (bytesRead % 2 != 0)
+		{
+			carryByte = readBuf[bytesRead - 1];
+			hasCarry = true;
+			bytesRead -= 1;
+		}
+
+		if (bytesRead == 0)
+		{
+			continue;
 		}
 
 		// DIAGNOSTIC: confirm 3CX->device audio is arriving. First read + every ~100th.

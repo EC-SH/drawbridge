@@ -82,6 +82,10 @@ private:
 
 	bool startMediaStreams(const std::string& participantId);
 	void stopMediaStreams();
+
+	esp_http_client_handle_t makeAuthedClient(const std::string& url, esp_http_client_method_t method, int txBufSize, const std::string& token = "");
+	bool performAuthedRequest(esp_http_client_handle_t client, int* statusCodeOut = nullptr);
+	bool readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out);
 #endif
 };
 

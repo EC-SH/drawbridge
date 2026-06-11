@@ -314,7 +314,26 @@ private:
 
 	std::shared_ptr<SipClient> allocateClient(std::string number, sockaddr_in address, int expiresSeconds);
 	std::shared_ptr<Session> allocateSession(std::string callID, std::shared_ptr<SipClient> src);
-	std::shared_ptr<SipClient> _dummyClient;
+	bool isDummyClient(const std::shared_ptr<SipClient>& client) const;
+	void dumpWire(const char* label, const std::shared_ptr<SipMessage>& msg);
+	void dumpWire(const char* label, std::string_view method, std::string_view callID, std::string_view to);
+	std::shared_ptr<SipMessage> buildOkWithSdp(
+		const std::shared_ptr<SipMessage>& inviteMsg,
+		const std::string& activeIp,
+		const std::string& toTag,
+		const std::string& sdpBody);
+	std::shared_ptr<SipMessage> buildServerBye(
+		const std::shared_ptr<SipClient>& caller,
+		const std::shared_ptr<SipMessage>& inviteMsg,
+		const std::string& callId);
+	void sendRinging(
+		const std::shared_ptr<SipMessage>& data,
+		const std::string& activeIp,
+		const std::string& toTag,
+		const char* logPrefix);
+	void asyncMakeCall(const std::string& destination, const std::string& callId, const std::string& callerNumber);
+	void asyncDropCall(const std::string& participantId);
+
 
 	// Server-side RTP media source (the 440 tone stream). One concurrent stream; the
 	// ESP-only UDP socket + 20 ms pacing task live inside it, guarded for host builds.

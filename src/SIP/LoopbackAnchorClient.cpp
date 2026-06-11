@@ -1,5 +1,11 @@
 #include "LoopbackAnchorClient.hpp"
 #include <chrono>
+#include <atomic>
+
+namespace
+{
+	std::atomic<uint64_t> g_activeCallId{0};
+}
 
 LoopbackAnchorClient::LoopbackAnchorClient() = default;
 
@@ -29,9 +35,18 @@ void LoopbackAnchorClient::stop()
 {
 	_connected = false;
 	_stopSimThread = true;
-	if (_simThread.joinable())
+	g_activeCallId++;
+	std::vector<std::thread> threadsToJoin;
 	{
-		_simThread.join();
+		std::lock_guard<std::mutex> lock(_mutex);
+		threadsToJoin = std::move(_simThreads);
+	}
+	for (auto& t : threadsToJoin)
+	{
+		if (t.joinable())
+		{
+			t.join();
+		}
 	}
 	std::lock_guard<std::mutex> lock(_mutex);
 	_eventCb = nullptr;
@@ -51,65 +66,72 @@ bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
 	}
 
 	_stopSimThread = true;
-	if (_simThread.joinable())
-	{
-		_simThread.join();
-	}
+	uint64_t myCallId = ++g_activeCallId;
 	_stopSimThread = false;
 
-	_simThread = std::thread([this]() {
-		// Simulate network delay for ringing
-		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		if (_stopSimThread) return;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		_simThreads.emplace_back([this, myCallId]() {
+			// Simulate network delay for ringing
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			if (myCallId != g_activeCallId.load()) return;
 
-		EventCallback evCb;
-		{
-			std::lock_guard<std::mutex> lock(_mutex);
-			evCb = _eventCb;
-			_activeParticipantId = "mock-part-123";
-		}
+			EventCallback evCb;
+			{
+				std::lock_guard<std::mutex> lock(_mutex);
+				evCb = _eventCb;
+				_activeParticipantId = "mock-part-123";
+			}
 
-		if (evCb)
-		{
-			CallEvent ringingEv{CallEvent::Ringing, _activeParticipantId, ""};
-			evCb(ringingEv);
-		}
+			if (evCb)
+			{
+				CallEvent ringingEv{CallEvent::Ringing, _activeParticipantId, ""};
+				evCb(ringingEv);
+			}
 
-		// Simulate call answering
-		std::this_thread::sleep_for(std::chrono::milliseconds(150));
-		if (_stopSimThread) return;
+			// Simulate call answering
+			std::this_thread::sleep_for(std::chrono::milliseconds(150));
+			if (myCallId != g_activeCallId.load()) return;
 
-		if (evCb)
-		{
-			CallEvent answerEv{CallEvent::Answered, _activeParticipantId, ""};
-			evCb(answerEv);
-		}
-	});
+			if (evCb)
+			{
+				CallEvent answerEv{CallEvent::Answered, _activeParticipantId, ""};
+				evCb(answerEv);
+			}
+		});
+	}
 
 	return true;
 }
 
 bool LoopbackAnchorClient::dropCall(const std::string& participantId)
 {
-	_stopSimThread = true;
-	if (_simThread.joinable())
+	if (!_connected)
 	{
-		_simThread.join();
+		return false;
 	}
 
+	std::string partId;
 	EventCallback evCb;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		evCb = _eventCb;
+		partId = participantId.empty() ? _activeParticipantId : participantId;
+		if (partId.empty())
+		{
+			return false;
+		}
 		_activeParticipantId.clear();
+		evCb = _eventCb;
 	}
+
+	_stopSimThread = true;
+	g_activeCallId++;
 
 	if (evCb)
 	{
-		// Fire asynchronously: the caller (e.g. onBye) may hold RequestsHandler::_mutex,
-		// and the event callback also takes that mutex — synchronous dispatch deadlocks.
-		_simThread = std::thread([evCb, participantId]() {
-			CallEvent dropEv{CallEvent::Dropped, participantId, ""};
+		std::lock_guard<std::mutex> lock(_mutex);
+		_simThreads.emplace_back([evCb, partId]() {
+			CallEvent dropEv{CallEvent::Dropped, partId, ""};
 			evCb(dropEv);
 		});
 	}
