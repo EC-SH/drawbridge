@@ -17,10 +17,13 @@ endif()
 
 if(SIP_TRANSPORT STREQUAL "eth")
     set(MAIN_SRC "esp_main_eth.cpp")
+    # wolfssl/wolfssh: the headless Ethernet box is the build that most needs the
+    # SSH sysop terminal (the display board has a screen) — POCKETDIAL_HAS_WOLFSSH
+    # is set below for eth too.
     if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
-        set(EXTRA_REQUIRES esp_eth espressif__w5500 ${IDF_V6_DRIVERS})
+        set(EXTRA_REQUIRES esp_eth espressif__w5500 wolfssl__wolfssl wolfssl__wolfssh ${IDF_V6_DRIVERS})
     else()
-        set(EXTRA_REQUIRES esp_eth ${IDF_V6_DRIVERS})
+        set(EXTRA_REQUIRES esp_eth wolfssl__wolfssl wolfssl__wolfssh ${IDF_V6_DRIVERS})
     endif()
     # W5500 boards differ only in their SPI pin map. Select with -D PD_ETH_BOARD=<board>:
     #   elite     → LilyGO T-ETH-ELITE S3 (default; the board on the bench)
@@ -143,16 +146,20 @@ if(NOT _wolfssl_patch_rc EQUAL 0)
                         "wolfSSL will not build on ESP-IDF v6 without it.")
 endif()
 
+# The wolfSSH SSH sysop console (display + eth builds — the headless Ethernet box
+# needs it most). SshServer.cpp compiles its full wolfSSH path (instead of the idle
+# stub) when POCKETDIAL_HAS_WOLFSSH is defined. The wolfssl/wolfssh managed
+# components are enabled in main/idf_component.yml and forced to SOFTWARE crypto
+# (NO_ESP32_CRYPT) so they build on ESP-IDF v6.0.1. WOLFSSL_USER_SETTINGS makes
+# wolfssh/ssh.h pull wolfssl/wolfcrypt/settings.h -> user_settings.h (the component
+# config) instead of the autotools-only wolfssl/options.h, which does not exist in
+# a user_settings build.
+if(SIP_TRANSPORT STREQUAL "display" OR SIP_TRANSPORT STREQUAL "eth")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_WOLFSSH WOLFSSL_USER_SETTINGS)
+endif()
+
 if(SIP_TRANSPORT STREQUAL "display")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_UDP_RX_CORE=0)
-    # B1 spike: link the wolfSSH SSH console into the display firmware. SshServer.cpp
-    # compiles its full wolfSSH path (instead of the idle stub) when this is defined.
-    # The wolfssl/wolfssh managed components are enabled in main/idf_component.yml and
-    # forced to SOFTWARE crypto (NO_ESP32_CRYPT) so they build on ESP-IDF v6.0.1.
-    # WOLFSSL_USER_SETTINGS makes wolfssh/ssh.h pull wolfssl/wolfcrypt/settings.h ->
-    # user_settings.h (the component config) instead of the autotools-only
-    # wolfssl/options.h, which does not exist in a user_settings build.
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_WOLFSSH WOLFSSL_USER_SETTINGS)
     # qrcode.c (ricmoo QRCode, vendored): uses #pragma mark (an Xcode-ism) GCC flags as an
     # unknown pragma, plus an `x < 0` guard on an unsigned arg that -Wtype-limits reports
     # as always-false. Both are harmless in this third-party file; demote to warnings.

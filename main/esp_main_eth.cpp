@@ -53,6 +53,7 @@
 #include "OtaUpdater.hpp"
 #include "AdminAuth.hpp"
 #include "LogQueue.hpp"
+#include "SshServer.hpp"
 
 // ── Tag for ESP_LOG ────────────────────────────────────────────────────────
 static const char* TAG = "SipServerETH";
@@ -239,6 +240,12 @@ static void sip_server_task(void* pvParameters)
     g_sipServer = new SipServer(s_ip_addr, SIP_PORT);
     ESP_LOGI(TAG, "SIP server is RUNNING.  Point softphones at %s:%d",
              s_ip_addr.c_str(), SIP_PORT);
+
+    // Plumb the live registrar into the SSH sysop-terminal TUI (mirrors the
+    // display build's wiring in esp_main_display.cpp; the dashboard getters
+    // snapshot-copy under their own mutex, so the raw pointer is thread-safe
+    // and lives for the process lifetime).
+    SshServer::instance().attachHandler(&g_sipServer->getHandler());
 
     unsigned long lastHeartbeat = 0;
     while (true)
@@ -433,4 +440,10 @@ extern "C" void app_main(void)
 
     // ── Launch SIP server on Core 1 (gated on provisioning) ──────────────────
     xTaskCreatePinnedToCore(&sip_server_task, "sip_server", 8192, nullptr, 5, nullptr, 1);
+
+    // ── SSH sysop terminal (Core 0, prio 3 — below HTTP 4 and SIP 5) ─────────
+    // The headless Ethernet box is the build that needs the TUI most. Net role:
+    // a wired DHCP lease is the STATION-equivalent (mode 1); no SSID on copper.
+    SshServer::instance().setNetInfo(s_ip_addr.c_str(), /*mode=*/1, /*ssid=*/"");
+    SshServer::instance().start();
 }
