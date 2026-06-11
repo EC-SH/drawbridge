@@ -34,6 +34,12 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Severity**: Critical
 * **Description**: The WebSocket task stack is currently set to 16,384 bytes to accommodate blocking HTTP GET calls (like `getParticipantStatus`) executing directly inside the WebSocket callback thread. Move these blocking calls off the WebSocket thread by dispatching events asynchronously to an event loop/queue, allowing the task stack to shrink to ~4-6 KB.
 
+#### 🔴 Issue #29: ThreeCx/Loopback: Call Setup and Teardown Latency Optimizations
+* **Status**: ✅ Resolved (Implemented on branch `optimize-call-performance`)
+* **Labels**: `performance`, `3cx`
+* **Severity**: Critical
+* **Description**: Optimize call setup and teardown latency for the 3CX Media Anchor client and Loopback mock client. Parse status directly from WebSocket Upset attached_data, implement exponential back-off on GET stream retries, configure 2-second HTTP client timeouts, and reduce mock simulation delays.
+
 ---
 
 ### 🟡 High Priority: Platform Compatibility & Host Development
