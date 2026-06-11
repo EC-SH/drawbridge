@@ -27,6 +27,11 @@ public:
 	// Check if the bridge is currently active
 	bool isActive() const { return _active.load(std::memory_order_acquire); }
 
+	// The UDP port the bridge's RTP receiver is bound on (0 if not active). This
+	// is the port the handset must send its audio to, so it MUST be the value
+	// advertised in the 200 OK SDP answer — not the sender's source port.
+	int receiverPort() const;
+
 	// Access statistics
 	PlayoutBuffer& getPlayoutBuffer() { return _playoutBuffer; }
 

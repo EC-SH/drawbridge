@@ -51,7 +51,7 @@ public:
 	// Build the server's own SDP body for the 440 answer (server media: PCMU on the
 	// server's RTP port). Pure formatter — exposed so tests can assert its body and
 	// the resulting Content-Length correctness (the 777-bug class).
-	static std::string buildMediaSdp(const std::string& serverIp, int rtpPort);
+	static std::string buildMediaSdp(const std::string& serverIp, int rtpPort, bool sendRecv = false);
 
 	// Parse the caller's RTP destination from an INVITE: the SDP c= line IP (falling
 	// back to the INVITE source IP) + the m=audio port via getRtpPort(). Returns false
@@ -332,6 +332,15 @@ private:
 	std::mutex _mutex;
 	OnHandledEvent _onHandled;
 	std::vector<std::pair<sockaddr_in, std::shared_ptr<SipMessage>>> _outbox;
+
+	// Out-of-band send queue for messages enqueued OFF the SIP receive thread —
+	// e.g. the 3CX WebSocket Answered/Dropped callbacks (200 OK, BYE). handle() and
+	// tick() both clear _outbox at the START of their body (per-pass scratch), which
+	// silently wiped async sends before they ever reached the wire. _asyncOutbox is
+	// only ever appended off-thread and drained at the END of handle()/tick(); it is
+	// never cleared at the start, so an async 200 OK survives an intervening inbound
+	// INVITE retransmit. Guarded by _mutex like _outbox.
+	std::vector<std::pair<sockaddr_in, std::shared_ptr<SipMessage>>> _asyncOutbox;
 
 	std::string _serverIp;
 	int         _serverPort;

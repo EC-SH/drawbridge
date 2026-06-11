@@ -60,6 +60,7 @@ void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback)
 #include "cJSON.h"
 #include <sstream>
 #include <cstring>
+#include <cstdio>
 #include <vector>
 #include <cstdint>
 #include "esp_crt_bundle.h"
@@ -351,11 +352,50 @@ bool ThreeCxAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
 		return false;
 	}
 
-	const char* rawBytes = reinterpret_cast<const char*>(pcmSamples);
+	// esp_http_client_open(-1) sets the Transfer-Encoding: chunked header, but
+	// esp_http_client_write() is a RAW passthrough to esp_transport_write() — IDF
+	// does NOT add the chunk framing it promised (reads are auto-de-chunked,
+	// writes are not; verified in esp_http_client.c:1887). So we frame each write
+	// ourselves per RFC 9112 §7.1:   <size-hex>\r\n <payload> \r\n
+	// Without this, 3CX's HTTP parser reads the first PCM bytes as a chunk-size
+	// line, gets garbage, and silently discards the stream — the far end hears
+	// nothing while every write reports success. One buffer + one write keeps a
+	// whole chunk per TCP segment (helps the spec's "minimize jitter" note). The
+	// static buffer is safe: all writers are serialized by _postMutex.
 	size_t rawLen = count * sizeof(int16_t);
+	static char chunkBuf[8 + 1024 + 2]; // "%X\r\n" header + payload (<=1024) + CRLF
+	if (rawLen > 1024)
+	{
+		return false; // larger than any real audio frame; refuse rather than split
+	}
 
-	int written = esp_http_client_write(_postClient, rawBytes, rawLen);
-	return (written >= 0);
+	int hdrLen = snprintf(chunkBuf, sizeof(chunkBuf), "%X\r\n", static_cast<unsigned>(rawLen));
+	std::memcpy(chunkBuf + hdrLen, pcmSamples, rawLen);
+	chunkBuf[hdrLen + rawLen]     = '\r';
+	chunkBuf[hdrLen + rawLen + 1] = '\n';
+	const int total = hdrLen + static_cast<int>(rawLen) + 2;
+
+	int written = esp_http_client_write(_postClient, chunkBuf, total);
+
+	// DIAGNOSTIC: cadence + peak amplitude (keep until two-way audio is confirmed).
+	static int s_txFrames = 0;
+	int peak = 0;
+	for (size_t i = 0; i < count; ++i)
+	{
+		int v = pcmSamples[i] < 0 ? -pcmSamples[i] : pcmSamples[i];
+		if (v > peak) peak = v;
+	}
+	if (written != total)
+	{
+		ESP_LOGW(TAG, "POST writeAudio short/failed write rc=%d (want %d)", written, total);
+	}
+	else if (s_txFrames == 0 || (s_txFrames % 50) == 0)
+	{
+		ESP_LOGI(TAG, "POST writeAudio: frame %d, %u pcm bytes (chunk-framed), peak=%d -> 3CX",
+		         s_txFrames, static_cast<unsigned>(rawLen), peak);
+	}
+	s_txFrames++;
+	return (written == total);
 }
 
 void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback cb)
@@ -701,16 +741,24 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 
 								if (evTypeNum == TCX_EV_UPSET)
 								{
+									// 3CX repeats Upset for a participant every ~750ms. Once we
+									// are already streaming this participant, skip the work:
+									// getParticipantStatus is a blocking TLS GET on this WS task,
+									// and re-firing Answered would re-send 200 OK to the handset.
+									if (_activeParticipantId == partId)
+									{
+										break;
+									}
+
 									ESP_LOGI(TAG, "Call control event: Participant Upset %s", partId.c_str());
 									std::string statusStr = getParticipantStatus(partId);
 									ESP_LOGI(TAG, "Participant %s status: %s", partId.c_str(), statusStr.c_str());
 
 									if (statusStr == "Connected")
 									{
-										if (_activeParticipantId.empty())
-										{
-											startMediaStreams(partId);
-										}
+										// Set _activeParticipantId BEFORE the callback so any
+										// Upset that races in behind us takes the skip path above.
+										startMediaStreams(partId);
 
 										if (evCb)
 										{
@@ -796,6 +844,7 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 		_postClient = nullptr;
 		return false;
 	}
+	ESP_LOGI(TAG, "POST (device->3CX) audio stream OPEN: %s", postUrl.c_str());
 
 	// 2. Initialize HTTP GET client and launch Rx task for inbound audio
 	if (_rxDoneSem)
@@ -856,6 +905,9 @@ void ThreeCxAnchorClient::stopMediaStreams()
 		std::lock_guard<std::mutex> lock(_postMutex);
 		if (_postClient)
 		{
+			// RFC 9112 §7.1 last-chunk: terminate the chunked body cleanly so 3CX
+			// sees end-of-stream rather than an aborted socket.
+			esp_http_client_write(_postClient, "0\r\n\r\n", 5);
 			esp_http_client_close(_postClient);
 			esp_http_client_cleanup(_postClient);
 			_postClient = nullptr;
@@ -950,11 +1002,14 @@ void ThreeCxAnchorClient::runRxLoop()
 
 	if (!opened)
 	{
+		ESP_LOGW(TAG, "GET (3CX->device) stream never opened — no inbound audio");
 		teardownGetClient();
 		return;
 	}
+	ESP_LOGI(TAG, "GET (3CX->device) audio stream OPEN: %s", getUrl.c_str());
 
 	char readBuf[512];
+	int rxReads = 0;
 	while (_rxTaskHandle != nullptr)
 	{
 		int bytesRead = esp_http_client_read(_getClient, readBuf, sizeof(readBuf));
@@ -963,6 +1018,13 @@ void ThreeCxAnchorClient::runRxLoop()
 			// End of stream or connection closed
 			break;
 		}
+
+		// DIAGNOSTIC: confirm 3CX->device audio is arriving. First read + every ~100th.
+		if (rxReads == 0 || (rxReads % 100) == 0)
+		{
+			ESP_LOGI(TAG, "GET read: chunk %d, %d bytes <- 3CX", rxReads, bytesRead);
+		}
+		rxReads++;
 
 		AudioRxCallback audioCb;
 		{

@@ -191,6 +191,15 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 			handlerKey = std::string(request->getType());
 		}
 
+		// DIAGNOSTIC: log inbound dialog-shaping requests so we can see whether the
+		// handset ACKs our 200 OK (vs CANCEL/re-INVITE). REGISTER/OPTIONS excluded.
+		if (handlerKey == "ACK" || handlerKey == "BYE" || handlerKey == "CANCEL" || handlerKey == "INVITE")
+		{
+			queueLog("[SIP IN] " + handlerKey +
+			         " callID=" + std::string(request->getCallID()) +
+			         " to=" + std::string(request->getToNumber()));
+		}
+
 		// Surface inbound client-error (4xx) responses once. Deferred via _logQueue
 		// so the write happens outside the lock (Issue #24); replaces the per-parse
 		// printf the parser used to do. softFail -> warning (stdout), else error (stderr).
@@ -259,6 +268,10 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 
 		localOutbox = std::move(_outbox);
 		_outbox.clear();
+		// Append any out-of-band sends (WS Answered/Dropped callbacks) so they ride
+		// out on this pass instead of being wiped by the next start-of-body clear.
+		for (auto& e : _asyncOutbox) localOutbox.push_back(std::move(e));
+		_asyncOutbox.clear();
 
 		localLogs = std::move(_logQueue);
 		_logQueue.clear();
@@ -731,14 +744,20 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 			newSession->setState(Session::State::Invited);
 			_sessions.emplace(data->getCallID(), newSession);
 
-			// Send "180 Ringing" back to the handset
+			// Send "180 Ringing" back to the handset. Generate the dialog To-tag ONCE
+			// here and store it on the session; the 200 OK (sent later from the 3CX
+			// Answered callback) MUST reuse this exact tag, or Yealink-class phones
+			// treat the 200 as a foreign dialog and never leave the ringing state.
+			std::string localTag = IDGen::GenerateID(9);
+			newSession->setLocalTag(localTag);
 			std::shared_ptr<SipMessage> ringing = getMessageFromPool(data->toString(), data->getSource());
 			ringing->setHeader("SIP/2.0 180 Ringing");
 			ringing->clearBody();
 			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 			ringing->setVia(std::string(data->getVia()) + ";received=" + activeIp);
-			ringing->setTo(std::string(data->getTo()) + ";tag=" + IDGen::GenerateID(9));
+			ringing->setTo(std::string(data->getTo()) + ";tag=" + localTag);
 			ringing->setContact(buildContact(destNumber));
+			queueLog(std::string("[3CX] 180 Ringing ->\n") + ringing->toString());
 			_outbox.emplace_back(data->getSource(), std::move(ringing));
 
 			// Trigger outbound 3CX call
@@ -812,13 +831,18 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 	endHandle(data->getToNumber(), response);
 }
 
-std::string RequestsHandler::buildMediaSdp(const std::string& serverIp, int rtpPort)
+std::string RequestsHandler::buildMediaSdp(const std::string& serverIp, int rtpPort, bool sendRecv)
 {
-	// The server's OWN SDP offer/answer for the 440 tone stream. PCMU (PT 0) only —
-	// matches enforceG711()/the codec the rest of the PBX speaks. Sendonly: the
-	// server streams to the caller and ignores any media the caller sends back.
-	// CRLF line endings throughout so Content-Length (computed by the caller via
-	// syncContentLength()) matches the wire bytes exactly.
+	// The server's OWN SDP offer/answer. PCMU (PT 0) only — matches enforceG711()/the
+	// codec the rest of the PBX speaks. CRLF line endings throughout so Content-Length
+	// (computed by the caller via syncContentLength()) matches the wire bytes exactly.
+	//
+	// Direction:
+	//   sendonly (default) — the 440 tone beachhead: the server streams to the caller
+	//                        and ignores any media the caller sends back.
+	//   sendrecv           — the 3CX media bridge: the handset must BOTH send its audio
+	//                        (forwarded to 3CX over the POST stream) AND receive 3CX's
+	//                        audio. rtpPort here MUST be the bridge receiver's port.
 	std::string s;
 	s += "v=0\r\n";
 	s += "o=- 0 0 IN IP4 " + serverIp + "\r\n";
@@ -827,7 +851,7 @@ std::string RequestsHandler::buildMediaSdp(const std::string& serverIp, int rtpP
 	s += "t=0 0\r\n";
 	s += "m=audio " + std::to_string(rtpPort) + " RTP/AVP 0\r\n";
 	s += "a=rtpmap:0 PCMU/8000\r\n";
-	s += "a=sendonly\r\n";
+	s += sendRecv ? "a=sendrecv\r\n" : "a=sendonly\r\n";
 	return s;
 }
 
@@ -1336,6 +1360,14 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 	if (!session.has_value())
 	{
 		return;
+	}
+
+	// DIAGNOSTIC: an ACK for a 3CX-routed (_dummyClient) session means the handset
+	// ACCEPTED our 200 OK and the SIP call is fully connected — so any remaining
+	// silence is purely an RTP/media problem, not a SIP one.
+	if (session.value()->getDest() == _dummyClient)
+	{
+		queueLog("[3CX] Handset ACK received — SIP dialog CONNECTED for " + std::string(data->getCallID()));
 	}
 
 	std::string destNumber(data->getToNumber());
@@ -2966,6 +2998,11 @@ void RequestsHandler::tick()
 
 		localOutbox = std::move(_outbox);
 		_outbox.clear();
+		// Drain out-of-band sends (WS Answered/Dropped callbacks) on this tick too,
+		// so a 200 OK still goes out even if no inbound SIP packet arrives to trigger
+		// handle(). Never cleared at the start of tick(), so it can't be lost.
+		for (auto& e : _asyncOutbox) localOutbox.push_back(std::move(e));
+		_asyncOutbox.clear();
 
 		localLogs = std::move(_logQueue);
 		_logQueue.clear();
@@ -4096,8 +4133,25 @@ void RequestsHandler::loadThreeCxConfig()
 						{
 							// Send 200 OK back to handset
 							std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-							std::string toTag = IDGen::GenerateID(9);
-							std::string sdpBody = buildMediaSdp(activeIp, _rtpSender.serverRtpPort());
+							// Reuse the To-tag from the 180 Ringing (stored on the session) so
+							// the 200 OK lands in the SAME dialog the phone is already ringing;
+							// a fresh tag here is why the Yealink kept ringing through the answer.
+							std::string toTag = session->getLocalTag();
+							if (toTag.empty()) toTag = IDGen::GenerateID(9); // defensive fallback
+							// Start the MediaBridge FIRST so the receiver's ephemeral port
+							// (what the handset must send its audio to) is known before we
+							// build the SDP answer. Advertising the sender's source port (the
+							// old behaviour) sent the handset's audio into a socket nothing
+							// read — the far end heard silence.
+							if (!_mediaBridge.startBridge(handsetIp, handsetPort, callId))
+							{
+								queueLog("[3CX] MediaBridge failed to start", true);
+								break;
+							}
+							int rxPort = _mediaBridge.receiverPort();
+							queueLog("[3CX] MediaBridge started: Handset=" + handsetIp + ":" +
+							         std::to_string(handsetPort) + " <-> 3CX (rx port " + std::to_string(rxPort) + ")");
+							std::string sdpBody = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
 
 							auto ok = getMessageFromPool(inviteMsg->toString(), inviteMsg->getSource());
 							ok->setHeader(SipMessageTypes::OK);
@@ -4124,19 +4178,14 @@ void RequestsHandler::loadThreeCxConfig()
 							ok->enforceG711();
 							ok->syncContentLength();
 
-							// Enqueue OK to the outbox
-							_outbox.emplace_back(inviteMsg->getSource(), std::move(ok));
+							// DIAGNOSTIC: dump the exact 200 OK wire bytes.
+							queueLog(std::string("[3CX] 200 OK ->\n") + ok->toString());
 
-							// Start MediaBridge
-							if (_mediaBridge.startBridge(handsetIp, handsetPort, callId))
-							{
-								session->setState(Session::State::Connected);
-								queueLog("[3CX] MediaBridge started: Handset=" + handsetIp + ":" + std::to_string(handsetPort) + " -> 3CX");
-							}
-							else
-							{
-								queueLog("[3CX] MediaBridge failed to start", true);
-							}
+							// This callback runs on the WS event task, NOT the SIP receive
+							// thread — use _asyncOutbox so the start-of-body _outbox.clear() in
+							// handle()/tick() can't wipe the 200 OK before it is sent.
+							_asyncOutbox.emplace_back(inviteMsg->getSource(), std::move(ok));
+							session->setState(Session::State::Connected);
 						}
 					}
 					break;
@@ -4176,7 +4225,7 @@ void RequestsHandler::loadThreeCxConfig()
 						   << "Content-Length: 0\r\n\r\n";
 
 						auto bye = getMessageFromPool(ss.str(), caller->getAddress());
-						_outbox.emplace_back(caller->getAddress(), std::move(bye));
+						_asyncOutbox.emplace_back(caller->getAddress(), std::move(bye)); // WS task — see _asyncOutbox
 					}
 
 					endCall(callId, session->getSrc() ? session->getSrc()->getNumber() : "", inviteMsg ? inviteMsg->getToNumber() : "", "3CX hangup");

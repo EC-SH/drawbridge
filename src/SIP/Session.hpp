@@ -49,6 +49,13 @@ public:
 	std::shared_ptr<SipMessage> getInviteMessage() const { return _inviteMessage; }
 	void setInviteMessage(std::shared_ptr<SipMessage> msg) { _inviteMessage = msg; }
 
+	// The To-tag this UAS generated for the dialog. RFC 3261: the tag is created
+	// once (on the first dialog-establishing response, our 180 Ringing) and MUST be
+	// reused unchanged on the 200 OK. A fresh tag on the 200 makes it a different
+	// dialog, which Yealink-class phones never reconcile — they keep ringing.
+	const std::string& getLocalTag() const { return _localTag; }
+	void setLocalTag(const std::string& tag) { _localTag = tag; }
+
 	// ── No-answer / hunt-group timer (Class A sweep) ──────────────────
 	// A non-default _ringDeadline arms a one-shot timer that tick() polls: on
 	// expiry the registrar CANCELs the outstanding leg and advances (CFNA forward,
@@ -89,6 +96,7 @@ private:
 	bool _isBroadcast = false;
 	std::vector<std::shared_ptr<SipClient>> _pendingTargets;
 	std::shared_ptr<SipMessage> _inviteMessage;
+	std::string _localTag; // UAS-generated To-tag, shared across 180 + 200 OK
 
 	// No-answer / hunt timer + forwarding/hunt bookkeeping (Class A sweep).
 	std::chrono::steady_clock::time_point _ringDeadline;

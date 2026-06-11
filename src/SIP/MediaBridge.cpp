@@ -7,6 +7,11 @@ MediaBridge::~MediaBridge()
 	stopBridge();
 }
 
+int MediaBridge::receiverPort() const
+{
+	return _receiver ? _receiver->localPort() : 0;
+}
+
 void MediaBridge::init(RtpReceiver* receiver, RtpSender* sender, AnchorClient* anchor)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
