@@ -6,57 +6,79 @@ This document serves as the active issue tracker and architectural roadmap for *
 
 ## Active Issues & Backlog Roadmap
 
-### 🟡 Issue #44: End-to-end SIP call test needed on JC3248W535EN hardware
+This backlog is prioritized by architectural dependency and deployment urgency.
+
+### 🔴 Critical Priority: 3CX Call Control & Media Loopback (WAN Bridge)
+
+#### 🔴 Issue #61: RTP Receive Path + µ-law→PCM16 Decode (uplink)
+* **Status**: ⏳ Open / Planned
+* **Labels**: `api-integration`, `media`, `rtp`
+* **Severity**: Critical
+* **Description**: Add the inverse of `RtpSender` — receive the handset's RTP on the media socket, strip the RTP header, decode G.711 µ-law➔PCM16 (inverse of `linearToUlaw`), and feed it to the 3CX `POST /stream`. Requires a small jitter buffer to handle packet arrival variance.
+
+#### 🔴 Issue #63: 3CX Call Control Client (token + makecall + /stream + events)
+* **Status**: ⏳ Open / Planned
+* **Labels**: `api-integration`, `3cx`, `http`
+* **Severity**: Critical
+* **Description**: Implement the outbound 3CX leg per the Call Control specification: JWT `exp` token lifecycle management, `makecall` trigger, and concurrent `GET`/`POST /stream` (chunked transfer) over mTLS. Integrate WebSocket `wss://` updates to detect call connection and remote hangups.
+
+#### 🔴 Issue #64: Bridge Orchestration (virtual-ext intercept + leg mapping)
+* **Status**: ⏳ Open / Planned
+* **Labels**: `api-integration`, `sip`, `media`
+* **Severity**: Critical
+* **Description**: Wire the SIP state machine to the 3CX leg: intercept INVITEs on virtual extension blocks, negotiate `a=sendrecv` SDP, map SIP INVITE ➔ 3CX `makecall`, and bridge audio streams dynamically. Handle teardowns gracefully by mapping SIP BYE/CANCEL ↔ 3CX participant drops.
+
+---
+
+### 🟡 High Priority: Platform Compatibility & Host Development
+
+#### 🟡 Issue #62: Real Desktop (host) Media Transport
+* **Status**: ⏳ Open / Planned
+* **Labels**: `api-integration`, `media`, `desktop`
+* **Severity**: High
+* **Description**: Currently, the `RtpSender` socket and pacing are gated behind `#if ESP_PLATFORM`, leaving desktop builds with no-op stubs. Implement standard POSIX UDP socket writes and a platform-independent 20ms pacing loop to support audio bridging on desktop (Linux/Windows) gateway installations.
+
+---
+
+### 🟢 Medium Priority: Hardware Validation & Deployment Features
+
+#### 🟢 Issue #44: End-to-end SIP call test needed on JC3248W535EN hardware
 * **Status**: ⏳ Open / Planned
 * **Labels**: `hardware-testing`, `verification`
 * **Severity**: Medium
+* **Description**: Once physical smart display units (Guition JC3248W535EN) are re-connected, perform a verification suite to confirm that high-frequency screen redraws and touch events do not starve or block the real-time SIP signaling loop on Core 1.
 
-#### Description
-Since physical target hardware (smart display JC3248W535EN, POE boards, etc.) is currently offline, we need a physical validation sweep once hardware is re-connected to verify that display screen redraw latency doesn't interfere with real-time SIP engine ticks.
+#### 🟢 Issue #35: [Feature Request] Zero-Touch Phone Auto-Provisioning (HTTP)
+* **Status**: ⏳ Open / Planned (Backlog)
+* **Labels**: `feature-request`, `provisioning`
+* **Severity**: Medium
+* **Description**: Implement a local HTTP directory service to serve auto-generated `.cfg` and `.xml` configuration files to standard IP phones (Yealink, Grandstream, Cisco) upon boot, automatically mapping MAC addresses to local extensions from NVS storage.
 
 ---
 
-### 🟡 Issue #41: SIP core: Arduino IDE platform detection guards need verification (ESP32/ARDUINO defines)
+### 🔵 Low Priority: Diagnostics & Hobbyist Compatibility
+
+#### 🔵 Issue #32: [Feature Request] Live SIP Tracer in the Web Terminal
+* **Status**: ⏳ Open / Planned (Backlog)
+* **Labels**: `feature-request`, `diagnostics`
+* **Severity**: Low
+* **Description**: Stream live SIP signaling packets (incoming/outgoing UDP payloads) directly to the web dashboard landing page's CRT terminal using WebSockets for real-time diagnostics.
+
+#### 🔵 Issue #33: [Feature Request] PCAP Dump Endpoint for Wireshark analysis
+* **Status**: ⏳ Open / Planned (Backlog)
+* **Labels**: `feature-request`, `diagnostics`
+* **Severity**: Low
+* **Description**: Expose an HTTP endpoint `/api/diagnostics/pcap` to export a rolling ring-buffer of captured network packets in raw PCAP format for native analysis in Wireshark.
+
+#### 🔵 Issue #41: SIP core: Arduino IDE platform detection guards need verification (ESP32/ARDUINO defines)
 * **Status**: ⏳ Open / Planned
 * **Labels**: `build-system`, `compatibility`
 * **Severity**: Low
-
-#### Description
-Arduino IDE build configs should be verified against platform detection macros (`ESP32`, `ARDUINO`, `ESP_PLATFORM`) to ensure smooth compatibility for hobbyist flashing.
+* **Description**: Audit preprocessor directives (`ESP32`, `ARDUINO`, `ESP_PLATFORM`) to guarantee compiling out the box for hobbyists utilizing the Arduino IDE workspace instead of standard ESP-IDF.
 
 ---
 
-### 🔵 Issue #35: [Feature Request] Zero-Touch Phone Auto-Provisioning (HTTP)
-* **Status**: ⏳ Open / Planned (Backlog)
-* **Labels**: `feature-request`, `provisioning`
-* **Severity**: Low
-
-#### Description
-Add a background HTTP directory service to push auto-provisioning configs directly to standard SIP phone handsets (Polycom, Yealink, Cisco).
-
----
-
-### 🔵 Issue #33: [Feature Request] PCAP Dump Endpoint for Wireshark analysis
-* **Status**: ⏳ Open / Planned (Backlog)
-* **Labels**: `feature-request`, `diagnostics`
-* **Severity**: Low
-
-#### Description
-Expose an HTTP endpoint `/api/diagnostics/pcap` to dump a live ring-buffer of SIP packets in PCAP format for quick network troubleshooting.
-
----
-
-### 🔵 Issue #32: [Feature Request] Live SIP Tracer in the Web Terminal
-* **Status**: ⏳ Open / Planned (Backlog)
-* **Labels**: `feature-request`, `diagnostics`
-* **Severity**: Low
-
-#### Description
-Stream live SIP UDP signaling packets directly to the CRT console landing page using WebSockets.
-
----
-
-## API Integration: 3CX Call Control Connector (Epic)
+## API Integration: 3CX Call Control Connector (Epic Reference)
 
 > **Goal**: let a pocket-dial / tincan handset place calls to **3CX extensions** over WAN by bridging pocket-dial's SIP/RTP world to 3CX's HTTP-based **Call Control API**.
 >
@@ -67,10 +89,6 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 * answers `200 OK` with its **own** SDP carrying a real media address and `a=sendrecv` (the `440` path uses the server media port but is send-only/tone),
 * bridges audio to 3CX instead of synthesizing a tone,
 * maps SIP `BYE`/`CANCEL` ↔ 3CX participant `drop`.
-
-**Open fork (must decide — gates the language of all sub-issues below):**
-* **(A) C++ connector binary in this repo** — new target reusing `SipMessage`/`SipSdpMessage`; needs a TLS HTTP/WS client (libcurl) for 3CX. One repo, one deploy.
-* **(B) Lean Node sidecar** — separate process on the Pi, registers as an extension; trivial 3CX HTTPS/WSS, no TLS-dep friction; pocket-dial untouched.
 
 ### Reference: 3CX Call Control API (verified)
 * **License**: 3CX **Enterprise + CFD**; an API Client scoped to **Call Control Access**; a **Route Point DN** (`type Wroutepoint`) for origination.
@@ -84,32 +102,7 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 
 ### Foundations (✅ Completed — the enabling base, branch `2.0`)
 * 🟢 **`RtpSender` media beachhead** (`119ca84`): first server-sourced RTP path — virtual ext **`440`** streams a one-way G.711 µ-law tone (PCMU PT0, 8 kHz, 20 ms) to the caller, answering with the server's **own** SDP (media port `5062`). Pure helpers `linearToUlaw` / `synthTone` / `buildRtpHeader` are platform-independent and host-unit-tested (`tests/Rtp_test.cpp`); the real socket + 20 ms FreeRTOS pacing task are ESP-only; single-stream cap (2nd dial → `486`).
-* 🟢 **Media crashloop fixes** (`b7e82d5`): `udp_receiver_task` 8→16 KB and `rtp_media_tx` 4→6 KB stacks (the new SDP/UAC chain overflowed them), plus an `HttpServer::acceptLoop` guard for `std::thread`-spawn `std::system_error` (uncaught throw was rebooting the device).
-
-### 🔵 Issue #60: 3CX Connector — Form-Factor Decision (C++ in-repo vs Node sidecar)
-* **Status**: ⏳ Open / **Blocking** (gates #61–#64)
-* **Labels**: `api-integration`, `architecture`, `decision`
-* **Description**: Choose option **(A)** or **(B)** above. Determines language, dependency surface (libcurl vs none), and whether the connector ships inside this repo or beside it on the Pi.
-
-### 🔵 Issue #61: RTP Receive Path + µ-law→PCM16 Decode (uplink)
-* **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `media`, `rtp`
-* **Description**: Add the inverse of `RtpSender` — receive the handset's RTP on the media socket, strip the RTP header, decode G.711 µ-law→PCM16 (inverse of `linearToUlaw`), and feed it to the 3CX `POST /stream`. Needs a small jitter/ordering tolerance (the `440` sender path has none).
-
-### 🔵 Issue #62: Real Desktop (host) Media Transport
-* **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `media`, `desktop`
-* **Description**: `RtpSender`'s socket + pacing are `#if ESP_PLATFORM`; on the desktop build they are **no-op stubs** that only flip `_active`. For the connector to move audio on the Pi (`SipServer.exe`), implement the real host (Linux/Windows) UDP socket + 20 ms pacing loop alongside the ESP path.
-
-### 🔵 Issue #63: 3CX Call Control Client (token + makecall + /stream + events)
-* **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `3cx`, `http`
-* **Description**: Implement the 3CX leg per the Reference above — JWT-`exp` token lifecycle, `makecall` to the target extension, concurrent `GET`/`POST /stream` (chunked), and `wss /callcontrol/ws` (or 300 ms participant polling) to detect `Connected` and far-end hangup. (libcurl if option A.)
-
-### 🔵 Issue #64: Bridge Orchestration (virtual-ext intercept + leg mapping)
-* **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `sip`, `media`
-* **Description**: Wire it together — a virtual extension / prefix (`777`/`999`/`440`-style intercept in `onInvite`) hands the call to the connector, which answers with its own `a=sendrecv` SDP (real media addr), opens both 3CX streams, and replaces the `synthTone` frame source with audio pulled from 3CX. Map `INVITE`→`makecall`, `BYE`/`CANCEL`→participant `drop`, and 3CX far-end hangup→SIP `BYE`. Honor the no-ICE addressing rule (SDP `c=` must be a handset-reachable IP).
+* 🟢 **Media crashloop fixes** (`b7e82d5`): `udp_receiver_task` 8➔16 KB and `rtp_media_tx` 4➔6 KB stacks (the new SDP/UAC chain overflowed them), plus an `HttpServer::acceptLoop` guard for `std::thread`-spawn `std::system_error` (uncaught throw was rebooting the device).
 
 ---
 
