@@ -1009,38 +1009,57 @@ static void runTuiSession(WOLFSSH* ssh)
     // LIVE RESIZE: when select fires we run wolfSSH_worker() — it processes exactly
     // ONE inbound packet and returns. A "window-change" channel request (parsed by
     // the patched wolfSSH — see cmake/patch_wolfssl.py fix 6) updates the session's
-    // widthChar/heightRows and worker returns WS_SUCCESS with no channel data, so
-    // the loop pass completes and the resize check below fires the same pass. (The
+    // widthChar/heightRows and worker returns WS_SUCCESS with no channel data. (The
     // old direct wolfSSH_stream_read() blocked inside DoReceive after consuming a
     // window-change, deferring the redraw until the next keystroke.) Channel DATA
     // makes worker return WS_CHAN_RXD with the bytes buffered, which the now-non-
     // blocking wolfSSH_stream_read drains immediately.
+    //
+    // We DEBOUNCE the resize rather than redraw on every window-change packet: a live
+    // drag emits many per second, and a terminal that flaps its width while leaving
+    // full-screen (e.g. a scrollbar toggling the column count) would otherwise wedge
+    // the session in a permanent repaint storm. A detected change only marks
+    // `resizePending`; once the geometry has held steady for one short poll (no further
+    // window-change for ~150 ms) we fit the TUI and repaint the current screen ONCE.
     const int fd = wolfSSH_get_fd(ssh);
     char rbuf[256];
-    uint16_t lastCols = self.terminalCols();
-    uint16_t lastRows = self.terminalRows();
-    // Re-read the pty geometry off the live session each pass; on a change, re-fit
-    // the TUI and repaint the current screen (state untouched).
-    auto checkResize = [&]() {
+    uint16_t appliedCols = self.terminalCols();   // size the TUI is currently fitted to
+    uint16_t appliedRows = self.terminalRows();
+    bool resizePending = false;
+    // Note a geometry change off the live session without repainting (coalesce).
+    auto noteResize = [&]() {
         const uint16_t c = static_cast<uint16_t>(ssh->widthChar);
         const uint16_t r = static_cast<uint16_t>(ssh->heightRows);
-        if (c > 0 && r > 0 && (c != lastCols || r != lastRows))
-        {
-            lastCols = c;
-            lastRows = r;
-            tui.setSize(c, r);
-            tui.redraw();
-        }
+        if (c == 0 || r == 0) return;
+        resizePending = (c != appliedCols || r != appliedRows);   // false if reverted
+    };
+    // Apply the settled geometry: re-fit + repaint the current screen (state untouched).
+    auto applyResize = [&]() {
+        const uint16_t c = static_cast<uint16_t>(ssh->widthChar);
+        const uint16_t r = static_cast<uint16_t>(ssh->heightRows);
+        resizePending = false;
+        if (c == 0 || r == 0 || (c == appliedCols && r == appliedRows)) return;
+        appliedCols = c;
+        appliedRows = r;
+        tui.setSize(c, r);
+        tui.redraw();
     };
     while (tui.running())
     {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
-        struct timeval tv{ 1, 0 };          // 1 s
+        // Poll fast while a resize is settling so the coalesced repaint lands ~150 ms
+        // after the drag stops; otherwise idle at 1 Hz to drive the live monitor.
+        struct timeval tv = resizePending ? timeval{ 0, 150000 } : timeval{ 1, 0 };
         int sel = select(fd + 1, &rfds, nullptr, nullptr, &tv);
         if (sel < 0) break;                 // socket error → end session
-        if (sel == 0) { tui.tickLive(); checkResize(); continue; }  // idle tick (1 Hz)
+        if (sel == 0)                       // timed out → no inbound bytes this window
+        {
+            if (resizePending) applyResize();   // geometry held steady → fit + repaint
+            else tui.tickLive();                // idle tick (1 Hz)
+            continue;
+        }
 
         // Process exactly one inbound packet (keystroke data, window-change, …).
         int rc = wolfSSH_worker(ssh, nullptr);
@@ -1056,7 +1075,7 @@ static void runTuiSession(WOLFSSH* ssh)
         {
             break;                          // transport error → end session
         }
-        checkResize();                      // window-change lands here, same pass
+        noteResize();                       // window-change lands here; applied once quiet
     }
 }
 
