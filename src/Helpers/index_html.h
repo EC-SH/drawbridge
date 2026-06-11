@@ -7,7 +7,7 @@ R"html0(<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pocket-Dial Switchboard</title>
+<title>DRAWBRIDGE &mdash; an ENGAGE product</title>
 <style>
 :root{
   --field:#0d0b09; --field2:#141009; --panel:#1a140d; --panel2:#221a10;
@@ -244,7 +244,7 @@ input:focus,select:focus{border-color:var(--brass);box-shadow:0 0 0 2px rgba(198
 <!-- ══ OPERATOR RAIL ══ -->
 <div id="rail">
   <div class="wordmark">
-    <b>POCKET&middot;DIAL</b><span class="sub">Switchboard</span>
+    <b>DRAWBRIDGE</b><span class="sub">an ENGAGE product</span>
   </div>
   <div class="online-wrap"><span id="dot"></span><span id="online-txt">connecting&hellip;</span><span class="recon" id="recon">&nbsp;reconnecting&hellip;</span></div>
   <div class="rail-stats">
@@ -321,6 +321,31 @@ R"html1(    <div class="stat"><span class="k">Jacks</span><span class="v" id="s-
         <thead><tr><th>Caller</th><th></th><th>Callee</th><th>Result</th><th>Duration</th><th>Age</th></tr></thead>
         <tbody id="cdr-tbody"><tr class="empty-row"><td colspan="6">No calls recorded yet</td></tr></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- ══ DEVICE CONSOLE & SETUP ══ -->
+  <section class="card">
+    <h2>&#9000; Device Console &amp; Setup <span class="badge">sysop</span></h2>
+    <div class="body" style="line-height:1.6;font-size:13px">
+      <p>The full configuration surface for this device is the <b>SSH sysop terminal</b> &mdash; a text window where you type commands. Open a terminal on your computer: <b>Windows</b> &rarr; PowerShell or Windows Terminal &middot; <b>macOS</b> &rarr; Terminal.app &middot; <b>Linux</b> &rarr; any terminal emulator. Then connect with:</p>
+      <div class="row" style="margin:8px 0">
+        <input type="text" id="ssh-cmd" readonly value="ssh sysop@..." style="max-width:340px" onclick="this.select()">
+        <button class="btn" onclick="copySsh()">Copy</button>
+      </div>
+      <p class="note">The sysop terminal is a full-screen 80&times;24+ console &mdash; a bigger terminal window gives you a bigger console.</p>
+      <hr class="hr">
+      <div class="subhead">USB Serial Console (Chrome/Edge)</div>
+      <p class="note">No network needed: plug the device into this computer with a USB cable, click Connect, and pick its COM/tty port (115200 8N1).</p>
+      <div class="row" style="margin:6px 0">
+        <button class="btn primary" id="ser-btn" onclick="serConnect()">&#9889; Connect</button>
+        <span class="note" id="ser-status"></span>
+      </div>
+      <pre id="ser-log" style="display:none;height:180px;overflow:auto;background:#0c0a07;border:1px solid var(--line-hi);border-radius:4px;padding:8px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all"></pre>
+      <div class="row" id="ser-in-row" style="display:none;margin-top:6px">
+        <input type="text" id="ser-in" placeholder="type a command, press Enter" style="max-width:420px">
+        <button class="btn" onclick="serSend()">Send</button>
+      </div>
     </div>
   </section>
 
@@ -856,6 +881,64 @@ document.addEventListener("keydown",function(e){
 });
 ["adm-newpin","adm-changepin-val"].forEach(function(id){var el=$(id);if(el)el.addEventListener("keydown",function(e){if(e.key==="Enter")adminSetPin(id==="adm-changepin-val"?"change":undefined);});});
 (function(){var el=$("adm-pin");if(el)el.addEventListener("keydown",function(e){if(e.key==="Enter")adminLogin();});})();
+
+/* ════ DEVICE CONSOLE & SETUP ════ */
+function copySsh(){
+  var el=$("ssh-cmd");el.select();
+  try{document.execCommand("copy");toast("Copied","ok");}catch(e){toast("Select and copy manually","warn");}
+}
+(function(){
+  // The browser reached this page at the device's address, so location.hostname IS the device IP.
+  var host=location.hostname||"<device-ip>";
+  $("ssh-cmd").value="ssh sysop@"+host;
+})();
+var serPort=null,serReader=null,serReading=false;
+function serStatus(t,c){var e=$("ser-status");e.textContent=t;e.style.color=c||"var(--ink-dim)";}
+function serLog(t){var l=$("ser-log");l.style.display="block";l.textContent+=t;if(l.textContent.length>60000)l.textContent=l.textContent.slice(-40000);l.scrollTop=l.scrollHeight;}
+function serConnect(){
+  if(!("serial" in navigator)){serStatus("Your browser does not support Web Serial — use Chrome or Edge on desktop.","var(--red)");return;}
+  if(serPort){serDisconnect();return;}
+  navigator.serial.requestPort().then(function(p){
+    serPort=p;
+    return p.open({baudRate:115200,dataBits:8,parity:"none",stopBits:1});
+  }).then(function(){
+    serStatus("Connected — 115200 8N1","var(--green)");
+    $("ser-btn").textContent="Disconnect";$("ser-in-row").style.display="flex";
+    serReadLoop();
+  }).catch(function(e){serPort=null;serStatus(e&&e.message?e.message:"Connection cancelled.","var(--amber)");});
+}
+function serReadLoop(){
+  serReading=true;
+  var dec=new TextDecoder();
+  (function loop(){
+    if(!serPort||!serPort.readable){serReading=false;return;}
+    var reader=serPort.readable.getReader();serReader=reader;
+    function pump(){
+      reader.read().then(function(r){
+        if(r.value)serLog(dec.decode(r.value,{stream:true}));
+        if(r.done||!serReading){reader.releaseLock();return;}
+        pump();
+      }).catch(function(){try{reader.releaseLock();}catch(e){}serReading=false;serStatus("Disconnected.","var(--amber)");});
+    }
+    pump();
+  })();
+}
+function serSend(){
+  if(!serPort||!serPort.writable){serStatus("Not connected.","var(--red)");return;}
+  var v=$("ser-in").value;$("ser-in").value="";
+  var w=serPort.writable.getWriter();
+  w.write(new TextEncoder().encode(v+"\r\n")).then(function(){w.releaseLock();}).catch(function(){try{w.releaseLock();}catch(e){}});
+}
+function serDisconnect(){
+  serReading=false;
+  var p=serPort;serPort=null;
+  $("ser-btn").innerHTML="&#9889; Connect";$("ser-in-row").style.display="none";
+  if(serReader){try{serReader.cancel().catch(function(){});}catch(e){}serReader=null;}
+  if(p){setTimeout(function(){try{p.close().catch(function(){});}catch(e){}},100);}
+  serStatus("Disconnected.");
+}
+(function(){var el=$("ser-in");if(el)el.addEventListener("keydown",function(e){if(e.key==="Enter")serSend();});})();
+if(!("serial" in navigator))serStatus("Your browser does not support Web Serial — use Chrome or Edge on desktop.","var(--amber)");
 
 /* ── init ── */
 restoreTheme();
