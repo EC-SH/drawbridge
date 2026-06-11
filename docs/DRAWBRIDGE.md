@@ -45,7 +45,7 @@ Four roles. Each is independently replaceable; the contracts between them are th
 | Role | Lives | Owns | Replaceable by |
 | :--- | :--- | :--- | :--- |
 | **Edge device** | Customer LAN, PoE | Local dialplan, registrar, media bridge, survivability | Bigger silicon, same firmware contract |
-| **Media anchor** | Engage GCP region nearest footprint | RTP ⇄ PCM termination, per-tenant route points, anchor API | 3CX → FreeSWITCH/custom (§4) |
+| **Media anchor** | Engage GCP region nearest footprint | RTP ⇄ PCM termination, per-tenant route points, anchor API | 3CX / Apidaze → Porta / FreeSWITCH / custom (§4) |
 | **CLEC core** | Existing Engage infrastructure | Trunks, attestation, E911, CNAM, fraud, DIDs | Nothing — this is the moat |
 | **Fleet plane** | Engage GCP | CA, provisioning, OTA, telemetry | Grows from scripts to service |
 
@@ -144,9 +144,11 @@ interface MediaAnchor {
 }
 ```
 
-* **Binding 1 — `3cx-ccapi` (now):** WSS event channel + `/callcontrol/{dn}/participants/{id}/stream` GET/POST against a per-tenant route point on Engage's hosted 3CX. Constraints to respect: streams exist only for calls anchored at the route point (design the tenant DN as the destination calls land on, not a tap); per-tenant simultaneous-call licensing; v20 API surface.
-* **Binding 2 — `engage-native` (later):** FreeSWITCH/rtpengine + thin control daemon, or fully custom, speaking the same contract — same wire shape, operator-defined, no per-tenant license drag, deployable to whatever region/edge the latency map says. The contract above is deliberately so small that this is a bounded project.
-* **Rule:** No 3CX-ism leaks above the binding layer. Code review enforces it; an in-tree mock binding (loopback anchor) keeps everyone honest and enables CI without a PBX.
+* **Binding 1 — `3cx-ccapi` (Testing-Working):** WSS event channel + `/callcontrol/{dn}/participants/{id}/stream` GET/POST against a per-tenant route point on Engage's hosted 3CX. (Currently verified and working).
+* **Binding 2 — `apidaze` (Testing-Working):** Direct integration with the VoIP Innovations / Apidaze API. (Currently verified and working).
+* **Binding 3 — `porta-switch` (Roadmap):** Integration with the Porta softswitch API.
+* **Binding 4 — `engage-native` (later):** FreeSWITCH/rtpengine + thin control daemon, or fully custom, speaking the same contract — same wire shape, operator-defined, no per-tenant license drag, deployable to whatever region/edge the latency map says. The contract above is deliberately so small that this is a bounded project.
+* **Rule:** No platform-specific leaks above the binding layer. Code review enforces it; an in-tree mock binding (loopback anchor) keeps everyone honest and enables CI without a PBX.
 
 ---
 
