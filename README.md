@@ -76,9 +76,9 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 ## Project Status & MVP Roadmap
 
 > [!NOTE]
-> **Current phase**: v1.2.0 released — hardware-validated MVP.
+> **Current phase**: In Development — 3CX API Bridge Integration & Performance Hardening.
 >
-> The core SIP engine (concurrency- and security-hardened) is now joined by admin authentication, OTA firmware updates, and a display build verified end-to-end on real hardware.
+> Following the v1.2.0 MVP release, we have integrated the 3CX Call Control API WAN Bridge (terminating local SIP/RTP and bridging to mTLS HTTPS/WSS audio streams), resolved 27 concurrency/memory defects in the SIP engine, and implemented call setup/teardown latency optimizations.
 
 ### ✅ **Completed**
 - Core SIP signaling (REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS)
@@ -91,12 +91,17 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 - Configurable memory pools + hardware tiers ([SCALING.md](docs/SCALING.md))
 - Desktop (Linux/Windows) mode + Arduino IDE sketch templates
 - **End-to-end hardware validation on the JC3248W535** (Issue #44) ✅
+- **3CX Call Control API Bridge**: Terminate handset's RTP locally and bridge to 3CX over HTTPS/WSS (PCM16 @ 8kHz)
+- **SIP Engine Defect Resolution**: Fixed 27 concurrency, locking, memory, and code quality issues
+- **Call Setup and Teardown Latency Optimizations**: Parsed status directly from WS payloads, implemented exponential back-off on retries, configured HTTP timeouts, and optimized loopback simulation delays (Issue #29)
 
 ### ⏳ **In Progress / Backlog**
 - Arduino IDE platform-guard verification (Issue #41)
 - Raise UDP RX mailbox + multi-IP load testing (Issues #78, #79)
 - SD-card support (Issue #80)
 - Zero-Touch Phone Auto-Provisioning (#35), Live SIP Tracer (#32), PCAP dump (#33)
+- WS Event Task Stack Size optimization (#86)
+- Desktop/Host Media Transport Support (#87)
 
 **For detailed issue tracking and resolved items, see [ISSUES.md](ISSUES.md) and the [GitHub Issue Tracker](../../issues).**
 
