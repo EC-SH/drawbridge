@@ -25,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <array>
+#include <thread>
 #include "SipMessage.hpp"
 #include "SipClient.hpp"
 #include "Session.hpp"
@@ -44,6 +45,7 @@ public:
 
 	RequestsHandler(std::string serverIp, int serverPort,
 		OnHandledEvent onHandledEvent);
+	~RequestsHandler();
 
 	static std::shared_ptr<SipMessage> getMessageFromPool(std::string message, sockaddr_in src);
 
@@ -314,7 +316,6 @@ private:
 
 	std::shared_ptr<SipClient> allocateClient(std::string number, sockaddr_in address, int expiresSeconds);
 	std::shared_ptr<Session> allocateSession(std::string callID, std::shared_ptr<SipClient> src);
-	bool isDummyClient(const std::shared_ptr<SipClient>& client) const;
 	void dumpWire(const char* label, const std::shared_ptr<SipMessage>& msg);
 	void dumpWire(const char* label, std::string_view method, std::string_view callID, std::string_view to);
 	std::shared_ptr<SipMessage> buildOkWithSdp(
@@ -322,10 +323,16 @@ private:
 		const std::string& activeIp,
 		const std::string& toTag,
 		const std::string& sdpBody);
+	// The single server-initiated in-dialog BYE builder (Issue #11). Callers supply
+	// the complete From/To headers — including tags — because the dialog roles
+	// differ: the beep dialog is server-as-UAC (From = our INVITE tag), the anchor
+	// dialog is server-as-UAS (From = the To-tag we minted on the 180/200).
 	std::shared_ptr<SipMessage> buildServerBye(
-		const std::shared_ptr<SipClient>& caller,
-		const std::shared_ptr<SipMessage>& inviteMsg,
-		const std::string& callId);
+		const std::string& destExt,
+		const sockaddr_in& destAddr,
+		const std::string& callId,
+		const std::string& fromHeader,
+		const std::string& toHeader);
 	void sendRinging(
 		const std::shared_ptr<SipMessage>& data,
 		const std::string& activeIp,
@@ -343,6 +350,13 @@ private:
 	LoopbackAnchorClient _loopbackClient;
 	AnchorClient*        _anchorClient = nullptr;
 	MediaBridge          _mediaBridge;
+
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+	// Async anchor-start worker (host builds). Must be JOINED in the destructor:
+	// the previous detached thread captured `this` and outlived the handler in
+	// unit tests, segfaulting the suite nondeterministically.
+	std::thread _anchorStartThread;
+#endif
 
 	// RequestsHandler.hpp: Issues #24 and #28 resolved.
 	std::unordered_map<std::string, std::function<void(std::shared_ptr<SipMessage> request)>> _handlers;

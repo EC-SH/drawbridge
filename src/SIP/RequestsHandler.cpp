@@ -104,6 +104,24 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	refreshDeviceSnapshot();
 }
 
+RequestsHandler::~RequestsHandler()
+{
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+	if (_anchorStartThread.joinable())
+	{
+		_anchorStartThread.join();
+	}
+#endif
+	// Stop the anchor BEFORE member destruction begins: the loopback client's
+	// simulation threads call back into this handler (locking _mutex, touching
+	// _sessions), and those members are destroyed before _loopbackClient itself —
+	// relying on ~LoopbackAnchorClient to join them is a use-after-free.
+	if (_anchorClient)
+	{
+		_anchorClient->stop();
+	}
+}
+
 std::shared_ptr<SipMessage> RequestsHandler::getMessageFromPool(std::string message, sockaddr_in src)
 {
 	for (auto& msg : _messagePool)
@@ -468,7 +486,7 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 
 	{
 		auto session = getSession(data->getCallID());
-		if (session.has_value() && isDummyClient(session.value()->getDest()))
+		if (session.has_value() && session.value()->isAnchor())
 		{
 			_mediaBridge.stopBridge();
 			asyncDropCall("");
@@ -739,6 +757,7 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 			newSession->setDest(virtualClient);
 			newSession->setInviteMessage(data);
 			newSession->setState(Session::State::Invited);
+			newSession->setAnchor(true); // mark as WAN-anchor session — see Session::isAnchor()
 			_sessions.emplace(data->getCallID(), newSession);
 
 			// Send "180 Ringing" back to the handset. Generate the dialog To-tag ONCE
@@ -1128,7 +1147,7 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-	if (session.has_value() && isDummyClient(session.value()->getDest()))
+	if (session.has_value() && session.value()->isAnchor())
 	{
 		_mediaBridge.stopBridge();
 		asyncDropCall("");
@@ -1311,10 +1330,10 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-	// DIAGNOSTIC: an ACK for a 3CX-routed (_dummyClient) session means the handset
+	// DIAGNOSTIC: an ACK for a 3CX-routed (anchor) session means the handset
 	// ACCEPTED our 200 OK and the SIP call is fully connected — so any remaining
 	// silence is purely an RTP/media problem, not a SIP one.
-	if (isDummyClient(session.value()->getDest()))
+	if (session.value()->isAnchor())
 	{
 		queueLog("[3CX] Handset ACK received — SIP dialog CONNECTED for " + std::string(data->getCallID()));
 	}
@@ -3153,32 +3172,19 @@ std::shared_ptr<SipMessage> RequestsHandler::buildBeepAck(const std::shared_ptr<
 std::shared_ptr<SipMessage> RequestsHandler::buildBeepBye(const std::shared_ptr<SipMessage>& ok)
 {
 	// BYE to end the beep call immediately after the tone. New transaction (fresh
-	// branch, CSeq 2 BYE) within the established dialog. To carries the phone's tag.
+	// branch, CSeq 2 BYE) within the established dialog. We are the UAC here, so
+	// From carries the tag we minted on the beep INVITE; To carries the phone's tag.
 	BeepDialog* bd = findBeepByCallID(ok->getCallID());
 	if (!bd)
 	{
 		return nullptr;
 	}
 
-	char ipBuf[INET_ADDRSTRLEN]{};
-	inet_ntop(AF_INET, &bd->addr.sin_addr, ipBuf, sizeof(ipBuf));
-	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(bd->addr.sin_port));
-
 	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-	std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
+	std::string fromHeader = "\"PocketDial\" <sip:pbx@" + srcIpPort + ">;tag=" + bd->fromTag;
 
-	std::ostringstream ss;
-	ss << "BYE sip:" << bd->ext << "@" << destIpPort << " SIP/2.0\r\n"
-	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << branch << "\r\n"
-	   << "From: \"PocketDial\" <sip:pbx@" << srcIpPort << ">;tag=" << bd->fromTag << "\r\n"
-	   << "To: " << ok->getTo() << "\r\n"
-	   << "Call-ID: " << bd->callID << "\r\n"
-	   << "CSeq: 2 BYE\r\n"
-	   << "Max-Forwards: 70\r\n"
-	   << "Content-Length: 0\r\n\r\n";
-
-	return getMessageFromPool(ss.str(), bd->addr);
+	return buildServerBye(bd->ext, bd->addr, bd->callID, fromHeader, std::string(ok->getTo()));
 }
 
 std::shared_ptr<SipMessage> RequestsHandler::buildBeepCancel(std::size_t slot)
@@ -4070,7 +4076,9 @@ void RequestsHandler::loadThreeCxConfig()
 		vTaskDelete(NULL);
 	}, "3cx_start", 4096, arg, 5, NULL);
 #else
-	std::thread([this]() {
+	// Member thread, joined in ~RequestsHandler — a detached thread here captured
+	// `this` and outlived the handler in unit tests (nondeterministic segfaults).
+	_anchorStartThread = std::thread([this]() {
 		if (_anchorClient->start())
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
@@ -4081,7 +4089,7 @@ void RequestsHandler::loadThreeCxConfig()
 			std::lock_guard<std::mutex> lock(_mutex);
 			queueLog("[3CX] Failed to start anchor client", true);
 		}
-	}).detach();
+	});
 #endif
 
 	// Set event callback
@@ -4093,7 +4101,7 @@ void RequestsHandler::loadThreeCxConfig()
 			// Find the active ringing session.
 			for (auto& [callId, session] : _sessions)
 			{
-				if (session->getState() == Session::State::Invited && isDummyClient(session->getDest()))
+				if (session->getState() == Session::State::Invited && session->isAnchor())
 				{
 					// Found the session!
 					auto caller = session->getSrc();
@@ -4146,16 +4154,25 @@ void RequestsHandler::loadThreeCxConfig()
 			// Find the active session and terminate it
 			for (auto& [callId, session] : _sessions)
 			{
-				if (isDummyClient(session->getDest()))
+				if (session->isAnchor())
 				{
 					_mediaBridge.stopBridge();
 
-					// Send BYE to the handset
+					// Send BYE to the handset. We are the UAS of this dialog, so From
+					// carries OUR tag — the To-tag minted on the 180/200 (stored on the
+					// session). Without it, tag-strict handsets (Yealink) reject the BYE
+					// and stay off-hook on a dead call (Issue #12).
 					auto caller = session->getSrc();
 					auto inviteMsg = session->getInviteMessage();
 					if (caller && inviteMsg)
 					{
-						auto bye = buildServerBye(caller, inviteMsg, callId);
+						std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+						std::string localTag = session->getLocalTag();
+						if (localTag.empty()) localTag = IDGen::GenerateID(9); // defensive fallback
+						std::string fromHeader = "<sip:" + std::string(inviteMsg->getToNumber()) +
+						                         "@" + activeIp + ">;tag=" + localTag;
+						auto bye = buildServerBye(caller->getNumber(), caller->getAddress(), callId,
+						                          fromHeader, std::string(inviteMsg->getFrom()));
 						if (bye)
 						{
 							_asyncOutbox.emplace_back(caller->getAddress(), std::move(bye)); // WS task — see _asyncOutbox
@@ -4170,19 +4187,6 @@ void RequestsHandler::loadThreeCxConfig()
 			}
 		}
 	});
-}
-
-bool RequestsHandler::isDummyClient(const std::shared_ptr<SipClient>& client) const
-{
-	if (!client) return false;
-	for (const auto& poolClient : _clientPool)
-	{
-		if (poolClient == client)
-		{
-			return false;
-		}
-	}
-	return true;
 }
 
 void RequestsHandler::dumpWire(const char* label, const std::shared_ptr<SipMessage>& msg)
@@ -4230,33 +4234,30 @@ std::shared_ptr<SipMessage> RequestsHandler::buildOkWithSdp(
 }
 
 std::shared_ptr<SipMessage> RequestsHandler::buildServerBye(
-	const std::shared_ptr<SipClient>& caller,
-	const std::shared_ptr<SipMessage>& inviteMsg,
-	const std::string& callId)
+	const std::string& destExt,
+	const sockaddr_in& destAddr,
+	const std::string& callId,
+	const std::string& fromHeader,
+	const std::string& toHeader)
 {
-	if (!caller || !inviteMsg)
-	{
-		return nullptr;
-	}
-
 	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
 	char ipBuf[INET_ADDRSTRLEN]{};
-	inet_ntop(AF_INET, &caller->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
-	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(caller->getAddress().sin_port));
+	inet_ntop(AF_INET, &destAddr.sin_addr, ipBuf, sizeof(ipBuf));
+	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(destAddr.sin_port));
 	std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
 
 	std::ostringstream ss;
-	ss << "BYE sip:" << caller->getNumber() << "@" << destIpPort << " SIP/2.0\r\n"
+	ss << "BYE sip:" << destExt << "@" << destIpPort << " SIP/2.0\r\n"
 	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << branch << "\r\n"
-	   << "From: <sip:" << inviteMsg->getToNumber() << "@" << activeIp << ">\r\n"
-	   << "To: " << inviteMsg->getFrom() << "\r\n"
+	   << "From: " << fromHeader << "\r\n"
+	   << "To: " << toHeader << "\r\n"
 	   << "Call-ID: " << callId << "\r\n"
 	   << "CSeq: 2 BYE\r\n"
 	   << "Max-Forwards: 70\r\n"
 	   << "Content-Length: 0\r\n\r\n";
 
-	return getMessageFromPool(ss.str(), caller->getAddress());
+	return getMessageFromPool(ss.str(), destAddr);
 }
 
 void RequestsHandler::sendRinging(

@@ -489,16 +489,29 @@ bool ThreeCxAnchorClient::ensureToken()
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		if (!tokenExpiringSoon()) return true;
+	}
 
-		// Never re-issue a token while media streams are live: 3CX invalidates the
-		// previous token the instant a new one is granted, which would tear down the
-		// chunked GET/POST streams holding the old token mid-call. Refresh only
-		// happens between calls (makeCall is invoked before any stream is opened).
-		if (_postClient != nullptr || _getClient != nullptr)
-		{
-			ESP_LOGW(TAG, "Token near expiry but media streams active — deferring refresh");
-			return true;
-		}
+	// Never re-issue a token while media streams are live: 3CX invalidates the
+	// previous token the instant a new one is granted, which would tear down the
+	// chunked GET/POST streams holding the old token mid-call. Refresh only
+	// happens between calls (makeCall is invoked before any stream is opened).
+	// Each handle is read under the mutex that actually guards its lifecycle
+	// (_postMutex / _getMutex) — reading them under _mutex synchronized nothing
+	// (Issue #14). Taken sequentially, never nested, so no ordering hazard.
+	bool streamsActive = false;
+	{
+		std::lock_guard<std::mutex> lock(_postMutex);
+		streamsActive = (_postClient != nullptr);
+	}
+	if (!streamsActive)
+	{
+		std::lock_guard<std::mutex> lock(_getMutex);
+		streamsActive = (_getClient != nullptr);
+	}
+	if (streamsActive)
+	{
+		ESP_LOGW(TAG, "Token near expiry but media streams active — deferring refresh");
+		return true;
 	}
 
 	ESP_LOGI(TAG, "Access token near expiry — refreshing");

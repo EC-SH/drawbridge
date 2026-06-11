@@ -42,6 +42,14 @@ public:
 	bool isBroadcast() const { return _isBroadcast; }
 	void setBroadcast(bool val) { _isBroadcast = val; }
 
+	// True only for sessions bridged to the WAN media anchor (3CX/loopback).
+	// The anchor event callbacks and CANCEL/BYE teardown branches MUST match on
+	// this — not on "dest is a non-pool client", which is also true of the 777
+	// echo, 440 tone, and *69/*11 virtual sessions and made anchor teardown hit
+	// whichever virtual session happened to be first in the map.
+	bool isAnchor() const { return _isAnchor; }
+	void setAnchor(bool val) { _isAnchor = val; }
+
 	const std::vector<std::shared_ptr<SipClient>>& getPendingTargets() const { return _pendingTargets; }
 	void setPendingTargets(std::vector<std::shared_ptr<SipClient>> targets) { _pendingTargets = std::move(targets); }
 	void removePendingTarget(const std::string& number);
@@ -94,6 +102,7 @@ private:
 	std::chrono::steady_clock::time_point _startTime;
 
 	bool _isBroadcast = false;
+	bool _isAnchor = false;
 	std::vector<std::shared_ptr<SipClient>> _pendingTargets;
 	std::shared_ptr<SipMessage> _inviteMessage;
 	std::string _localTag; // UAS-generated To-tag, shared across 180 + 200 OK
