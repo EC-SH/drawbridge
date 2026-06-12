@@ -1,6 +1,6 @@
 # Learn Mode — Fleet-Cutover Runbook
 
-**Status:** Forward-looking (feature in build now — digest auth + Learn mode, milestone M1). | **Audience:** Installers / field operators converting an existing phone deployment to pocket-dial. | **Scope:** Operational runbook, not implementation spec.
+**Status:** Shipped — SIP digest auth + open/learn/secure registrar modes are in the tree (`SipDigest`, `SipSecretStore`, `RegistrarMode`). | **Audience:** Installers / field operators converting an existing phone deployment to pocket-dial. | **Scope:** Operational runbook, not implementation spec.
 
 > **TL;DR.** Learn mode lets you drop pocket-dial into a *running* phone deployment and
 > adopt the handsets that are already there — without re-typing a SIP account into every

@@ -11,7 +11,7 @@ If you have not flashed firmware yet, do that first — see the build instructio
 **What you will do:**
 
 1. [Power on and join the device's Wi-Fi](#1-power-on-and-join-the-device)
-2. [Open the dashboard](#2-open-the-dashboard)
+2. [Open the dashboard](#2-open-the-dashboard) — the web UI; an **SSH "sysop terminal"** (TCP 22, an 80×24 ANSI TUI) is also available as a config surface on builds that link an SSH backend
 3. [Set the admin PIN (do this first)](#3-set-the-admin-pin-first)
 4. [Register a softphone or IP phone](#4-register-a-phone)
 5. [Make a test call (777 echo, then 999 all-page)](#5-make-a-test-call)
@@ -163,7 +163,7 @@ registers against it with these settings:
 | Port | `5060` | UDP signaling port |
 | Transport | **UDP** | The engine only speaks UDP |
 | Username / Auth ID / extension | your choice, e.g. `1001` | The registrar keys clients by this extension (AOR) |
-| Password | (any / blank) | There is **no SIP digest authentication** today — the registrar accepts the REGISTER on the open link. See [THREAT_MODEL.md](THREAT_MODEL.md) S-3 |
+| Password | (any / blank in the default **Open** mode) | SIP digest authentication **is** shipped — the registrar has **Open / Learn / Secure** modes and simply *defaults to Open*. In Learn/Secure modes the REGISTER is challenged against the per-extension secret store. See [LEARN_MODE.md](LEARN_MODE.md) and [THREAT_MODEL.md](THREAT_MODEL.md) S-3 |
 | Codec | **G.711 only** — µ-law (PCMU, payload 0) and a-law (PCMA, payload 8), plus telephone-event (101) | The server rewrites SDP to `0 8 101` via `enforceG711()` |
 | Registration expiry | up to `3600` s | `DEFAULT_EXPIRES`/`MAX_EXPIRES`; higher requests are capped to 3600 |
 

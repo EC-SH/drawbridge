@@ -28,6 +28,12 @@ are now gated by an admin PIN + server-side session, closing the previously
   | SIP | 5060 | UDP | Registration, INVITE, OPTIONS, session control |
   | RTP | dynamic | UDP | Media (G.711) |
   | DNS (captive portal) | 53 | UDP | Resolves all names to the device IP during onboarding |
+  | SSH sysop terminal | 22 | TCP | 80×24 ANSI TUI config surface (wolfSSH on display; littlessh on eth/wifi/lan8720). Open until an admin PIN is provisioned, then PIN-gated |
+
+  In addition, the WAN trunk anchor (when configured) opens **outbound** mTLS HTTPS and WSS
+  connections to the upstream softswitch's call-control API — an outbound-only trust
+  relationship (no new listening port), but the trunk credentials in NVS and the TLS trust
+  anchor become part of the attack surface (see the I-6 trunk note in §9).
 - **Persistence**: ESP-IDF **NVS** flash, namespace `"storage"`. Stores WiFi mode/SSID/
   password, a captive-portal `decayed` flag, and (new this phase) the admin credential
   (`admin_salt`, `admin_hash`).
@@ -99,7 +105,7 @@ Each row: threat → current mitigation → **residual risk**.
 |----|--------|-----------|---------------|
 | S-1 | **Unauthenticated admin actions** — any AP peer POSTs `/api/kill`, `/api/wifi/connect`, `/api/wifi/mode_ap`, `/api/factory-reset`. *(was SEC-04)* | **FIXED this phase.** Once an admin PIN is provisioned, all four mutating endpoints require a valid `pd_session` cookie (else `401`). Login issues a server-side session token. | Before first provisioning the device is intentionally open (onboarding) — see *First-run gap* below. PIN strength is user-chosen. |
 | S-2 | Session-cookie forgery / guessing | Token is ≥128-bit (`esp_random()` on device), opaque, validated server-side via constant-time compare; not derived from any user input. | Brute-forcing a 128-bit token over the network is infeasible; theft (S/T-3) is the realistic path. |
-| S-3 | SIP identity spoofing (register/INVITE as another extension) | SIP signaling input is validated/bounded (audit SEC-02 mitigated). | **No SIP digest authentication** — on the open AP an attacker can register/INVITE as any extension. Tracked as a SIP-layer gap; out of scope for the HTTP auth change. |
+| S-3 | SIP identity spoofing (register/INVITE as another extension) | SIP signaling input is validated/bounded (audit SEC-02 mitigated). | **Now addressed by the shipped digest-auth work — see §9.** In the default `open` registrar mode an attacker can still register/INVITE as any extension; switching to `learn`/`secure` mode closes registration spoofing (per-INVITE `407` remains a follow-up, §9). |
 
 ### Tampering
 | ID | Threat | Mitigation | Residual risk |
@@ -281,8 +287,8 @@ firmware-supply-chain risks are durably addressed by **Secure Boot v2 + flash en
 
 ## 9. The SIP auth surface (digest auth + Learn mode)
 
-> **Status:** forward-looking — this section analyzes the auth surface of the **SIP digest
-> auth + Learn-mode adoption** work being built now (milestone M1), not yet shipped code.
+> **Status:** **shipped** — the SIP digest auth + Learn-mode adoption work analyzed here is
+> now in the tree (`SipDigest`, `SipSecretStore`, registrar modes open/learn/secure, MAC-lock).
 > It extends the STRIDE analysis above with the new IDs `S-4`, `D-5`, `I-6`, `T-6`, `E-3`
 > and continues the residual-risk convention. Cross-refs: [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md)
 > §3.3 (SIP digest auth, WPA2), the operator runbook [LEARN_MODE.md](LEARN_MODE.md), and

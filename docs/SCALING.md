@@ -21,6 +21,12 @@ INVITE/BYE/CANCEL, and brokers call setup. It does **not** touch the audio:
   sees an RTP packet, never transcodes, never mixes. A connected call costs the
   server **zero** ongoing CPU and **zero** media bandwidth — only the few hundred
   bytes of `Session` bookkeeping that remember who is talking to whom.
+  *Caveat:* this is now true of the **LAN call path only**. The optional WAN trunk
+  anchor ([ARCHITECTURE.md](ARCHITECTURE.md) §6) is a deliberate, **bounded
+  exception**: one trunk-bridged call at a time terminates the handset's RTP on
+  the device (`MediaBridge`, µ-law⇄PCM16) and relays it to the upstream. That
+  single bridge is capacity-capped by design and does not change the scaling
+  math below for ordinary extension-to-extension calls.
 * **Signalling is bursty and tiny.** A REGISTER or INVITE is a sub-1 KB UDP
   datagram handled in microseconds. Even with aggressive OPTIONS keepalives the
   packet rate per client is a handful per *minute*.
