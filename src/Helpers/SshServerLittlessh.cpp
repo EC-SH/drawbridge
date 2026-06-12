@@ -1,12 +1,13 @@
 // SshServerLittlessh.cpp — littlessh-backed SSH transport for SshServer.
 // SPDX-License-Identifier: MIT
 //
-// Compiled only when POCKETDIAL_HAS_LITTLESSH is defined (opt-in via CMake
-// -DSSH_BACKEND=littlessh). Gives the eth/wifi transports a real SSH console on
-// the PSA Crypto API (mbedTLS) — no wolfSSL/wolfSSH — driving the SAME ANSI Tui
-// as the wolfSSH path. The transport-agnostic Tui providers + setters are lifted
-// verbatim from SshServer.cpp; de-duplicating them behind a shared header is a
-// tracked follow-up (kept isolated here so this never affects the wolfSSH build).
+// Compiled only when POCKETDIAL_HAS_LITTLESSH is defined — set by main/CMakeLists.txt
+// for every non-display transport (eth/wifi/lan8720), which don't link wolfSSH. Gives
+// those transports a real SSH console on the PSA Crypto API (mbedTLS) — no wolfSSL/
+// wolfSSH — driving the SAME ANSI Tui as the wolfSSH path. The transport-agnostic Tui
+// providers + setters are lifted verbatim from SshServer.cpp; de-duplicating them behind
+// a shared header is a tracked follow-up (kept isolated here so this never affects the
+// wolfSSH build).
 #ifdef POCKETDIAL_HAS_LITTLESSH
 
 #include <string>
@@ -53,9 +54,14 @@ static Tui::LiveStats buildLiveStats()
 
     // Identity block fields. The IP/MAC are best-effort; the spine is correct even
     // if they read defaults.
+    // This backend serves the wired transports (eth/lan8720), so report the
+    // Ethernet interface MAC — the one the network actually sees — not the
+    // Wi-Fi STA MAC the display/wolfSSH build reads. Falls back to the base MAC
+    // if no eth MAC is provisioned.
     char mac[18] = {0};
     uint8_t m[6] = {0};
-    if (esp_read_mac(m, ESP_MAC_WIFI_STA) == ESP_OK)
+    if (esp_read_mac(m, ESP_MAC_ETH) == ESP_OK ||
+        esp_read_mac(m, ESP_MAC_BASE) == ESP_OK)
     {
         snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
                  m[0], m[1], m[2], m[3], m[4], m[5]);
@@ -424,6 +430,17 @@ static uint16_t g_cols = 80;
 static uint16_t g_rows = 24;
 static uint8_t  g_hostkey[32];
 static lssh_config_t g_cfg;
+// Cooperative shutdown flag (wired to lssh_config_t::stop): set by the SSH
+// disable toggle so the accept loop unwinds gracefully instead of the task
+// being vTaskDelete'd out from under the bound socket + live crypto state.
+static volatile bool g_stop = false;
+// The Tui state machine is NOT re-entrant. lssh_write() may pump the connection
+// while stalled on channel window and deliver an inbound keystroke (on_data)
+// mid-render; this guard makes such a re-entrant feed/tick a no-op rather than
+// interleaving two renders into one byte stream. A keystroke arriving during a
+// repaint is dropped — acceptable, and only reachable when the 64 KB window is
+// momentarily exhausted (effectively never for a tiny-write TUI console).
+static bool g_tui_busy = false;
 
 // Onboarding model (mirrors wolfSSH wsUserAuth): SSH is OPEN until an admin PIN
 // is provisioned, then the admin PIN is the SSH password. Username is ignored.
@@ -460,14 +477,31 @@ static void ll_on_open(void* u, lssh_session_t* s, const char* exec_cmd)
 static void ll_on_data(void* u, lssh_session_t* s, const uint8_t* data, size_t len)
 {
     (void)u;
-    if (g_tui && !g_tui->feed(reinterpret_cast<const char*>(data), len))
-        lssh_exit(s, 0);           // operator logged out ([L])
+    if (!g_tui || g_tui_busy) return;   // drop input that arrives mid-render
+    g_tui_busy = true;
+    bool keep = g_tui->feed(reinterpret_cast<const char*>(data), len);
+    g_tui_busy = false;
+    if (!keep) lssh_exit(s, 0);         // operator logged out ([L])
+}
+
+// Idle beat (recv timeout, channel up): refresh the live wallboard/clock so the
+// [1] System Monitor and title-bar time advance without waiting for a keystroke,
+// matching the wolfSSH backend's 1 Hz tickLive() cadence.
+static void ll_on_idle(void* u, lssh_session_t* s)
+{
+    (void)u; (void)s;
+    if (!g_tui || g_tui_busy) return;
+    g_tui_busy = true;
+    g_tui->tickLive();
+    g_tui_busy = false;
 }
 
 static void ll_on_close(void* u, lssh_session_t* s)
 {
     (void)u; (void)s;
     g_tui = nullptr;
+    g_cols = 80; g_rows = 24;   // reset so the next client without a pty-req
+                               // inherits the 80x24 default, not stale geometry
 }
 
 // Host key: 32-byte P-256 scalar in NVS ("storage"/"ssh_p256_key"); make one if absent.
@@ -479,8 +513,15 @@ static bool load_or_make_hostkey()
     size_t len = 32;
     bool ok = (nvs_get_blob(h, "ssh_p256_key", g_hostkey, &len) == ESP_OK && len == 32);
     if (!ok && lssh_hostkey_generate(g_hostkey) == 0) {
-        nvs_set_blob(h, "ssh_p256_key", g_hostkey, 32);
-        nvs_commit(h);
+        // Persist so the host key is stable across boots (TOFU/known_hosts). If
+        // the write fails (e.g. full partition) the key is still usable for this
+        // boot, but warn loudly — silently regenerating every boot trains
+        // operators to click through host-key-changed MITM warnings.
+        esp_err_t e = nvs_set_blob(h, "ssh_p256_key", g_hostkey, 32);
+        if (e == ESP_OK) e = nvs_commit(h);
+        if (e != ESP_OK)
+            ESP_LOGW(TAG_L, "host key not persisted (%s) — will regenerate next boot",
+                     esp_err_to_name(e));
         ok = true;
     }
     nvs_close(h);
@@ -493,6 +534,7 @@ extern "C" void pd_littlessh_task(void* arg)
     (void)arg;
     if (!load_or_make_hostkey()) {
         ESP_LOGE(TAG_L, "no SSH host key — littlessh not started");
+        SshServer::instance().clearBackendTask();   // don't leave a stale handle
         vTaskDelete(nullptr);
         return;
     }
@@ -500,20 +542,47 @@ extern "C" void pd_littlessh_task(void* arg)
     if (lssh_hostkey_fingerprint(g_hostkey, fp, sizeof fp) == 0)
         ESP_LOGI(TAG_L, "littlessh host key %s", fp);
 
+    g_stop = false;
     memset(&g_cfg, 0, sizeof g_cfg);
-    g_cfg.port            = 22;
+    g_cfg.port            = POCKETDIAL_SSH_PORT;
     g_cfg.host_key        = g_hostkey;
     g_cfg.auth_max_tries  = 3;
+    // Doubles as the idle-tick cadence (1 Hz live wallboard) and the backstop
+    // that stops a silent/half-open peer from wedging the single-client server.
+    g_cfg.recv_timeout_ms = 1000;
     g_cfg.banner          = "pocket-dial \xE2\x80\x94 authorized use only\r\n";
     g_cfg.password_auth   = ll_password_auth;
     g_cfg.on_open         = ll_on_open;
     g_cfg.on_data         = ll_on_data;
     g_cfg.on_pty          = ll_on_pty;
     g_cfg.on_close        = ll_on_close;
+    g_cfg.on_idle         = ll_on_idle;
+    g_cfg.stop            = &g_stop;       // cooperative shutdown (no vTaskDelete)
 
-    ESP_LOGI(TAG_L, "littlessh SSH console starting on port 22");
-    lssh_server_run(&g_cfg);       // blocks, serving one client at a time
+    ESP_LOGI(TAG_L, "littlessh SSH console starting on port %u", (unsigned)POCKETDIAL_SSH_PORT);
+    lssh_server_run(&g_cfg);       // blocks until g_stop or an unrecoverable error
+    ESP_LOGI(TAG_L, "littlessh SSH console stopped");
+    // Clear the owning SshServer's task handle BEFORE self-deleting, so a later
+    // start() can spawn a fresh task and stop() never vTaskDelete's a dead TCB.
+    SshServer::instance().clearBackendTask();
     vTaskDelete(nullptr);
+}
+
+// Cooperative stop hook, called by SshServer::stop() under the littlessh backend
+// (runs on whatever task toggled SSH off — typically the SSH task itself, from
+// the [4]/[K] TUI action). Just raises the flag; the accept/recv loop unwinds at
+// the next idle beat and the task tears itself down cleanly via clearBackendTask().
+extern "C" void pd_littlessh_request_stop(void)
+{
+    g_stop = true;
+}
+
+// Re-arm the listener: called by SshServer::start() so that re-enabling SSH after
+// a cooperative stop (or while the previous task is still winding down) does not
+// leave the stale stop flag set.
+extern "C" void pd_littlessh_clear_stop(void)
+{
+    g_stop = false;
 }
 
 #endif // POCKETDIAL_HAS_LITTLESSH

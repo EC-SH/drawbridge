@@ -58,7 +58,12 @@ typedef struct lssh_config {
 
     /* --- policy --- */
     uint32_t auth_max_tries;   /* 0 => 5 */
-    uint32_t recv_timeout_ms;  /* 0 => no socket receive timeout */
+    uint32_t recv_timeout_ms;  /* socket receive timeout / on_idle cadence.
+                                * 0 => block forever (NOT recommended: a
+                                * half-open peer wedges the single-client
+                                * server until reboot). A non-zero value both
+                                * bounds a stalled handshake/peer and sets how
+                                * often on_idle fires while a console sits idle. */
     const char *banner;        /* optional pre-auth banner text (may be NULL) */
 
     /* --- authentication callbacks (at least one must be non-NULL) --- */
@@ -82,6 +87,11 @@ typedef struct lssh_config {
     void (*on_pty)(void *user, lssh_session_t *s, uint16_t cols, uint16_t rows);
     /* Channel torn down (client close, EOF+close, or transport loss). */
     void (*on_close)(void *user, lssh_session_t *s);
+    /* Optional. Invoked once per recv_timeout_ms while the interactive channel
+     * is up and the client is idle (no input pending), at a packet boundary —
+     * safe to lssh_write() from here. Lets a console refresh a live display
+     * without waiting on a keystroke. May be NULL. Requires recv_timeout_ms. */
+    void (*on_idle)(void *user, lssh_session_t *s);
 
     void *user;                /* opaque pointer handed to every callback */
     volatile bool *stop;       /* optional: set *stop=true to make

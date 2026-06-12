@@ -112,6 +112,7 @@ struct lssh_session {
 
     /* the one session channel */
     bool ch_open;
+    bool ch_started;                /* shell/exec accepted: on_open already fired */
     bool ch_sent_close, ch_rcvd_close, ch_sent_eof;
     bool notified_close;
     bool has_pty;
@@ -151,7 +152,10 @@ static bool rd_u32(rdr_t *r, uint32_t *v){
 }
 static bool rd_string(rdr_t *r, const uint8_t **s, uint32_t *slen){
     uint32_t n; if(!rd_u32(r,&n)) return false;
-    if (r->off+n>r->len) return false;
+    /* Subtract, never add: on a 32-bit size_t (ESP32) `r->off + n` wraps for a
+     * hostile ~0xFFFFFFFF length and slips past the bound. rd_u32 keeps the
+     * invariant off <= len, so len - off can't underflow. */
+    if (n > r->len - r->off) return false;
     *s=r->p+r->off; *slen=n; r->off+=n; return true;
 }
 /* copy a string into a NUL-terminated buffer; rejects embedded NULs */
@@ -163,7 +167,9 @@ static bool rd_cstring(rdr_t *r, char *out, size_t cap){
 
 static void wr_init(wtr_t *w, uint8_t *p, size_t cap){ w->p=p; w->cap=cap; w->len=0; w->err=false; }
 static void wr_raw(wtr_t *w, const void *d, size_t n){
-    if (w->err || w->len+n>w->cap){ w->err=true; return; }
+    /* Subtract, never add (see rd_string): `w->len + n` wraps on 32-bit for a
+     * huge n and skips the guard, turning into an OOB memcpy. len <= cap always. */
+    if (w->err || n > w->cap - w->len){ w->err=true; return; }
     memcpy(w->p+w->len,d,n); w->len+=n;
 }
 static void wr_u8(wtr_t *w, uint8_t v){ wr_raw(w,&v,1); }
@@ -203,6 +209,20 @@ static int io_recv_exact(lssh_session_t *s, uint8_t *buf, size_t n){
         if (r == 0) return -1;
         if (r < 0){
             if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK){
+                /* SO_RCVTIMEO fired. Once the interactive shell is up (ch_started:
+                 * on_open has fired), at a packet boundary, and not asked to stop,
+                 * treat it as an idle beat (keeps a live console display
+                 * refreshing) rather than a disconnect. Anywhere else — during the
+                 * handshake/auth, mid-packet, or once stop is requested — a stalled
+                 * peer is a wedge risk, so end the connection. */
+                if (s->ch_started && got == 0 && !(s->cfg->stop && *s->cfg->stop)){
+                    if (s->cfg->on_idle) s->cfg->on_idle(s->cfg->user, s);
+                    if (s->dead) return -1;
+                    continue;
+                }
+                return -1;
+            }
             return -1;
         }
         got += (size_t)r;
@@ -884,15 +904,21 @@ static int handle_channel_request(lssh_session_t *s, const uint8_t *pl, size_t p
         return 0;
     }
     if (strcmp(req, "shell") == 0){
+        /* Exactly one shell/exec per channel: a second request must not re-fire
+         * on_open (which would re-init the consumer's single TUI mid-session). */
+        if (s->ch_started) return want_reply ? ch_reply(s, false) : 0;
         if (want_reply && ch_reply(s, true)) return -1;
+        s->ch_started = true;
         if (s->cfg->on_open) s->cfg->on_open(s->cfg->user, s, NULL);
         return 0;
     }
     if (strcmp(req, "exec") == 0){
         char cmd[256];
+        if (s->ch_started) return want_reply ? ch_reply(s, false) : 0;
         if (!rd_cstring(&r, cmd, sizeof cmd))
             return want_reply ? ch_reply(s, false) : 0;
         if (want_reply && ch_reply(s, true)) return -1;
+        s->ch_started = true;
         if (s->cfg->on_open) s->cfg->on_open(s->cfg->user, s, cmd);
         return 0;
     }
@@ -1089,7 +1115,10 @@ int lssh_exit(lssh_session_t *s, uint32_t exit_status){
 
 /* --------------------------------------------------------- host key mgmt */
 
-static int hostkey_import(lssh_session_t *s, const uint8_t *scalar){
+/* Import a P-256 host-key scalar (or generate an ephemeral pair when
+ * scalar==NULL), yielding the signing key id and its 65-byte uncompressed
+ * public point. Pure scalar->key derivation — no session needed. */
+static int hostkey_derive(const uint8_t *scalar, psa_key_id_t *out_key, uint8_t pub[65]){
     psa_key_attributes_t a = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&a, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
     psa_set_key_bits(&a, 256);
@@ -1103,12 +1132,16 @@ static int hostkey_import(lssh_session_t *s, const uint8_t *scalar){
         LOGW("no host key configured: using an EPHEMERAL host key");
     }
     size_t olen = 0;
-    if (psa_export_public_key(k, s->hostkey_pub, 65, &olen) != PSA_SUCCESS || olen != 65){
+    if (psa_export_public_key(k, pub, 65, &olen) != PSA_SUCCESS || olen != 65){
         psa_destroy_key(k);
         return -1;
     }
-    s->hostkey = k;
+    *out_key = k;
     return 0;
+}
+
+static int hostkey_import(lssh_session_t *s, const uint8_t *scalar){
+    return hostkey_derive(scalar, &s->hostkey, s->hostkey_pub);
 }
 
 int lssh_hostkey_generate(uint8_t out[32]){
@@ -1130,34 +1163,35 @@ static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0
 
 int lssh_hostkey_fingerprint(const uint8_t key[32], char *out, size_t outlen){
     if (psa_crypto_init() != PSA_SUCCESS) return -1;
-    lssh_session_t *tmp = calloc(1, sizeof *tmp);
-    if (!tmp) return -1;
+    /* Only the public point is needed; derive it onto the stack instead of
+     * calloc'ing a whole ~20 KB session just to reach hostkey_pub. */
+    psa_key_id_t k = 0;
+    uint8_t pub[65];
+    if (hostkey_derive(key, &k, pub) != 0) return -1;
+    psa_destroy_key(k);
+
     int rc = -1;
-    if (hostkey_import(tmp, key) == 0){
-        uint8_t blob[128]; wtr_t w; wr_init(&w, blob, sizeof blob);
-        wr_cstr(&w, HOSTKEY_TYPE);
-        wr_cstr(&w, HOSTKEY_CURVE);
-        wr_string(&w, tmp->hostkey_pub, 65);
-        uint8_t h[32];
-        if (!w.err && !sha256(blob, w.len, h)){
-            /* OpenSSH style: SHA256: + unpadded base64 */
-            if (outlen >= 8 + 43 + 1){
-                char *p = out;
-                memcpy(p, "SHA256:", 7); p += 7;
-                for (int i = 0; i < 30; i += 3){
-                    uint32_t v = (h[i]<<16)|(h[i+1]<<8)|h[i+2];
-                    *p++ = B64[(v>>18)&63]; *p++ = B64[(v>>12)&63];
-                    *p++ = B64[(v>>6)&63];  *p++ = B64[v&63];
-                }
-                uint32_t v = (h[30]<<8)|h[31];
-                *p++ = B64[(v>>10)&63]; *p++ = B64[(v>>4)&63]; *p++ = B64[(v<<2)&63];
-                *p = 0;
-                rc = 0;
+    uint8_t blob[128]; wtr_t w; wr_init(&w, blob, sizeof blob);
+    wr_cstr(&w, HOSTKEY_TYPE);
+    wr_cstr(&w, HOSTKEY_CURVE);
+    wr_string(&w, pub, 65);
+    uint8_t h[32];
+    if (!w.err && !sha256(blob, w.len, h)){
+        /* OpenSSH style: SHA256: + unpadded base64 */
+        if (outlen >= 8 + 43 + 1){
+            char *p = out;
+            memcpy(p, "SHA256:", 7); p += 7;
+            for (int i = 0; i < 30; i += 3){
+                uint32_t v = (h[i]<<16)|(h[i+1]<<8)|h[i+2];
+                *p++ = B64[(v>>18)&63]; *p++ = B64[(v>>12)&63];
+                *p++ = B64[(v>>6)&63];  *p++ = B64[v&63];
             }
+            uint32_t v = (h[30]<<8)|h[31];
+            *p++ = B64[(v>>10)&63]; *p++ = B64[(v>>4)&63]; *p++ = B64[(v<<2)&63];
+            *p = 0;
+            rc = 0;
         }
-        psa_destroy_key(tmp->hostkey);
     }
-    free(tmp);
     return rc;
 }
 

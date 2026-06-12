@@ -418,6 +418,15 @@ extern "C" void app_main(void)
     // ── Launch HTTP dashboard on Core 0 (always — needed to provision) ─────────
     xTaskCreatePinnedToCore(&http_server_task, "http_dashboard", 8192, nullptr, 4, nullptr, 0);
 
+    // ── littlessh SSH console (PSA/mbedTLS) — start BEFORE the provisioning gate.
+    // The auth policy is "open until an admin PIN is provisioned" (ll_password_auth),
+    // so SSH must be reachable on a fresh device for it to mean anything and to let
+    // a headless, display-less unit be onboarded over SSH. The TUI reads the live
+    // registrar through a null-guarded handler that the SIP task attaches once it
+    // comes up after the gate, so starting early is safe.
+    SshServer::instance().setNetInfo(s_ip_addr.c_str(), 1 /*station-like*/, "eth");
+    SshServer::instance().start();
+
     if (!is_provisioned) {
         ESP_LOGW(TAG, "[boot] device unprovisioned — SIP stack held dark until credential committed");
         while (!AdminAuth::credentialIsSet()) {
@@ -434,9 +443,7 @@ extern "C" void app_main(void)
     }
 
     // ── Launch SIP server on Core 1 (gated on provisioning) ──────────────────
+    // The SSH console (started above, before the gate) attaches to this server's
+    // live registrar via SshServer::attachHandler() inside sip_server_task.
     xTaskCreatePinnedToCore(&sip_server_task, "sip_server", 8192, nullptr, 5, nullptr, 1);
-
-    // ── littlessh SSH console (PSA/mbedTLS) — wired for the eth transport. ────
-    SshServer::instance().setNetInfo(s_ip_addr.c_str(), 1 /*station-like*/, "eth");
-    SshServer::instance().start();
 }
