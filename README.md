@@ -142,6 +142,7 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 * **Standalone AP Mode (ESP32-S3)** — Spawns an open Wi-Fi access point (`esp32-sipserver`), runs an internal DHCP server, and binds the SIP registrar to `192.168.4.1:5060`. Connect, register, a[...]
 * **W5500 Ethernet / PoE Transport** — Direct network interface driver support for wired RJ45 and Power-over-Ethernet environments, featuring DHCP or static IP fallbacks.
 * **Captive Portal Wi-Fi Onboarding** — When unconfigured, spawns a secure setup SoftAP (`My-Ap`) and displays a join QR code on screen. Intercepts HTTP traffic via a background DNS redirection [...]
+* **SSH Sysop Terminal (ANSI TUI)** — The primary headless config surface: an 80×24 "sysop terminal" over SSH on port 22, driving live System Monitor, Network, PBX Config (extensions, ring groups, forwards/DND, IVR, TRUNK), Security, and Reports/CDR screens. SSH is open until an admin PIN is provisioned, then PIN-gated. The display build serves it via wolfSSH; the eth/wifi/lan8720 builds use the lighter in-tree **littlessh** backend (PSA/mbedTLS, no wolfSSL).
 * **Smart Touchscreen Dashboard** — Native ESP-IDF v6.0.1 + LVGL 8.4.0 CGA-style HMI. Double-buffered in external OPI PSRAM (307.2 KB 16-bit color frames). Tap to cycle phosphorus theme colors (CGA B[...]
 * **Active Keepalive OPTIONS & Pruning** — Periodically dispatches OPTIONS ping packets to all active clients. Automatically reaps dead bindings upon lease timeouts or silent periods to bound me[...]
 * **Robust Concurrency & Headless Fallback** — Dedicated, core-isolated FreeRTOS tasks. SIP signaling executes on Core 1, and HTTP/Web dashboard operations execute on Core 0. If the display pane[...]
@@ -214,6 +215,7 @@ drawbridge/
 │   ├── CMakeLists.txt          # ESP-IDF component builder (wifi/eth/display targets)
 │   ├── esp_main.cpp            # ESP32-S3 entry point (Wi-Fi AP transport)
 │   ├── esp_main_eth.cpp        # ESP32-S3 entry point (W5500 Ethernet transport)
+│   ├── esp_main_eth_lan8720.cpp# Classic ESP32 entry point (internal EMAC + LAN8720 PHY)
 │   ├── esp_main_display.cpp    # ESP32-S3 entry point (Guition AXS15231B touch display target)
 │   ├── drivers/                # Low-level QSPI panel and touch screen driver layer
 │   │   ├── esp_lcd_axs15231b.c # High-performance esp_lcd driver
@@ -232,27 +234,28 @@ drawbridge/
 │   ├── SipServer_JC3248W535/   # Guition 3.5" IPS Smart Display [DEPRECATED]
 │   ├── MinimalTest/            # Diagnostic: PSRAM / heap allocation verification
 │   └── PinFuzzer/              # Diagnostic: GPIO scanning tool
-├── src/                        # Core SIP Engine (Cross-Platform C++)
+├── components/                 # ESP-IDF components (firmware-only)
+│   └── littlessh/              # From-scratch SSH-2.0 server on PSA/mbedTLS
+│       ├── include/littlessh.h #   public C API (eth/wifi/lan8720 SSH backend)
+│       └── src/littlessh.c     #   KEX (curve25519) · ECDSA host key · AES-GCM
+├── src/                        # Core SIP Engine + Helpers (Cross-Platform C++)
 │   ├── Helpers/
-│   │   ├── IDGen.hpp           # Thread-safe alphanumeric generator
-│   │   ├── UdpServer.cpp       # Threaded, platform-abstracted UDP socket
-│   │   └── UdpServer.hpp
+│   │   ├── UdpServer.cpp/.hpp  # Threaded, platform-abstracted UDP socket
+│   │   ├── HttpServer.cpp      # select-based CGA web dashboard + REST API
+│   │   ├── AdminAuth.cpp       # Salted/iterated admin-PIN auth
+│   │   ├── SipDigest.cpp / SipSecretStore.cpp # SIP digest auth + per-ext secrets
+│   │   ├── SshServer.cpp       # SSH façade + wolfSSH backend (display)
+│   │   ├── SshServerLittlessh.cpp # littlessh backend glue (eth/wifi/lan8720)
+│   │   ├── Tui.cpp/.hpp        # Transport-agnostic 80×24 ANSI sysop TUI
+│   │   ├── OtaUpdater.cpp      # Dual-OTA image apply + rollback
+│   │   └── ArpLookup.cpp / IDGen.hpp
 │   └── SIP/
-│       ├── SipMessageTypes.h   # SIP method & status string definitions
-│       ├── SipMessage.cpp      # O(n) index-walking header parser
-│       ├── SipMessage.hpp
-│       ├── SipSdpMessage.cpp   # SDP body extraction
-│       ├── SipSdpMessage.hpp
-│       ├── SipMessageFactory.cpp # RTTI-free dispatch factory
-│       ├── SipMessageFactory.hpp
-│       ├── SipClient.hpp       # Active registrar model
-│       ├── SipClient.cpp
-│       ├── Session.hpp         # Call state machine tracker
-│       ├── Session.cpp
-│       ├── RequestsHandler.cpp # Signaling logic & client/session registry
-│       ├── RequestsHandler.hpp
+│       ├── SipMessage(.cpp/.hpp), SipSdpMessage, SipMessageFactory # parser/dispatch
+│       ├── SipClient / Session  # registrar model + call state machine
+│       ├── RequestsHandler.cpp # Signaling logic, PBX features, dashboard API
 │       ├── SipServer.cpp       # Orchestrator
-│       └── SipServer.hpp
+│       ├── RtpSender / RtpReceiver / PlayoutBuffer / MediaBridge # B2BUA media path
+│       └── ThreeCxAnchorClient / LoopbackAnchorClient # WAN trunk (3CX Call Control)
 ```
 
 ---
@@ -323,10 +326,11 @@ Quick liveness probe — sends a SIP `REGISTER` (falling back to `OPTIONS`) over
 python .smoke/sip_probe.py <ip> [port]      # default port 5060
 ```
 
-### `.smoke/ssh_test.py`
-Scripted SSH smoke test for the wolfSSH console (open while unsecured; the admin PIN becomes the password once set).
+### `.smoke/ssh_test.py` · `.smoke/ssh_tui.py`
+Scripted SSH smoke tests for the sysop console — works against either backend (wolfSSH on the display build, littlessh on the eth/wifi builds). SSH is open while the device is unsecured; the admin PIN becomes the password once set. `ssh_tui.py` additionally reconstructs the live 80×24 TUI through a `pyte` terminal emulator.
 ```bash
 python .smoke/ssh_test.py <host> [password]
+python .smoke/ssh_tui.py  <host> [password]   # renders the full ANSI TUI
 ```
 
 ### `tests/http/test_api.sh`
@@ -468,4 +472,4 @@ Parses headers and extracts SDP details through an O(n) non-mutating index-walki
 
 ## License
 
-Drawbridge is a **commercial product of the ENGAGE product line** — see the [LICENSE](LICENSE) file. It is built on the MIT-licensed SipServer foundation (notice retained) and links GPL-dual-licensed wolfSSL/wolfSSH for the SSH console; all upstream licenses are cited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Drawbridge is a **commercial product of the ENGAGE product line** — see the [LICENSE](LICENSE) file. It is built on the MIT-licensed SipServer foundation (notice retained). The SSH sysop console uses one of two backends depending on the build: the **display** firmware links GPL-dual-licensed **wolfSSL/wolfSSH**, while the **eth / wifi / lan8720** firmware uses the in-tree **littlessh** backend (`components/littlessh`) built on ESP-IDF's bundled **mbedTLS** (Apache-2.0) — so the wired/PoE builds carry **no GPL SSH dependency**. All upstream licenses are cited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

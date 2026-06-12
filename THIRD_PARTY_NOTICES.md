@@ -38,8 +38,10 @@ SOFTWARE.
 
 | Component | License | Use | Notes |
 |---|---|---|---|
-| wolfSSL `^5.8.2` | **GPLv2** (dual: commercial from wolfSSL Inc.) | SSH crypto (display build, `PD_HOST_SSH`) | **Commercial distribution of linked binaries requires a wolfSSL commercial license** — see LICENSE §2 |
-| wolfSSH `^1.4.20` | **GPLv2** (dual) | SSH sysop terminal server | Same obligation as wolfSSL |
+| wolfSSL `^5.8.2` | **GPLv2** (dual: commercial from wolfSSL Inc.) | SSH crypto — **display build + `PD_HOST_SSH` only** | **Commercial distribution of linked binaries requires a wolfSSL commercial license** — see LICENSE §2. The eth/wifi/lan8720 firmware does NOT link wolfSSL. |
+| wolfSSH `^1.4.20` | **GPLv2** (dual) | SSH sysop terminal server (display build only) | Same obligation as wolfSSL |
+| littlessh (in-tree, `components/littlessh`) | Apache-2.0 (this project) | SSH sysop terminal server — **eth/wifi/lan8720 builds** | From-scratch SSH-2.0 server; crypto via ESP-IDF's bundled mbedTLS (below). No GPL obligation. |
+| mbedTLS (bundled in ESP-IDF) | Apache-2.0 | PSA crypto for littlessh (curve25519/ECDSA/AES-GCM) + esp-tls | Ships with ESP-IDF |
 | ESP-IDF (v5.1–v6.0.1) | Apache-2.0 | Firmware SDK | https://github.com/espressif/esp-idf |
 | espressif/cjson (cJSON) | MIT | 3CX API JSON parsing | Dave Gamble & contributors |
 | lvgl/lvgl `^8.3` | MIT | Touch-display dashboard | |

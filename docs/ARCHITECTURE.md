@@ -12,7 +12,7 @@ The firmware architecture is divided into four core logical layers:
 1. **Network Hardware & Driver Layer**: Controls physical media (Wi-Fi radio, W5500 SPI Ethernet MAC/PHY, LAN8720 RMII PHY) and registers low-level event handlers.
 2. **Signaling & State Engine Layer (`RequestsHandler`)**: A lightweight RFC 3261-compliant SIP registrar and session controller managing client registration leases, active SIP sessions, and intercom broadcasting/paging features.
 3. **WAN Trunk Anchor Layer (`AnchorClient` / `MediaBridge`)**: An optional outbound trunk that bridges LAN handsets to a commercial softswitch / CPaaS fabric over its HTTPS call-control API, with on-device µ-law⇄PCM16 media bridging (see §6).
-4. **User Interface & Query Layer**: A custom select-based, thread-dispatching `HttpServer` serving a retro CGA CRT web dashboard, an mDNS service responder, a high-frequency LVGL-based GUI display task, and a wolfSSH-backed **sysop terminal TUI** over SSH (see §7).
+4. **User Interface & Query Layer**: A custom select-based, thread-dispatching `HttpServer` serving a retro CGA CRT web dashboard, an mDNS service responder, a high-frequency LVGL-based GUI display task, and a **sysop terminal TUI** over SSH (wolfSSH on display, littlessh on eth/wifi/lan8720 — see §7).
 
 ```mermaid
 graph TD
@@ -199,6 +199,9 @@ Trunk credentials (base URL, client ID, client secret, source DN, loopback flag)
 
 ## 7. SSH Sysop Terminal (TUI)
 
-`src/Helpers/SshServer.cpp` runs an embedded **wolfSSH** server (TCP port 22 by default, overridable via the NVS `ssh_port` u16; gated by `POCKETDIAL_HAS_WOLFSSH`, present on the display build and optionally on host via `-D PD_HOST_SSH=ON`). Its listener task is pinned to **Core 0 at priority 3** — below the SIP tasks — and it stubs itself gracefully when wolfSSH is not linked.
+`src/Helpers/SshServer.cpp` is a backend-agnostic **façade** (singleton, NVS `ssh_enabled` gate, terminal-geometry/handler/netinfo plumbing) in front of **two interchangeable SSH backends** — exactly one linked per build, selected in `main/CMakeLists.txt`. Both serve TCP port 22 (the `POCKETDIAL_SSH_PORT` macro, shared via `SshServer.hpp`) on a **Core 0, priority 3** task — below the SIP tasks — and the façade stubs itself gracefully when neither is linked.
+
+- **wolfSSH** (`POCKETDIAL_HAS_WOLFSSH`, the **display** build, and host via `-D PD_HOST_SSH=ON`): the wolfSSH session loop lives in `SshServer.cpp`; its accept loop self-retries and the TUI drive coalesces window-change resizes.
+- **littlessh** (`POCKETDIAL_HAS_LITTLESSH`, the **eth / wifi / lan8720** builds): a from-scratch SSH-2.0 server in `components/littlessh` on the PSA Crypto API / mbedTLS (curve25519-sha256 · ecdsa-sha2-nistp256 · aes256-gcm), with the glue in `src/Helpers/SshServerLittlessh.cpp`. It serves one client at a time, drives the same TUI via `on_data`/`on_idle` callbacks (1 Hz live refresh), and shuts down **cooperatively** (`lssh_config_t::stop`, never `vTaskDelete`) because the SSH-disable toggle runs on the SSH task itself. It is started **before** the provisioning gate so a headless unit can be onboarded over SSH (auth is open until an admin PIN exists, then PIN-gated).
 
 The terminal itself, `src/Helpers/Tui.cpp`, is a **transport-agnostic ANSI TUI engine**: it takes a `std::function` byte writer plus a `feed(bytes)` input path and has no wolfSSH dependency, so it is host-compilable and unit-tested (`tests/Tui_test.cpp`). `SshServer::runTuiSession` wires it to the SSH channel. Screens (banner → hub → System Monitor, Network, PBX Config, Security, Reports/CDR, About) read and mutate state exclusively through the existing thread-safe `RequestsHandler` snapshot getters and guarded mutators — never raw engine internals. All framed output is measured in display columns (`dispWidth`/`padCols`/`truncCols`), never bytes, to keep the 80×24 frame intact with multibyte UTF-8 glyphs.
