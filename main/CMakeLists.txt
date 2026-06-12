@@ -68,6 +68,12 @@ else()
     message(STATUS "SipServer transport: WiFi SoftAP")
 endif()
 
+# littlessh SSH console for transports that don't link wolfSSH (eth/wifi/lan8720).
+# The display transport keeps wolfSSH (POCKETDIAL_HAS_WOLFSSH, set below).
+if(NOT SIP_TRANSPORT STREQUAL "display")
+    list(APPEND EXTRA_REQUIRES littlessh)
+endif()
+
 idf_component_register(SRCS ${MAIN_SRC}
                             ${ADDITIONAL_SRCS}
                             "../src/Helpers/UdpServer.cpp"
@@ -77,6 +83,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/Helpers/SipSecretStore.cpp"
                             "../src/Helpers/ArpLookup.cpp"
                             "../src/Helpers/SshServer.cpp"
+                            "../src/Helpers/SshServerLittlessh.cpp"
                             "../src/Helpers/Tui.cpp"
                             "../src/Helpers/OtaUpdater.cpp"
                             "../src/SIP/RequestsHandler.cpp"
@@ -101,7 +108,7 @@ idf_component_register(SRCS ${MAIN_SRC}
 # ESP-IDF console convention; trailing members default to 0). Under -Wextra that trips
 # -Werror=missing-field-initializers. Demote it for this file only — same approach the
 # display build already uses for esp_main_display.cpp and qrcode.c.
-set_source_files_properties("../src/Helpers/SshServer.cpp"
+set_source_files_properties("../src/Helpers/SshServer.cpp" "../src/Helpers/SshServerLittlessh.cpp"
     PROPERTIES COMPILE_FLAGS "-Wno-error=missing-field-initializers")
 
 # Issue #49: the display transport reserves Core 1 for the LVGL graphics task and
@@ -112,6 +119,12 @@ set_source_files_properties("../src/Helpers/SshServer.cpp"
 # so they must NOT define POCKETDIAL_HAS_WIFI.
 if(NOT SIP_TRANSPORT STREQUAL "eth" AND NOT SIP_TRANSPORT STREQUAL "lan8720")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_WIFI)
+endif()
+
+# littlessh SSH backend (PSA/mbedTLS) for non-display transports, which don't link
+# wolfSSH. display keeps the wolfSSH console (POCKETDIAL_HAS_WOLFSSH, set below).
+if(NOT SIP_TRANSPORT STREQUAL "display")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_LITTLESSH)
 endif()
 
 # W5500 board pin-map selector (see the eth branch above). Drives the #if in

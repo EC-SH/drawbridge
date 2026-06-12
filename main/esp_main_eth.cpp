@@ -49,6 +49,7 @@
 #include "lwip/sys.h"
 
 #include "SipServer.hpp"
+#include "SshServer.hpp"
 #include "HttpServer.hpp"
 #include "OtaUpdater.hpp"
 #include "AdminAuth.hpp"
@@ -237,6 +238,7 @@ static void sip_server_task(void* pvParameters)
     ESP_LOGI(TAG, "Starting SipServer on %s:%d", s_ip_addr.c_str(), SIP_PORT);
 
     g_sipServer = new SipServer(s_ip_addr, SIP_PORT);
+    SshServer::instance().attachHandler(&g_sipServer->getHandler());   // live stats for the SSH TUI
     ESP_LOGI(TAG, "SIP server is RUNNING.  Point softphones at %s:%d",
              s_ip_addr.c_str(), SIP_PORT);
 
@@ -433,4 +435,8 @@ extern "C" void app_main(void)
 
     // ── Launch SIP server on Core 1 (gated on provisioning) ──────────────────
     xTaskCreatePinnedToCore(&sip_server_task, "sip_server", 8192, nullptr, 5, nullptr, 1);
+
+    // ── littlessh SSH console (PSA/mbedTLS) — wired for the eth transport. ────
+    SshServer::instance().setNetInfo(s_ip_addr.c_str(), 1 /*station-like*/, "eth");
+    SshServer::instance().start();
 }

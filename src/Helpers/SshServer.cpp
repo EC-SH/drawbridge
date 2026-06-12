@@ -141,6 +141,10 @@ static constexpr int         SSH_TASK_CORE      = 0;
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
+#ifdef POCKETDIAL_HAS_LITTLESSH
+extern "C" void pd_littlessh_task(void* arg);   // defined in SshServerLittlessh.cpp
+#endif
+
 SshServer& SshServer::instance()
 {
     static SshServer inst;
@@ -403,8 +407,22 @@ void SshServer::start()
     ESP_LOGI(TAG, "SSH listener thread started (host, port %u)", SSH_DEFAULT_PORT);
 #endif  // ESP_PLATFORM
 
-#else   // POCKETDIAL_HAS_WOLFSSH not defined
-    ESP_LOGI(TAG, "wolfSSH not linked — SSH engine stubbed");
+#elif defined(POCKETDIAL_HAS_LITTLESSH)
+    // littlessh backend (PSA/mbedTLS) — gives transports without wolfSSH a real
+    // SSH console. The task owns its own accept loop (lssh_server_run).
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+    if (_taskHandle != nullptr) return;   // already running
+    {
+        BaseType_t ret = xTaskCreatePinnedToCore(
+            pd_littlessh_task, "ssh_little", 12288, this,
+            SSH_TASK_PRIORITY, &_taskHandle, SSH_TASK_CORE);
+        if (ret != pdPASS) { ESP_LOGE(TAG, "littlessh task create failed"); _taskHandle = nullptr; }
+        else ESP_LOGI(TAG, "littlessh SSH backend started (core %d, prio %d)",
+                      SSH_TASK_CORE, SSH_TASK_PRIORITY);
+    }
+#endif
+#else   // no SSH backend linked
+    ESP_LOGI(TAG, "no SSH backend linked — SSH engine stubbed");
 #endif  // POCKETDIAL_HAS_WOLFSSH
 }
 
