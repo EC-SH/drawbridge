@@ -17,13 +17,13 @@ endif()
 
 if(SIP_TRANSPORT STREQUAL "eth")
     set(MAIN_SRC "esp_main_eth.cpp")
-    # wolfssl/wolfssh: the headless Ethernet box is the build that most needs the
-    # SSH sysop terminal (the display board has a screen) — POCKETDIAL_HAS_WOLFSSH
-    # is set below for eth too.
+    # The headless Ethernet box needs the SSH sysop terminal most (no screen), but
+    # it uses the lightweight littlessh backend (PSA/mbedTLS) appended below for all
+    # non-display transports — NOT wolfSSH. wolfSSH stays display-only.
     if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
-        set(EXTRA_REQUIRES esp_eth espressif__w5500 wolfssl__wolfssl wolfssl__wolfssh ${IDF_V6_DRIVERS})
+        set(EXTRA_REQUIRES esp_eth espressif__w5500 ${IDF_V6_DRIVERS})
     else()
-        set(EXTRA_REQUIRES esp_eth wolfssl__wolfssl wolfssl__wolfssh ${IDF_V6_DRIVERS})
+        set(EXTRA_REQUIRES esp_eth ${IDF_V6_DRIVERS})
     endif()
     # W5500 boards differ only in their SPI pin map. Select with -D PD_ETH_BOARD=<board>:
     #   elite     → LilyGO T-ETH-ELITE S3 (default; the board on the bench)
@@ -71,6 +71,12 @@ else()
     message(STATUS "SipServer transport: WiFi SoftAP")
 endif()
 
+# littlessh SSH console for transports that don't link wolfSSH (eth/wifi/lan8720).
+# The display transport keeps wolfSSH (POCKETDIAL_HAS_WOLFSSH, set below).
+if(NOT SIP_TRANSPORT STREQUAL "display")
+    list(APPEND EXTRA_REQUIRES littlessh)
+endif()
+
 idf_component_register(SRCS ${MAIN_SRC}
                             ${ADDITIONAL_SRCS}
                             "../src/Helpers/UdpServer.cpp"
@@ -80,6 +86,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/Helpers/SipSecretStore.cpp"
                             "../src/Helpers/ArpLookup.cpp"
                             "../src/Helpers/SshServer.cpp"
+                            "../src/Helpers/SshServerLittlessh.cpp"
                             "../src/Helpers/Tui.cpp"
                             "../src/Helpers/OtaUpdater.cpp"
                             "../src/SIP/RequestsHandler.cpp"
@@ -104,7 +111,7 @@ idf_component_register(SRCS ${MAIN_SRC}
 # ESP-IDF console convention; trailing members default to 0). Under -Wextra that trips
 # -Werror=missing-field-initializers. Demote it for this file only — same approach the
 # display build already uses for esp_main_display.cpp and qrcode.c.
-set_source_files_properties("../src/Helpers/SshServer.cpp"
+set_source_files_properties("../src/Helpers/SshServer.cpp" "../src/Helpers/SshServerLittlessh.cpp"
     PROPERTIES COMPILE_FLAGS "-Wno-error=missing-field-initializers")
 
 # Issue #49: the display transport reserves Core 1 for the LVGL graphics task and
@@ -115,6 +122,12 @@ set_source_files_properties("../src/Helpers/SshServer.cpp"
 # so they must NOT define POCKETDIAL_HAS_WIFI.
 if(NOT SIP_TRANSPORT STREQUAL "eth" AND NOT SIP_TRANSPORT STREQUAL "lan8720")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_WIFI)
+endif()
+
+# littlessh SSH backend (PSA/mbedTLS) for non-display transports, which don't link
+# wolfSSH. display keeps the wolfSSH console (POCKETDIAL_HAS_WOLFSSH, set below).
+if(NOT SIP_TRANSPORT STREQUAL "display")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_LITTLESSH)
 endif()
 
 # W5500 board pin-map selector (see the eth branch above). Drives the #if in
@@ -146,15 +159,15 @@ if(NOT _wolfssl_patch_rc EQUAL 0)
                         "wolfSSL will not build on ESP-IDF v6 without it.")
 endif()
 
-# The wolfSSH SSH sysop console (display + eth builds — the headless Ethernet box
-# needs it most). SshServer.cpp compiles its full wolfSSH path (instead of the idle
-# stub) when POCKETDIAL_HAS_WOLFSSH is defined. The wolfssl/wolfssh managed
-# components are enabled in main/idf_component.yml and forced to SOFTWARE crypto
-# (NO_ESP32_CRYPT) so they build on ESP-IDF v6.0.1. WOLFSSL_USER_SETTINGS makes
-# wolfssh/ssh.h pull wolfssl/wolfcrypt/settings.h -> user_settings.h (the component
-# config) instead of the autotools-only wolfssl/options.h, which does not exist in
-# a user_settings build.
-if(SIP_TRANSPORT STREQUAL "display" OR SIP_TRANSPORT STREQUAL "eth")
+# The wolfSSH SSH sysop console — DISPLAY build only. SshServer.cpp compiles its full
+# wolfSSH path (instead of the idle stub) when POCKETDIAL_HAS_WOLFSSH is defined. The
+# non-display transports (eth/wifi/lan8720) use the lighter littlessh backend instead
+# (POCKETDIAL_HAS_LITTLESSH, set above) so they never link wolfSSL/wolfSSH. The
+# wolfssl/wolfssh managed components are forced to SOFTWARE crypto (NO_ESP32_CRYPT) so
+# they build on ESP-IDF v6.0.1. WOLFSSL_USER_SETTINGS makes wolfssh/ssh.h pull
+# wolfssl/wolfcrypt/settings.h -> user_settings.h (the component config) instead of the
+# autotools-only wolfssl/options.h, which does not exist in a user_settings build.
+if(SIP_TRANSPORT STREQUAL "display")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETDIAL_HAS_WOLFSSH WOLFSSL_USER_SETTINGS)
 endif()
 

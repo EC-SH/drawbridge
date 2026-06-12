@@ -49,11 +49,11 @@
 #include "lwip/sys.h"
 
 #include "SipServer.hpp"
+#include "SshServer.hpp"
 #include "HttpServer.hpp"
 #include "OtaUpdater.hpp"
 #include "AdminAuth.hpp"
 #include "LogQueue.hpp"
-#include "SshServer.hpp"
 
 // ── Tag for ESP_LOG ────────────────────────────────────────────────────────
 static const char* TAG = "SipServerETH";
@@ -238,14 +238,14 @@ static void sip_server_task(void* pvParameters)
     ESP_LOGI(TAG, "Starting SipServer on %s:%d", s_ip_addr.c_str(), SIP_PORT);
 
     g_sipServer = new SipServer(s_ip_addr, SIP_PORT);
+    // Plumb the live registrar into the SSH sysop-terminal TUI. The SSH console
+    // is already running (started before the provisioning gate); its TUI snapshot
+    // getters null-check the handler, so attaching it here is the late hand-off.
+    // The dashboard getters snapshot-copy under their own mutex, so the raw pointer
+    // is thread-safe and lives for the process lifetime.
+    SshServer::instance().attachHandler(&g_sipServer->getHandler());
     ESP_LOGI(TAG, "SIP server is RUNNING.  Point softphones at %s:%d",
              s_ip_addr.c_str(), SIP_PORT);
-
-    // Plumb the live registrar into the SSH sysop-terminal TUI (mirrors the
-    // display build's wiring in esp_main_display.cpp; the dashboard getters
-    // snapshot-copy under their own mutex, so the raw pointer is thread-safe
-    // and lives for the process lifetime).
-    SshServer::instance().attachHandler(&g_sipServer->getHandler());
 
     unsigned long lastHeartbeat = 0;
     while (true)
@@ -423,6 +423,15 @@ extern "C" void app_main(void)
     // ── Launch HTTP dashboard on Core 0 (always — needed to provision) ─────────
     xTaskCreatePinnedToCore(&http_server_task, "http_dashboard", 8192, nullptr, 4, nullptr, 0);
 
+    // ── littlessh SSH console (PSA/mbedTLS) — start BEFORE the provisioning gate.
+    // The auth policy is "open until an admin PIN is provisioned" (ll_password_auth),
+    // so SSH must be reachable on a fresh device for it to mean anything and to let
+    // a headless, display-less unit be onboarded over SSH. The TUI reads the live
+    // registrar through a null-guarded handler that the SIP task attaches once it
+    // comes up after the gate, so starting early is safe.
+    SshServer::instance().setNetInfo(s_ip_addr.c_str(), 1 /*station-like*/, "eth");
+    SshServer::instance().start();
+
     if (!is_provisioned) {
         ESP_LOGW(TAG, "[boot] device unprovisioned — SIP stack held dark until credential committed");
         while (!AdminAuth::credentialIsSet()) {
@@ -439,11 +448,7 @@ extern "C" void app_main(void)
     }
 
     // ── Launch SIP server on Core 1 (gated on provisioning) ──────────────────
+    // The SSH console (started above, before the gate) attaches to this server's
+    // live registrar via SshServer::attachHandler() inside sip_server_task.
     xTaskCreatePinnedToCore(&sip_server_task, "sip_server", 8192, nullptr, 5, nullptr, 1);
-
-    // ── SSH sysop terminal (Core 0, prio 3 — below HTTP 4 and SIP 5) ─────────
-    // The headless Ethernet box is the build that needs the TUI most. Net role:
-    // a wired DHCP lease is the STATION-equivalent (mode 1); no SSID on copper.
-    SshServer::instance().setNetInfo(s_ip_addr.c_str(), /*mode=*/1, /*ssid=*/"");
-    SshServer::instance().start();
 }

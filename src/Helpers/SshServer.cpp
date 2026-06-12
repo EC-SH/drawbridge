@@ -125,14 +125,12 @@ static inline int pd_sock_close(int s)
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 static constexpr const char* TAG = "ssh";
-// Devices serve real port 22; the host build defaults to 2222 via CMake
-// (-D PD_HOST_SSH_PORT) since 22 is usually taken/privileged on desktops.
-#ifndef POCKETDIAL_SSH_PORT
-#define POCKETDIAL_SSH_PORT 22
-#endif
+// POCKETDIAL_SSH_PORT is defined in SshServer.hpp (shared by both backends).
 static constexpr uint16_t    SSH_DEFAULT_PORT   = POCKETDIAL_SSH_PORT;
-#ifdef POCKETDIAL_HAS_WOLFSSH
+#if defined(POCKETDIAL_HAS_WOLFSSH)
 static constexpr uint32_t    SSH_TASK_STACK     = 24576; // wolfSSH handshake crypto is stack-heavy
+#elif defined(POCKETDIAL_HAS_LITTLESSH)
+static constexpr uint32_t    SSH_TASK_STACK     = 20480; // PSA software crypto handshake + Tui render/providers
 #else
 static constexpr uint32_t    SSH_TASK_STACK     = 4096;  // stub: idle task only
 #endif
@@ -140,6 +138,12 @@ static constexpr uint8_t     SSH_TASK_PRIORITY  = 3;    // below SIP (5)
 static constexpr int         SSH_TASK_CORE      = 0;
 
 // ── Singleton ────────────────────────────────────────────────────────────────
+
+#ifdef POCKETDIAL_HAS_LITTLESSH
+extern "C" void pd_littlessh_task(void* arg);       // defined in SshServerLittlessh.cpp
+extern "C" void pd_littlessh_request_stop(void);    //   "        cooperative stop
+extern "C" void pd_littlessh_clear_stop(void);      //   "        re-arm after stop
+#endif
 
 SshServer& SshServer::instance()
 {
@@ -403,14 +407,38 @@ void SshServer::start()
     ESP_LOGI(TAG, "SSH listener thread started (host, port %u)", SSH_DEFAULT_PORT);
 #endif  // ESP_PLATFORM
 
-#else   // POCKETDIAL_HAS_WOLFSSH not defined
-    ESP_LOGI(TAG, "wolfSSH not linked — SSH engine stubbed");
+#elif defined(POCKETDIAL_HAS_LITTLESSH)
+    // littlessh backend (PSA/mbedTLS) — gives transports without wolfSSH a real
+    // SSH console. The task owns its own accept loop (lssh_server_run).
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+    pd_littlessh_clear_stop();             // re-arm if a prior stop was requested
+    if (_taskHandle != nullptr) return;    // already running (now un-stopped)
+    {
+        BaseType_t ret = xTaskCreatePinnedToCore(
+            pd_littlessh_task, "ssh_little", SSH_TASK_STACK, this,
+            SSH_TASK_PRIORITY, &_taskHandle, SSH_TASK_CORE);
+        if (ret != pdPASS) { ESP_LOGE(TAG, "littlessh task create failed"); _taskHandle = nullptr; }
+        else ESP_LOGI(TAG, "littlessh SSH backend started (core %d, prio %d, stack %u)",
+                      SSH_TASK_CORE, SSH_TASK_PRIORITY, (unsigned)SSH_TASK_STACK);
+    }
+#endif
+#else   // no SSH backend linked
+    ESP_LOGI(TAG, "no SSH backend linked — SSH engine stubbed");
 #endif  // POCKETDIAL_HAS_WOLFSSH
 }
 
 void SshServer::stop()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(POCKETDIAL_HAS_LITTLESSH) && \
+    (defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO))
+    // Cooperative shutdown. stop() is reached from the [4]/[K] TUI toggle, which
+    // runs ON the littlessh task itself — vTaskDelete'ing it here would self-
+    // delete mid-session and leak the listen socket, client fd, ~20 KB session
+    // heap and the PSA key slots. Instead raise the flag; the accept/recv loop
+    // unwinds at the next idle beat and the task clears its own handle.
+    pd_littlessh_request_stop();
+    ESP_LOGI(TAG, "littlessh SSH stop requested (cooperative)");
+#elif defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
     if (_taskHandle != nullptr)
     {
         vTaskDelete(_taskHandle);

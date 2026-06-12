@@ -24,6 +24,13 @@
 #include <cstdint>
 #include <atomic>
 
+// SSH listen port, shared by both backends (wolfSSH and littlessh) so the two
+// can never drift. Devices serve real port 22; the host build overrides this to
+// 2222 via CMake (-D PD_HOST_SSH_PORT) since 22 is usually privileged on desktops.
+#ifndef POCKETDIAL_SSH_PORT
+#define POCKETDIAL_SSH_PORT 22
+#endif
+
 // Forward-declared so the header never drags the full SIP engine into non-display
 // builds. The TUI session reads live registrar stats through this pointer when one
 // is attached (attachHandler), else it falls back to zeros with a correct spine.
@@ -58,6 +65,12 @@ public:
 
     // Gracefully stop the listener task and close all active sessions.
     void stop();
+
+    // Called by the littlessh backend task just before it self-deletes, so the
+    // owning singleton's task handle is cleared and a later start() can respawn
+    // (and stop() never vTaskDelete's an already-dead task). No-op contract for
+    // the wolfSSH backend, whose listen task never returns on its own.
+    void clearBackendTask() { _taskHandle = nullptr; }
 
     // Runtime toggle — writes "ssh_enabled" (u8) to NVS namespace "storage" and
     // calls start() or stop() as appropriate.
