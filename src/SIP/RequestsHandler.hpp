@@ -61,6 +61,21 @@ public:
 	static bool parseCallerRtp(const std::shared_ptr<SipMessage>& invite,
 		std::string& outIp, uint16_t& outPort);
 
+	// ── BLF/presence pure static helpers (host-unit-tested) ──────────────────────
+	// Build a minimal RFC 4235 dialog-info+xml document. Always state="full" (every
+	// NOTIFY carries the complete dialog set for the entity — one dialog max here).
+	// `state` empty means "no active dialog": the <dialog> element is omitted, which
+	// Yealink/Grandstream BLF keys render as an idle (off) lamp. `entity` is the
+	// full SIP URI (e.g. "sip:101@192.168.4.1"); `state` is one of the RFC 4235
+	// dialog states ("trying"|"early"|"confirmed"|"terminated").
+	static std::string buildDialogInfoXml(const std::string& entity, unsigned version,
+		const std::string& dialogId, const std::string& state, const std::string& direction);
+
+	// Extract the Event package token from a raw SIP message: the value of the
+	// Event: (or compact "o:") header up to any ';' parameter, trimmed. Returns ""
+	// when the header is absent. Pure/host-testable.
+	static std::string parseEventPackage(const std::string& raw);
+
 	void handle(std::shared_ptr<SipMessage> request);
 	void tick();
 
@@ -182,6 +197,55 @@ private:
 	void onAck(std::shared_ptr<SipMessage> data);
 	void onRefer(std::shared_ptr<SipMessage> data);   // blind transfer (RFC 3515)
 	void onMessage(std::shared_ptr<SipMessage> data); // inbound MESSAGE (RFC 3428): ack 200 OK
+
+	// ── BLF/presence: SUBSCRIBE/NOTIFY dialog-event package (RFC 6665 + 4235) ────
+	// onSubscribe: Event-package gate (489 on anything but "dialog"), AOR validation
+	// (400), fixed-slot allocation (503 on exhaustion), 202 Accepted + an immediate
+	// full-state NOTIFY. A refresh is matched by Call-ID; Expires: 0 unsubscribes
+	// (terminal NOTIFY, slot freed). Called from handle() — caller holds _mutex.
+	void onSubscribe(std::shared_ptr<SipMessage> data);
+
+	// One BLF watcher dialog. Fixed-size record in a std::array — no heap growth.
+	struct DialogSubscription
+	{
+		bool        used = false;
+		std::string callId;        // subscription dialog id (refresh/unsubscribe key)
+		std::string watcherFrom;   // subscriber's full From header (incl. its tag)
+		std::string subTo;         // our full To header (incl. the tag we minted)
+		std::string targetAor;     // the extension being watched (the To user-part)
+		std::string lastState;     // last NOTIFYed state token (change detection)
+		unsigned    version = 0;   // dialog-info version counter (monotonic)
+		unsigned    cseq = 1;      // NOTIFY CSeq within the subscription dialog
+		int         expiresSec = 0;
+		sockaddr_in addr{};        // where NOTIFYs go (the SUBSCRIBE source)
+		std::chrono::steady_clock::time_point deadline{};
+	};
+	std::array<DialogSubscription, POCKETDIAL_MAX_SUBSCRIPTIONS> _subscriptions;
+
+	// Compute the current RFC 4235 dialog state of `targetAor` from the registrar +
+	// session tables: ""=idle (no dialog element), else trying/early/confirmed plus
+	// the direction and a stable dialog id. Caller holds _mutex.
+	std::string computeDialogState(const std::string& targetAor,
+		std::string& outDirection, std::string& outDialogId) const;
+
+	// Build one NOTIFY for a subscription slot carrying a dialog-info+xml body.
+	// `terminated` selects Subscription-State: terminated;reason=<termReason>
+	// (otherwise active;expires=<remaining>). Caller holds _mutex.
+	std::shared_ptr<SipMessage> buildDialogNotify(DialogSubscription& sub,
+		const std::string& state, const std::string& direction, const std::string& dialogId,
+		bool terminated, const char* termReason);
+
+	// Single change-detection pass: recompute every watched target's state and
+	// NOTIFY the slots whose state changed since the last pass. Called at the end
+	// of handle() and from tick() (inside _mutex; NOTIFYs go into _outbox and are
+	// sent after the lock is released) — this one hook covers registration
+	// appear/disappear, session creation, state transitions and teardown without
+	// scattering per-event hooks through the call paths.
+	void refreshSubscriptions();
+
+	// Expire overdue subscriptions: terminal NOTIFY (reason=timeout) + slot free.
+	// Called from tick(); caller holds _mutex.
+	void sweepSubscriptions();
 
 	// ── DTMF SIP INFO handler (Task 2C) ──────────────────────────────────────────
 	// Invoked from handle() when a SIP INFO arrives carrying

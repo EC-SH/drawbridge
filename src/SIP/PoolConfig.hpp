@@ -60,4 +60,15 @@
 #define POCKETDIAL_MAX_BEEPS 4
 #endif
 
+// Maximum number of concurrent BLF/presence dialog subscriptions (RFC 6665
+// SUBSCRIBE/NOTIFY with the RFC 4235 "dialog" event package). Each slot is a small
+// fixed record in a std::array — no heap. A SUBSCRIBE arriving with every slot in
+// use is answered 503 Service Unavailable (graceful degradation, never a crash).
+// Must stay ≤ POCKETDIAL_MSG_POOL: a single state change can fan one NOTIFY out to
+// every subscriber, and bounding subscriptions by the message-pool depth keeps that
+// burst allocation-free (it also caps the worst-case NOTIFY burst on the wire).
+#ifndef POCKETDIAL_MAX_SUBSCRIPTIONS
+#define POCKETDIAL_MAX_SUBSCRIPTIONS 16
+#endif
+
 #endif
