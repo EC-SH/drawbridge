@@ -332,6 +332,10 @@ private:
 	};
 	std::array<ParkSlot, POCKETDIAL_PARK_SLOTS> _parkSlots;
 	std::chrono::seconds _parkTimeout{POCKETDIAL_PARK_TIMEOUT_SEC};
+	// Call-IDs of parked dialogs we have sent an in-dialog re-INVITE to (retrieve /
+	// ring-back media re-point) and still owe an ACK for, once the parked party
+	// 200s it. Bounded by the orbit table (one entry per in-flight retrieve).
+	std::vector<std::string> _parkPendingAcks;
 
 	// Orbit index for an AOR ("700".."70N" → 0..N-1), or -1 if not an orbit.
 	int parkOrbitIndex(std::string_view ext) const;

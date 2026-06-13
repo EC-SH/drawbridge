@@ -35,6 +35,7 @@ void Session::reset(std::string callID, std::shared_ptr<SipClient> src)
 	_groupExt.clear();
 	_peerCallID.clear();
 	_parkUac = false;
+	_localTag.clear();
 }
 
 void Session::setState(State state)
@@ -118,4 +119,5 @@ void Session::release()
 	_groupExt.clear();
 	_peerCallID.clear();
 	_parkUac = false;
+	_localTag.clear();
 }

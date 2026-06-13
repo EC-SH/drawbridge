@@ -148,7 +148,8 @@ private:
 
 	std::string _groupExt;
 
-	// Call parking (park-orbit bridge): linked peer leg + server-as-UAC marker.
+	// Call parking (park-orbit bridge): linked peer leg + server-as-UAC marker. The
+	// server-minted To-tag for BYE-bridging is the pre-existing _localTag above.
 	std::string _peerCallID;
 	bool _parkUac = false;
 };

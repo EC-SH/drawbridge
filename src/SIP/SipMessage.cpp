@@ -484,6 +484,44 @@ void SipMessage::clearBody()
 	reparse();
 }
 
+std::string_view SipMessage::getBody() const
+{
+	size_t sep = _messageStr.find("\r\n\r\n");
+	size_t sepLen = 4;
+	if (sep == std::string::npos)
+	{
+		sep = _messageStr.find("\n\n");
+		sepLen = 2;
+	}
+	if (sep == std::string::npos)
+	{
+		return {};
+	}
+	return std::string_view(_messageStr).substr(sep + sepLen);
+}
+
+void SipMessage::setBody(const std::string& body)
+{
+	size_t sep = _messageStr.find("\r\n\r\n");
+	size_t sepLen = 4;
+	if (sep == std::string::npos)
+	{
+		sep = _messageStr.find("\n\n");
+		sepLen = 2;
+	}
+	if (sep == std::string::npos)
+	{
+		// No header/body separator yet: append one, then the body.
+		_messageStr += "\r\n\r\n";
+		sep = _messageStr.size() - 4;
+		sepLen = 4;
+	}
+	_messageStr.erase(sep + sepLen);
+	_messageStr += body;
+	syncContentLength();   // keep Content-Length honest (the 777-bug class)
+	reparse();
+}
+
 std::string SipMessage::toString() const
 {
 	return _messageStr;

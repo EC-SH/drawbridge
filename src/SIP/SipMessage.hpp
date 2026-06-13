@@ -43,6 +43,14 @@ public:
 	void enforceG711();
 	void clearBody();
 
+	// The message body — everything after the header/body separator (the SDP for
+	// an INVITE/200 OK), or empty when there is none. The view is valid until the
+	// next mutation of this message. setBody() replaces the body and resyncs
+	// Content-Length; used by the call-park retrieve path to swap each leg's SDP
+	// onto the opposite dialog so media renegotiates peer-to-peer.
+	std::string_view getBody() const;
+	void setBody(const std::string& body);
+
 	// Recompute the Content-Length header from the actual body byte count and
 	// rewrite it in place (preserving the full/compact header-name form). Call
 	// after any edit that changes the body length; an out-of-sync Content-Length
