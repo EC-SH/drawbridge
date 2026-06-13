@@ -36,6 +36,8 @@
 #include "MediaBridge.hpp"
 #include "ThreeCxAnchorClient.hpp"
 #include "LoopbackAnchorClient.hpp"
+#include "TelephonyProvider.hpp"
+#include "TelephonyApiConfig.hpp"
 
 class RequestsHandler
 {
@@ -121,6 +123,20 @@ public:
 	TrunkConfig getTrunkConfig();
 	std::string setTrunkConfig(const TrunkConfig& cfg);  // "" on success
 	bool isTrunkConnected();   // live anchor state (for the TRUNK status chip)
+
+	// ── Telephony APIs (per-provider credential slots) ────────────────────────────
+	// Bounded table of provider credentials (TelephonyApiConfig, NVS namespace
+	// "tapicfg" / 0600 host file). Secrets are write-only: the getters return
+	// display-safe SlotViews (`secretSet` only — the value never crosses).
+	// Changes take effect on the next reboot (mirrors setTrunkConfig). Thread-safe.
+	std::vector<TelephonyApiConfig::SlotView> getTelephonyApis();
+	// `keepSecret`=true retains the stored secret (UI sends empty for "unchanged").
+	// All return "" on success, else a short operator-facing error.
+	std::string setTelephonyApi(size_t idx, const TelephonyApiConfig::Slot& s, bool keepSecret);
+	std::string clearTelephonyApi(size_t idx);   // zeroize + persist
+	// idx == TelephonyApiConfig::kNoActiveSlot clears the selection (legacy trunk
+	// config then drives provider choice, exactly as before this table existed).
+	std::string setTelephonyApiActive(size_t idx);
 
 	// ── Registrar mode (STAGE 2) ──────────────────────────────────────────────────
 	// Runtime registrar policy, replacing the compile-time POCKETDIAL_OPEN_REGISTRAR
@@ -392,6 +408,15 @@ private:
 	RtpReceiver          _rtpReceiver;
 	ThreeCxAnchorClient  _threeCxClient;
 	LoopbackAnchorClient _loopbackClient;
+	// Honest stubs for declared-but-unimplemented providers (compile-time
+	// scaffolding only: start() fails, isConnected() is always false).
+	StubTelephonyProvider _stubApidaze{TelephonyProviderType::Apidaze};
+	StubTelephonyProvider _stubVoipInnovations{TelephonyProviderType::VoipInnovations};
+	StubTelephonyProvider _stubSangoma{TelephonyProviderType::Sangoma};
+	// Fixed-size type→instance factory; populated once in loadAnchorConfig().
+	TelephonyProviderRegistry _providerRegistry;
+	// Telephony-API credential slots (guarded by _mutex, like _trunkCfg).
+	TelephonyApiConfig   _tapiCfg;
 	AnchorClient*        _anchorClient = nullptr;
 	MediaBridge          _mediaBridge;
 

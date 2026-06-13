@@ -4055,6 +4055,53 @@ std::string RequestsHandler::setTrunkConfig(const TrunkConfig& cfg)
 	return "";
 }
 
+std::vector<TelephonyApiConfig::SlotView> RequestsHandler::getTelephonyApis()
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	std::vector<TelephonyApiConfig::SlotView> out;
+	out.reserve(TelephonyApiConfig::kSlots);
+	for (size_t i = 0; i < TelephonyApiConfig::kSlots; ++i)
+	{
+		out.push_back(_tapiCfg.view(i));   // display-safe: secret never crosses
+	}
+	return out;
+}
+
+std::string RequestsHandler::setTelephonyApi(size_t idx, const TelephonyApiConfig::Slot& s, bool keepSecret)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	std::string err = _tapiCfg.setSlot(idx, s, keepSecret);
+	if (err.empty())
+	{
+		// Log the slot + provider only — NEVER credential values.
+		queueLog("[TAPI] Slot " + std::to_string(idx) + " saved (" +
+		         telephonyProviderName(s.type) + ") — applies on next reboot");
+	}
+	return err;
+}
+
+std::string RequestsHandler::clearTelephonyApi(size_t idx)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	std::string err = _tapiCfg.clearSlot(idx);
+	if (err.empty())
+	{
+		queueLog("[TAPI] Slot " + std::to_string(idx) + " cleared");
+	}
+	return err;
+}
+
+std::string RequestsHandler::setTelephonyApiActive(size_t idx)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	std::string err = _tapiCfg.setActiveSlot(idx);
+	if (err.empty())
+	{
+		queueLog("[TAPI] Active slot set — applies on next reboot");
+	}
+	return err;
+}
+
 void RequestsHandler::loadThreeCxConfig()
 {
 	std::string baseUrl;
@@ -4117,23 +4164,88 @@ void RequestsHandler::loadThreeCxConfig()
 	_trunkCfg.sourceDn = sourceDn;
 	_trunkCfg.useLoopback = (useLoopback != 0);
 
-	_threeCxClient.init(baseUrl, clientId, clientSecret, sourceDn);
-	_loopbackClient.init(baseUrl, clientId, clientSecret, sourceDn);
+	// ── Provider registry (fixed-size factory, boot-constructed instances) ────
+	// Construction is single-threaded; the registry is read-only afterwards.
+	_providerRegistry.registerProvider(TelephonyProviderType::Loopback, &_loopbackClient);
+	_providerRegistry.registerProvider(TelephonyProviderType::ThreeCx, &_threeCxClient);
+	_providerRegistry.registerProvider(TelephonyProviderType::Apidaze, &_stubApidaze);
+	_providerRegistry.registerProvider(TelephonyProviderType::VoipInnovations, &_stubVoipInnovations);
+	_providerRegistry.registerProvider(TelephonyProviderType::Sangoma, &_stubSangoma);
 
-	if (useLoopback)
+	// ── Telephony-API credential slots (new config domain, "tapicfg") ─────────
+	_tapiCfg.load();
+
+	// Resolve the boot provider TYPE. Default = the legacy trunk decision
+	// (loopback unless live 3CX creds are provisioned — byte-for-byte the old
+	// behavior). An ACTIVE+ENABLED Telephony-API slot overrides it; a slot
+	// pointing at an unimplemented (stub) provider falls back to loopback with
+	// an honest log instead of pretending to dial.
+	TelephonyProviderType bootType = useLoopback ? TelephonyProviderType::Loopback
+	                                             : TelephonyProviderType::ThreeCx;
+	std::string tapiUrl, tapiId, tapiSecret, tapiDn;
+	bool credsFromSlot = false;
 	{
-		_anchorClient = &_loopbackClient;
+		const size_t act = _tapiCfg.activeSlot();
+		const TelephonyApiConfig::Slot* slot = _tapiCfg.bootSlot(act);
+		if (slot != nullptr && slot->enabled)
+		{
+			if (telephonyProviderImplemented(slot->type))
+			{
+				bootType = slot->type;
+				tapiUrl = slot->baseUrl; tapiId = slot->clientId;
+				tapiSecret = slot->secret; tapiDn = slot->routeDn;
+				credsFromSlot = (slot->type != TelephonyProviderType::Loopback);
+			}
+			else
+			{
+				queueLog(std::string("[TAPI] Active provider ") +
+				         telephonyProviderName(slot->type) +
+				         " is not implemented yet — falling back to loopback", true);
+				bootType = TelephonyProviderType::Loopback;
+			}
+		}
+	}
+
+	// Init credentials: a Telephony-API slot supplies its own; the legacy
+	// "storage"/"3cx_*" keys remain the source otherwise (zero behavior change).
+	if (credsFromSlot)
+	{
+		_threeCxClient.init(tapiUrl, tapiId, tapiSecret, tapiDn);
+		_loopbackClient.init(tapiUrl, tapiId, tapiSecret, tapiDn);
+	}
+	else
+	{
+		_threeCxClient.init(baseUrl, clientId, clientSecret, sourceDn);
+		_loopbackClient.init(baseUrl, clientId, clientSecret, sourceDn);
+	}
+	// Drop the local plaintext copy now the client holds it (best-effort).
+	std::fill(tapiSecret.begin(), tapiSecret.end(), '\0');
+
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+	// Host builds never run a live upstream client (no TLS/WebSocket stack in
+	// the host binary) — same force-to-loopback the old code applied.
+	if (bootType == TelephonyProviderType::ThreeCx)
+	{
+		bootType = TelephonyProviderType::Loopback;
+		queueLog("[3CX] Config: Using loopback mock client (host build force)");
+	}
+#endif
+
+	_anchorClient = _providerRegistry.select(bootType);
+	if (_anchorClient == nullptr || !telephonyProviderImplemented(bootType))
+	{
+		_anchorClient = &_loopbackClient;   // registry is total today; belt+braces
+		bootType = TelephonyProviderType::Loopback;
+	}
+	if (bootType == TelephonyProviderType::Loopback)
+	{
 		queueLog("[3CX] Config: Using loopback mock client");
 	}
 	else
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
-		_anchorClient = &_threeCxClient;
-		queueLog("[3CX] Config: Using real 3CX client on " + baseUrl);
-#else
-		_anchorClient = &_loopbackClient;
-		queueLog("[3CX] Config: Using loopback mock client (host build force)");
-#endif
+		queueLog(std::string("[3CX] Config: Using real ") +
+		         telephonyProviderName(bootType) + " client on " +
+		         (credsFromSlot ? tapiUrl : baseUrl));
 	}
 
 	_mediaBridge.init(&_rtpReceiver, &_rtpSender, _anchorClient);
