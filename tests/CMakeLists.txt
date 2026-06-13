@@ -65,6 +65,11 @@ add_executable(sip_parser_tests
     # cap are unit-testable on the desktop build (see RtpReceiver_test.cpp).
     ../src/SIP/RtpReceiver.cpp
     ../src/SIP/RequestsHandler.cpp
+    # Telephony provider/API credential layer: RequestsHandler references these
+    # (getTelephonyApis/setTelephonyApi + the boot provider select), so the test
+    # binary must link them too. The host binary picks them up via GLOB.
+    ../src/SIP/TelephonyApiConfig.cpp
+    ../src/SIP/TelephonyProvider.cpp
     ../src/SIP/SipSdpMessage.cpp
     ../src/SIP/SipClient.cpp
     ../src/SIP/Session.cpp
