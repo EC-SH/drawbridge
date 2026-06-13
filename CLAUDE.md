@@ -44,6 +44,8 @@ idf.py -p COM4 -D SIP_TRANSPORT=display flash monitor
 ```
 - This machine's local build/flash workflow (IDF env sourcing, the COM4 display board, NVS-injection provisioning) is documented in auto-memory `build-flash-test-workflow.md` — read it before flashing.
 - `SIP_CONSTRAINED=1` shrinks the object pools for low-RAM classic ESP32 (pair with `sdkconfig.defaults.esp32_constrained` + `partitions_4mb.csv`).
+- **eth board resourcing (S3R8 headless):** `sdkconfig.defaults` enables the 8 MB octal PSRAM (`CONFIG_SPIRAM=y`) and sets `CONFIG_LWIP_MAX_SOCKETS=16`. The W5500 runs in **MACRAW** mode, so the ESP32-S3's LWIP stack owns every socket (the chip's 8-socket HW TCP engine is unused) — and the **3CX WAN anchor opens three persistent TLS sockets** (control WS + GET + POST audio streams) on top of SIP/dashboard/SSH, so the default 10-socket pool starves (`sock < 0` / `create_ssl_handle failed`). `sdkconfig.defaults` only seeds a *fresh* `sdkconfig`; if an existing generated one has drifted (e.g. PSRAM-off), regenerate with `rm sdkconfig && idf.py -D SIP_TRANSPORT=eth build`.
+- **3CX call-control quirk:** every participant-action POST (`/callcontrol/{dn}/participants/{id}/{drop,answer,…}`) needs an `application/json` `"{}"` body — an empty/no-Content-Type POST is silently rejected (`ThreeCxAnchorClient::dropCall`/`answerCall`).
 
 ### Cross-compile (Orbic ARMv7 musl static, issue #82)
 ```bash
