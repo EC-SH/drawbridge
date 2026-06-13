@@ -1,6 +1,6 @@
 # pocket-dial — Technical Feature Roadmap
 
-**Status:** Living document | **Last updated:** 2026-06-09 | **Scope:** Engineering / product-capability only
+**Status:** Living document | **Last updated:** 2026-06-12 | **Scope:** Engineering / product-capability only
 
 This is a prioritized **engineering** roadmap for pocket-dial: what exists, what is
 landing now, and what is worth building next. It is grounded in the current source tree
@@ -42,7 +42,8 @@ Cross-references:
 | Security (signalling) | Per-source-IP token-bucket rate limit, optional CIDR allowlist, AOR input whitelist, bounded parser (header/body boundary) | `allowPacket`, `ipAllowed`, `isValidAor`, `findHeader` |
 | Security (HTTP) | Same-origin/CSRF check, 16 KB body cap, `SO_RCVTIMEO`, no wildcard CORS | `ARCHITECTURE.md` §5 |
 | Dev / debug | Desktop (Linux/Windows) host build & CI smoke harness; SIP load tester + liveness/SSH/HTTP smoke scripts | `main.cpp`, `tests/load/sip_stress.py`, `.smoke/`, `tests/http/test_api.sh` |
-| **Config over SSH** | **SSH "sysop terminal"** — wolfSSH on ESP-IDF v6 + an ANSI/TUI hub (banner → System Monitor · Network · PBX Config · Security · Reports/CDR · About). Ring groups, call-forward, and DND are configurable over SSH. Hardware-verified end-to-end. | `src/Helpers/Tui.cpp`, `src/Helpers/SshServer.cpp`, `cmake/patch_wolfssl.py`, `docs/design/` |
+| **Config over SSH** | **SSH "sysop terminal"** — two interchangeable backends behind one façade: wolfSSH (display build, hardware-verified end-to-end) and the from-scratch **littlessh** PSA/mbedTLS backend (eth/wifi/lan8720 builds). ANSI/TUI hub (banner → System Monitor · Network · PBX Config — incl. the shipped **Trunk** tab · Security · Reports/CDR · About). Ring groups, call-forward, DND, and trunk credentials are configurable over SSH. | `src/Helpers/Tui.cpp`, `src/Helpers/SshServer.cpp`, `src/Helpers/SshServerLittlessh.cpp`, `components/littlessh/`, `cmake/patch_wolfssl.py` |
+| **WAN trunk anchor** | Outbound calls beyond the LAN via a commercial softswitch's HTTPS call-control API (`9`-prefix dial plan, mTLS/WSS, on-device µ-law⇄PCM16 `MediaBridge`), plus **inbound PSTN→extension (Mode 1)** — delayed-offer INVITE, answer-on-handset-200 (*inbound not yet hardware-verified*) | `src/SIP/AnchorClient.hpp`, `ThreeCxAnchorClient.cpp`, `MediaBridge.cpp`, [ARCHITECTURE.md](ARCHITECTURE.md) §6 |
 | **PBX call features** | CDR ring, per-extension **DND**, **call-forward** (CFU/CFB/CFNA), **ring groups** (ring-all / hunt), **blind transfer** (REFER), DTMF star-codes (`*60/*80/*72/*73/*69/*11`) | `src/SIP/RequestsHandler.cpp`, `CallDetailRecord.hpp`, `PbxConfig.hpp` |
 
 ---
@@ -108,7 +109,7 @@ Complexity is a t-shirt size for *signalling-side* work unless noted.
 | Pri | Feature | Rationale (technical) | Complexity | Threat-model link |
 |-----|---------|----------------------|------------|-------------------|
 | **P0** | **WPA2 on the SoftAP** (`WIFI_AUTH_WPA2_PSK`) | The single highest-leverage hardening in the whole project: encrypts the *entire* link in one change — dashboard HTTP, SIP signalling, **and** RTP — and gates association so "anyone in range is a peer" stops being the baseline. Closes I-1, I-2, and the cookie-replay vector. | **S** | [THREAT_MODEL.md](THREAT_MODEL.md) §6, §7 P0 (the doc's own top pick) |
-| **P0/P1** | **SIP digest auth** (`REGISTER`/`INVITE` challenge) | Stops extension spoofing (S-3) and BYE-based teardown (D-2) *even on a trusted link*. Read-only credential-lookup callback into `RequestsHandler` (no new lock); reuses provisioning's per-MAC secret store as the source of truth. | **M** | [THREAT_MODEL.md](THREAT_MODEL.md) §7 P1; seam designed in [PROVISIONING.md](PROVISIONING.md) §7.3 |
+| **P0/P1** | **SIP digest auth** (`REGISTER`/`INVITE` challenge) — **REGISTER challenge shipped** (`SipDigest`/`SipSecretStore`, open/learn/secure registrar modes); INVITE `407` remains | Stops extension spoofing (S-3) and BYE-based teardown (D-2) *even on a trusted link*. Read-only credential-lookup callback into `RequestsHandler` (no new lock). | **M** (remaining: INVITE) | [THREAT_MODEL.md](THREAT_MODEL.md) §7 P1; seam from [PROVISIONING.md](PROVISIONING.md) §7.3 shipped as `SipSecretStore` |
 | **P1** | **Per-IP brute-force tracking on `login`** | Replaces the global in-process lockout counter (removes the admin-lockout self-DoS, D-3). | **S** | [THREAT_MODEL.md](THREAT_MODEL.md) §5.2, §7 P1 |
 | **P1** | **Sign + gate OTA to local link; session-bind OTA** | OTA images are unsigned today; gate strictly to local link + admin session until signing lands. | **S** (interim) | [OTA.md](OTA.md) §6, [THREAT_MODEL.md](THREAT_MODEL.md) T-5 |
 | **P2** | **Secure Boot v2 + flash encryption + signed OTA** | Durable fix for physical/supply-chain boundary: signs firmware (T-5/T-1), encrypts NVS at rest (Wi-Fi pw + admin hash + provisioning secrets, I-3/I-5/T-4). One-way eFuse burn → needs a secured factory flow. | **L** | [THREAT_MODEL.md](THREAT_MODEL.md) §7 P2, [OTA.md](OTA.md) §6 |
@@ -227,7 +228,10 @@ all later config growth.)
 
 ## 7. Strategic exploration: edge gateway / upstream SIP trunk (B2BUA)
 
-> **Status:** direction under active exploration (not yet built). This track consciously extends
+> **Status (2026-06-12):** the **call-control-API variant of this track is now built** — the WAN
+> trunk anchor (§1, [ARCHITECTURE.md](ARCHITECTURE.md) §6) ships outbound trunk calls **and**
+> inbound PSTN→extension Mode 1 via a commercial softswitch's HTTPS call-control API. The
+> **raw-SIP-trunk (B2BUA over SIP) variant below remains unbuilt.** This track consciously extends
 > pocket-dial from a *LAN-only signalling registrar* into a small **SIP edge gateway / mini-SBC**
 > that trunks **up to a single commercial softswitch / CPaaS fabric** (and through it to the PSTN),
 > bridging local extensions to that upstream. It answers the "how far can this hardware go" question

@@ -1,7 +1,9 @@
 # Zero-Touch Phone Auto-Provisioning — Design Specification
 
 **Issue:** #35 (Zero-Touch Phone Auto-Provisioning, HTTP)
-**Status:** Phase-1 design (build-ready). No code merged yet.
+**Status:** Phase-1 design (build-ready). No `.cfg`-provisioning code merged yet.
+Note: the §7.3 secret-store seam has since shipped independently as `SipSecretStore`
+(per-extension digest secrets backing the registrar's open/learn/secure modes).
 **Target:** ESP32-S3, ESP-IDF v6.0.1, C++17. Self-contained SIP registrar/PBX.
 **Audience:** The engineer who will implement this. Architecture decisions below are
 final unless the "Open Questions" section flags them otherwise — implement directly.

@@ -76,9 +76,9 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 ## Project Status & MVP Roadmap
 
 > [!NOTE]
-> **Current phase**: In Development — 3CX API Bridge Integration & Performance Hardening.
+> **Current phase**: In Development — Commercial Softswitch Call-Control API Trunk Anchor & Performance Hardening.
 >
-> Following the v1.2.0 MVP release, we have integrated the 3CX Call Control API WAN Bridge (terminating local SIP/RTP and bridging to mTLS HTTPS/WSS audio streams), resolved 27 concurrency/memory defects in the SIP engine, and implemented call setup/teardown latency optimizations.
+> Following the v1.2.0 MVP release, we have integrated a WAN trunk anchor against a commercial softswitch's call-control API (terminating local SIP/RTP and bridging to mTLS HTTPS/WSS audio streams), resolved 27 concurrency/memory defects in the SIP engine, and implemented call setup/teardown latency optimizations.
 
 ### ✅ **Completed**
 - Core SIP signaling (REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS)
@@ -91,7 +91,14 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 - Configurable memory pools + hardware tiers ([SCALING.md](docs/SCALING.md))
 - Desktop (Linux/Windows) mode + Arduino IDE sketch templates
 - **End-to-end hardware validation on the JC3248W535** (Issue #44) ✅
-- **3CX Call Control API Bridge**: Terminate handset's RTP locally and bridge to 3CX over HTTPS/WSS (PCM16 @ 8kHz)
+- **Commercial softswitch call-control API trunk anchor**: Terminate the handset's RTP locally and bridge audio to an upstream softswitch over mTLS HTTPS/WSS (PCM16 @ 8kHz)
+- **Inbound PSTN→extension calls (Mode 1)** via the trunk anchor (delayed-offer INVITE toward the extension; *not yet hardware-verified*)
+- **SIP digest authentication** with per-extension secrets (`SipSecretStore`) and **open / learn / secure registrar modes** (`RegistrarMode`)
+- **Call forwarding**: unconditional (CFU), on-busy (CFB), no-answer (CFNA)
+- **Ring/hunt groups** (`/api/group`)
+- **Blind transfer** via `REFER`
+- **Star-codes**: `*60` (DND), `*80` (call-forward status readback), `*72`/`*73` (CFU enable/disable), `*69` (call return), `*11` (extension/IP readback)
+- **SSH sysop terminal** — 80×24 ANSI TUI over SSH (wolfSSH on the display build; from-scratch littlessh backend on eth/wifi/lan8720)
 - **SIP Engine Defect Resolution**: Fixed 27 concurrency, locking, memory, and code quality issues
 - **Call Setup and Teardown Latency Optimizations**: Parsed status directly from WS payloads, implemented exponential back-off on retries, configured HTTP timeouts, and optimized loopback simulation delays (Issue #29)
 
@@ -255,7 +262,7 @@ drawbridge/
 │       ├── RequestsHandler.cpp # Signaling logic, PBX features, dashboard API
 │       ├── SipServer.cpp       # Orchestrator
 │       ├── RtpSender / RtpReceiver / PlayoutBuffer / MediaBridge # B2BUA media path
-│       └── ThreeCxAnchorClient / LoopbackAnchorClient # WAN trunk (3CX Call Control)
+│       └── ThreeCxAnchorClient / LoopbackAnchorClient # WAN trunk anchor (commercial softswitch call-control API)
 ```
 
 ---

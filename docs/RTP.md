@@ -1,6 +1,10 @@
 # Server-Side RTP on Pocket-Dial: Design Exploration
 
-> **Status:** Proposed / exploration. No code written yet.
+> **Status:** Partially overtaken by events. The core server-side media primitives this doc
+> proposed now exist in the tree — `RtpSender`, `RtpReceiver`, `PlayoutBuffer`, and
+> `MediaBridge` (`src/SIP/`), built for the WAN trunk anchor's bounded media path
+> ([ARCHITECTURE.md](ARCHITECTURE.md) §6). The **MoH player and the other phased feature
+> proposals below remain unbuilt**; the design discussion is kept for those.
 > **Audience:** A future engineer who will implement the recommended phase.
 > **Scope:** What it would take to move RTP media *through* the device, what it
 > buys us, what it costs on an ESP32-S3, and a phased path that stays "fast and light".

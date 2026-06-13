@@ -1,6 +1,6 @@
 # Edge Gateway / Upstream SIP Trunk (B2BUA) — Architecture Design
 
-**Status:** Direction under active exploration (not yet built). | **Scope:** Engineering design. | **Last updated:** 2026-06-09
+**Status:** The raw-SIP-trunk (B2BUA over SIP) design in this document is **not yet built**. Note: the adjacent **call-control-API trunk anchor** *has* shipped (outbound + inbound Mode 1 against a commercial softswitch's HTTPS API — see [ARCHITECTURE.md](ARCHITECTURE.md) §6); this doc covers the raw-SIP variant only. | **Scope:** Engineering design. | **Last updated:** 2026-06-12
 
 This document is the focused design for pocket-dial's planned **edge-gateway / upstream-trunk**
 direction. It expands [FEATURE_ROADMAP.md §7](FEATURE_ROADMAP.md) into something an engineer can
