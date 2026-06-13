@@ -68,6 +68,14 @@ public:
 	sockaddr_in getSource() const;
 	std::optional<PocketDial::SipStatusInfo> getStatusInfo() const { return _statusInfo; }
 
+	// SDP media-direction attribute (RFC 4566 / RFC 3264): the line-anchored
+	// a=sendrecv / a=sendonly / a=recvonly / a=inactive attribute in the message
+	// body. Returns None when there is no body or no direction attribute (RFC
+	// 3264: an absent attribute implies sendrecv — the caller decides; we only
+	// report what is on the wire). Pure string scan, host-compilable.
+	enum class SdpDirection { None, SendRecv, SendOnly, RecvOnly, Inactive };
+	SdpDirection getSdpDirection() const;
+
 	// Issue #42: virtual SDP probe replaces dynamic_cast so call setup works
 	// on the Arduino ESP32 toolchain, which builds with RTTI disabled (-fno-rtti).
 	virtual bool hasSdp() const { return _hasSdp; }

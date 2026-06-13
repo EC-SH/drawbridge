@@ -484,6 +484,47 @@ void SipMessage::clearBody()
 	reparse();
 }
 
+SipMessage::SdpDirection SipMessage::getSdpDirection() const
+{
+	// Locate the body (after the header/body separator). Mirrors parse()'s
+	// tolerance for bare-LF messages.
+	size_t bodyStart = _messageStr.find("\r\n\r\n");
+	size_t sepLen = 4;
+	if (bodyStart == std::string::npos)
+	{
+		bodyStart = _messageStr.find("\n\n");
+		sepLen = 2;
+	}
+	if (bodyStart == std::string::npos)
+	{
+		return SdpDirection::None;
+	}
+
+	// Walk the body line by line; the attribute must be line-anchored ("a=..."
+	// at the start of a line) so a stray substring elsewhere can't match.
+	size_t pos = bodyStart + sepLen;
+	while (pos < _messageStr.size())
+	{
+		size_t eol = _messageStr.find('\n', pos);
+		size_t lineEnd = (eol == std::string::npos) ? _messageStr.size() : eol;
+		std::string_view line(_messageStr.data() + pos, lineEnd - pos);
+		if (!line.empty() && line.back() == '\r')
+		{
+			line.remove_suffix(1);
+		}
+		if (line == "a=sendrecv") return SdpDirection::SendRecv;
+		if (line == "a=sendonly") return SdpDirection::SendOnly;
+		if (line == "a=recvonly") return SdpDirection::RecvOnly;
+		if (line == "a=inactive") return SdpDirection::Inactive;
+		if (eol == std::string::npos)
+		{
+			break;
+		}
+		pos = eol + 1;
+	}
+	return SdpDirection::None;
+}
+
 std::string SipMessage::toString() const
 {
 	return _messageStr;

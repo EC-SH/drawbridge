@@ -173,6 +173,12 @@ private:
 	void onCancel(std::shared_ptr<SipMessage> data);
 	void onReqTerminated(std::shared_ptr<SipMessage> data);
 	void onInvite(std::shared_ptr<SipMessage> data);
+	// Mid-dialog re-INVITE (RFC 3261 §12.2: To header carries a tag) for an
+	// established (Connected/Held) session — the hold/resume path. Relays the
+	// re-INVITE UNTOUCHED to the peer leg (no clearBody()/enforceG711(), so the
+	// hold SDP and its Content-Length stay intact) and tracks the Held/Connected
+	// state from the offered SDP direction. Caller holds _mutex (via handle()).
+	void onReinvite(std::shared_ptr<SipMessage> data);
 	void onTrying(std::shared_ptr<SipMessage> data);
 	void onRinging(std::shared_ptr<SipMessage> data);
 	void onBusy(std::shared_ptr<SipMessage> data);

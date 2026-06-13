@@ -21,6 +21,9 @@ public:
 		Cancel,
 		Bye,
 		Connected,
+		// Mid-dialog hold (re-INVITE with a=sendonly/recvonly/inactive). Resuming
+		// (Held -> Connected) preserves _startTime so CDR talk time spans the hold.
+		Held,
 	};
 
 

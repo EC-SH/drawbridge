@@ -39,9 +39,16 @@ void Session::setState(State state)
 {
 	if (state == _state)
 		return;
+	const State prev = _state;
 	_state = state;
 	if (state == State::Connected)
 	{
+		if (prev == State::Held)
+		{
+			// Hold resume inside the same dialog: keep the original connect
+			// instant so CDR talk time spans the hold.
+			return;
+		}
 		_startTime = std::chrono::steady_clock::now(); // Reset start time to when talk time begins
 		if (!_dest)
 		{

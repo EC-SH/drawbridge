@@ -536,12 +536,23 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 	// should retransmit that response; for 2xx, the ACK re-drive handles it. The
 	// simplest safe policy here is a silent drop so we never create a second session
 	// slot for the same dialog, which could exhaust the pool and trigger spurious 503.
-	if (auto existing = getSession(data->getCallID());
-		existing.has_value() &&
-		(existing.value()->getState() == Session::State::Invited ||
-		 existing.value()->getState() == Session::State::Connected))
+	if (auto existing = getSession(data->getCallID()); existing.has_value())
 	{
-		return; // silent drop per RFC 3261 §17.2.3
+		const auto st = existing.value()->getState();
+		// Mid-dialog re-INVITE (RFC 3261 §12.2): an INVITE whose To header
+		// already carries a tag belongs to the established dialog — this is the
+		// hold/resume path, NOT a retransmission. Route it to onReinvite().
+		if ((st == Session::State::Connected || st == Session::State::Held) &&
+			std::string_view(data->getTo()).find("tag=") != std::string_view::npos)
+		{
+			onReinvite(data);
+			return;
+		}
+		if (st == Session::State::Invited || st == Session::State::Connected ||
+			st == Session::State::Held)
+		{
+			return; // silent drop per RFC 3261 §17.2.3
+		}
 	}
 
 	if (!isValidAor(data->getFromNumber()) || !isValidAor(data->getToNumber()))
@@ -816,6 +827,76 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 	auto response = getMessageFromPool(data->toString(), data->getSource());
 	response->setContact(buildContact(caller.value()->getNumber()));
 	endHandle(data->getToNumber(), response);
+}
+
+// Leg identity for re-INVITE routing: compare the packet source against a
+// session leg's registered address (IP + port).
+static bool sameAddress(const sockaddr_in& a, const sockaddr_in& b)
+{
+	return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+}
+
+void RequestsHandler::onReinvite(std::shared_ptr<SipMessage> data)
+{
+	auto sessionOpt = getSession(data->getCallID());
+	if (!sessionOpt.has_value())
+	{
+		return;
+	}
+	auto session = sessionOpt.value();
+	auto src = session->getSrc();
+	auto dest = session->getDest();
+
+	// Virtual / anchor legs (777 echo, 440 tone, WAN anchor) have no real peer
+	// phone to relay an offer to — decline the re-INVITE so the holding phone
+	// keeps the call up on the original SDP.
+	const std::string destNum = dest ? dest->getNumber() : "";
+	if (session->isAnchor() || session->isAnchorInbound() ||
+		destNum == "777" || destNum == "440" || !src || !dest)
+	{
+		auto response = getMessageFromPool(data->toString(), data->getSource());
+		response->setHeader("SIP/2.0 488 Not Acceptable Here");
+		response->clearBody();
+		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		_outbox.emplace_back(data->getSource(), std::move(response));
+		return;
+	}
+
+	// Identify the sending leg by source address; the relay target is the peer.
+	std::shared_ptr<SipClient> peer;
+	if (sameAddress(data->getSource(), src->getAddress()))
+	{
+		peer = dest;
+	}
+	else if (sameAddress(data->getSource(), dest->getAddress()))
+	{
+		peer = src;
+	}
+	if (!peer)
+	{
+		return; // not from either leg of this dialog: ignore
+	}
+
+	// Relay UNTOUCHED — no clearBody()/enforceG711() — so the hold SDP
+	// (a=sendonly/inactive) and its Content-Length reach the peer intact.
+	_outbox.emplace_back(peer->getAddress(), data);
+
+	// Track hold state from the offered SDP direction. RFC 3264: an absent
+	// direction attribute implies sendrecv (an active call).
+	const auto dir = data->getSdpDirection();
+	if (dir == SipMessage::SdpDirection::SendOnly ||
+		dir == SipMessage::SdpDirection::RecvOnly ||
+		dir == SipMessage::SdpDirection::Inactive)
+	{
+		session->setState(Session::State::Held);
+		queueLog("Hold: " + std::string(data->getFromNumber()) + " held call " + std::string(data->getCallID()));
+	}
+	else
+	{
+		session->setState(Session::State::Connected);
+		queueLog("Hold: call " + std::string(data->getCallID()) + " resumed");
+	}
 }
 
 std::string RequestsHandler::buildMediaSdp(const std::string& serverIp, int rtpPort, bool sendRecv)
@@ -1218,6 +1299,38 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 
 		if (data->getCSeq().find(SipMessageTypes::INVITE) != std::string::npos)
 		{
+			// Re-INVITE answer (hold/resume): a 200 OK with an INVITE CSeq for a
+			// session that is ALREADY established is the peer answering the relayed
+			// re-INVITE, not the initial call answer. Relay it UNTOUCHED to the
+			// opposite leg (address-compared) and keep the session state set by
+			// onReinvite() — do NOT re-run the connect transition.
+			{
+				const auto st = session.value()->getState();
+				if ((st == Session::State::Connected || st == Session::State::Held) &&
+					!session.value()->isBroadcast())
+				{
+					auto legSrc = session.value()->getSrc();
+					auto legDest = session.value()->getDest();
+					if (legSrc && legDest)
+					{
+						std::shared_ptr<SipClient> peer;
+						if (sameAddress(data->getSource(), legSrc->getAddress()))
+						{
+							peer = legDest;
+						}
+						else if (sameAddress(data->getSource(), legDest->getAddress()))
+						{
+							peer = legSrc;
+						}
+						if (peer)
+						{
+							_outbox.emplace_back(peer->getAddress(), data);
+							return;
+						}
+					}
+				}
+			}
+
 			if (session.value()->isBroadcast())
 			{
 				if (session.value()->getState() != Session::State::Connected)
@@ -1832,6 +1945,7 @@ void RequestsHandler::recordCdr(const std::shared_ptr<Session>& session,
 			// the later Bye transition does NOT touch it, so getStartTime() still marks
 			// the answer instant in both cases — talk time is now - startTime.
 			case Session::State::Connected:
+			case Session::State::Held:   // a held call is an answered call; talk time spans the hold
 			case Session::State::Bye:
 				result = CdrResult::Answered;
 				{
@@ -2058,6 +2172,7 @@ static const char* sessionStateToString(Session::State s)
 	{
 		case Session::State::Invited:     return "Invited";
 		case Session::State::Connected:   return "Connected";
+		case Session::State::Held:        return "Held";
 		case Session::State::Busy:        return "Busy";
 		case Session::State::Unavailable: return "Unavailable";
 		case Session::State::Cancel:      return "Cancel";
@@ -2942,7 +3057,8 @@ void RequestsHandler::tick()
 			std::string callee = session->getDest() ? session->getDest()->getNumber() : "?";
 
 			int durationSec = 0;
-			if (session->getState() == Session::State::Connected)
+			if (session->getState() == Session::State::Connected ||
+				session->getState() == Session::State::Held)
 			{
 				durationSec = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
 					now - session->getStartTime()).count());
