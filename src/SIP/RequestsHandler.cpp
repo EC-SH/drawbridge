@@ -518,7 +518,7 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		if (session.has_value() && session.value()->isAnchor())
 		{
 			_mediaBridge.stopBridge();
-			asyncDropCall("");
+			asyncDropCall(session.value()->getAnchorParticipantId());   // drop the PSTN leg by id
 			auto response = getMessageFromPool(data->toString(), data->getSource());
 			response->setHeader(SipMessageTypes::OK);
 			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
@@ -1363,7 +1363,7 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 	if (session.has_value() && session.value()->isAnchor())
 	{
 		_mediaBridge.stopBridge();
-		asyncDropCall("");
+		asyncDropCall(session.value()->getAnchorParticipantId());   // drop the PSTN leg by id (REST)
 		auto response = getMessageFromPool(data->toString(), data->getSource());
 		response->setHeader(SipMessageTypes::OK);
 		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
@@ -5519,6 +5519,12 @@ void RequestsHandler::loadThreeCxConfig()
 							// handle()/tick() can't wipe the 200 OK before it is sent.
 							_asyncOutbox.emplace_back(inviteMsg->getSource(), std::move(ok));
 							session->setState(Session::State::Connected);
+							// Remember the upstream (3CX) participant so the handset's BYE
+							// can drop it via REST. The OUTBOUND session was never given a
+							// participant id before (only inbound was), so asyncDropCall("")
+							// fell back to an empty _activeParticipantId → no drop → the PSTN
+							// leg lingered until 3CX timed out (or was killed by hand).
+							session->setAnchorParticipantId(ev.participantId);
 						}
 					}
 					break;
