@@ -312,7 +312,12 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 	std::string dropUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + partId + "/drop";
 
 	int status = 0;
-	bool success = performCtrl(dropUrl, nullptr, "", &status);
+	// The 3CX participant-action endpoint requires an application/json body — the
+	// reference client/server posts "{}" with Content-Type application/json (see the
+	// call-control-examples server controlParticipant()). An empty body with no
+	// Content-Type (the old call) is rejected, so the drop silently never fired and
+	// the PSTN leg lingered until 3CX's own timeout. makeCall already does this right.
+	bool success = performCtrl(dropUrl, "application/json", "{}", &status);
 	if (success)
 	{
 		ESP_LOGI(TAG, "Successfully dropped participant %s", partId.c_str());
@@ -353,7 +358,9 @@ bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
 	std::string answerUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + partId + "/answer";
 
 	int status = 0;
-	bool success = performCtrl(answerUrl, nullptr, "", &status);
+	// Same as drop: the participant-action endpoint wants an application/json "{}"
+	// body (call-control-examples controlParticipant()), not an empty body.
+	bool success = performCtrl(answerUrl, "application/json", "{}", &status);
 	if (success)
 	{
 		ESP_LOGI(TAG, "Answered inbound participant %s", partId.c_str());
