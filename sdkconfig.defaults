@@ -74,3 +74,14 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
 # warning is irrelevant here — suppress it via the wolfSSL-provided Kconfig escape hatch.
 # (Harmless/ignored for non-display builds that don't link wolfSSL.)
 CONFIG_ESP_WOLFSSL_NO_STACK_SIZE_BUILD_WARNING=y
+
+# LWIP socket pool — open the W5500 path up. The W5500 runs in MACRAW mode, so the
+# ESP32-S3's LWIP stack (NOT the W5500's 8-socket hardware TCP engine) owns every
+# connection — the real cap is this knob, default 10. That's too tight for the WAN
+# anchor (3CX call-control) path: the control WebSocket + the GET and POST audio
+# streams are THREE persistent TLS sockets, on top of SIP (UDP), the HTTP dashboard,
+# SSH and OPTIONS pings. Exhaustion shows up as socket() returning < 0 ("sock < 0")
+# and mbedTLS create_ssl_handle failing — the audio stream can't reconnect and the
+# participant-drop POST can't open, so the PSTN leg lingers. Bump the pool (cheap:
+# a few hundred bytes of internal RAM per slot, and there is ~300 KB free).
+CONFIG_LWIP_MAX_SOCKETS=16
