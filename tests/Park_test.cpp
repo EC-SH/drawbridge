@@ -129,6 +129,20 @@ struct ParkFixture {
 
 uint32_t ipOf(const sockaddr_in& a) { return a.sin_addr.s_addr; }
 
+// The full header line beginning with `name` (e.g. "From:") from a message, "".
+std::string hdr(const std::shared_ptr<SipMessage>& m, const std::string& name) {
+    std::string s = m->toString();
+    size_t p = 0;
+    while (p < s.size()) {
+        size_t e = s.find("\r\n", p);
+        std::string line = s.substr(p, (e == std::string::npos ? s.size() : e) - p);
+        if (line.rfind(name, 0) == 0) return line;
+        if (e == std::string::npos) break;
+        p = e + 2;
+    }
+    return "";
+}
+
 } // namespace
 
 TEST(Park, InviteToFreeOrbitParksAndEchoesSdp) {
@@ -210,4 +224,76 @@ TEST(Park, ParkedPartyByeFreesOrbit) {
 TEST(Park, NoParkedCallsInitially) {
     ParkFixture f;
     EXPECT_TRUE(f.handler.getParkedCalls().empty());
+}
+
+// Regression (ultrareview bug_002, case a): the ACK the server sends to confirm
+// the parked party's 200 OK to the retrieve re-INVITE must not double the
+// From:/To: header names (getFrom()/getTo() already include them).
+TEST(Park, RetrieveReinviteAckIsWellFormed) {
+    ParkFixture f;
+    f.handler.handle(makeInvite("100", "700", f.ip100, "park-1", 40000));
+    f.handler.handle(makeInvite("101", "700", f.ip101, "retr-1", 41000));
+    auto reinv = f.find(f.ip100, "INVITE");           // re-INVITE the server sent the parked party
+    ASSERT_NE(reinv, nullptr);
+    f.cap.clear();
+
+    // 100 answers the re-INVITE 200 OK (From/To copied from the request verbatim).
+    std::string ok =
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP " + f.ip100 + ":5060;branch=z9hG4bKp\r\n" +
+        hdr(reinv, "From:") + "\r\n" + hdr(reinv, "To:") + "\r\n" + hdr(reinv, "Call-ID:") + "\r\n"
+        "CSeq: 2 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n";
+    f.handler.handle(RequestsHandler::getMessageFromPool(ok, makeAddr(f.ip100)));
+
+    auto ack = f.find(f.ip100, "ACK");
+    ASSERT_NE(ack, nullptr) << "server must ACK the parked party's re-INVITE 200 OK";
+    std::string s = ack->toString();
+    EXPECT_EQ(s.find("From: From:"), std::string::npos) << "ACK must not double the From: name";
+    EXPECT_EQ(s.find("To: To:"), std::string::npos) << "ACK must not double the To: name";
+}
+
+// Regression (ultrareview bug_001 + bug_002 case b): when the parker answers a
+// park-timeout ring-back, the ACK is well-formed AND the two legs are linked in
+// _sessions, so a BYE on the ring-back dialog is relayed to the parked party.
+TEST(Park, RingbackAnswerAcksAndLinksBridge) {
+    ParkFixture f;
+    f.handler.handle(makeInvite("100", "700", f.ip100, "park-1", 40000));
+    f.handler.setParkTimeout(std::chrono::seconds(0));
+    f.handler.tick();                                  // ring-back INVITE to the parker (100)
+    auto rb = f.find(f.ip100, "INVITE");
+    ASSERT_NE(rb, nullptr);
+    std::string rbCallId = hdr(rb, "Call-ID:");
+    ASSERT_FALSE(rbCallId.empty());
+    f.cap.clear();
+
+    // 100 answers the ring-back 200 OK (To gains the answerer's tag), with SDP.
+    std::string body = sdpBody(f.ip100, 42000);
+    std::string ok =
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP " + f.ip100 + ":5060;branch=z9hG4bKrb\r\n" +
+        hdr(rb, "From:") + "\r\n" + hdr(rb, "To:") + ";tag=rbanswer\r\n" + rbCallId + "\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    f.handler.handle(RequestsHandler::getMessageFromPool(ok, makeAddr(f.ip100)));
+
+    auto ack = f.find(f.ip100, "ACK");
+    ASSERT_NE(ack, nullptr) << "server must ACK the ring-back 200 OK";
+    EXPECT_EQ(ack->toString().find("To: To:"), std::string::npos) << "ring-back ACK must not double To:";
+
+    // Bridge is linked: a BYE on the ring-back dialog relays a server BYE to the
+    // parked leg (without the _sessions link the peer would be orphaned).
+    f.cap.clear();
+    std::string callIdVal = rbCallId.substr(rbCallId.find(':') + 2);   // strip "Call-ID: "
+    std::string bye =
+        "BYE sip:700@server SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP " + f.ip100 + ":5060;branch=z9hG4bKbye\r\n"
+        "From: <sip:100@server>;tag=rbanswer\r\n"
+        "To: <sip:700@server>;tag=parktag\r\n"
+        "Call-ID: " + callIdVal + "\r\n"
+        "CSeq: 2 BYE\r\n"
+        "Content-Length: 0\r\n\r\n";
+    f.handler.handle(RequestsHandler::getMessageFromPool(bye, makeAddr(f.ip100)));
+    EXPECT_NE(f.find(f.ip100, "BYE"), nullptr) << "BYE on the bridged leg must relay to the peer";
 }

@@ -1264,12 +1264,26 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 				auto peerClient = peerSess->getSrc();
 				if (peerInvite && peerClient)
 				{
-					const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-					const std::string peerTag = parkTagOf(peerInvite->getFrom());
-					const std::string fromHeader = "<sip:" + std::string(peerInvite->getToNumber()) +
-						"@" + srcIpPort + ">;tag=" + peerSess->getLocalTag();
-					const std::string toHeader = "<sip:" + peerClient->getNumber() + "@" + activeIp +
-						">;tag=" + peerTag;
+					std::string fromHeader, toHeader;
+					if (peerSess->isParkUac())
+					{
+						// Server originated this peer leg (ring-back UAC): the stored
+						// message is the parker's 200 OK, whose From is us and To is the
+						// parker — reuse them directly (roles are inverted vs a UAS leg).
+						fromHeader = parkCallIdValue(peerInvite->getFrom());
+						toHeader = parkCallIdValue(peerInvite->getTo());
+					}
+					else
+					{
+						// Normal UAS leg: we minted the To-tag (localTag); the phone's
+						// tag is the From-tag of the INVITE it sent us.
+						const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+						const std::string peerTag = parkTagOf(peerInvite->getFrom());
+						fromHeader = "<sip:" + std::string(peerInvite->getToNumber()) +
+							"@" + srcIpPort + ">;tag=" + peerSess->getLocalTag();
+						toHeader = "<sip:" + peerClient->getNumber() + "@" + activeIp +
+							">;tag=" + peerTag;
+					}
 					auto bye = buildServerBye(peerClient->getNumber(), peerClient->getAddress(),
 						parkCallIdValue(peerId), fromHeader, toHeader);
 					if (bye) _outbox.emplace_back(peerClient->getAddress(), std::move(bye));
@@ -4191,8 +4205,10 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 		std::ostringstream ss;
 		ss << "ACK sip:" << data->getToNumber() << "@" << destIpPort << " SIP/2.0\r\n"
 		   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=z9hG4bK" << IDGen::GenerateID(12) << "\r\n"
-		   << "From: " << data->getFrom() << "\r\n"
-		   << "To: " << data->getTo() << "\r\n"
+		   // getFrom()/getTo() already include the "From:"/"To:" name — strip it so the
+		   // ACK doesn't ship an RFC-illegal doubled prefix (strict UAs discard it).
+		   << "From: " << parkCallIdValue(data->getFrom()) << "\r\n"
+		   << "To: " << parkCallIdValue(data->getTo()) << "\r\n"
 		   << callID << "\r\n"
 		   << "CSeq: 2 ACK\r\n"
 		   << "Max-Forwards: 70\r\n"
@@ -4217,7 +4233,7 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 			ss << "ACK sip:" << data->getToNumber() << "@" << destIpPort << " SIP/2.0\r\n"
 			   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << slot.rbBranch << "\r\n"
 			   << "From: \"PocketDial Park\" <sip:" << slot.orbit << "@" << srcIpPort << ">;tag=" << slot.rbFromTag << "\r\n"
-			   << "To: " << data->getTo() << "\r\n"
+			   << "To: " << parkCallIdValue(data->getTo()) << "\r\n"   // strip the "To:" name (getTo() includes it)
 			   << slot.rbCallID << "\r\n"
 			   << "CSeq: 1 ACK\r\n"
 			   << "Max-Forwards: 70\r\n"
@@ -4226,6 +4242,31 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 
 			// Re-point the parked party at the parker (the parker's answer SDP).
 			sendParkReinvite(slot, std::string(data->getBody()));
+
+			// Bridge bookkeeping: emplace a Session for the ring-back (parker) leg
+			// linked to the parked dialog so a BYE on EITHER side relays a server BYE
+			// to the other (onBye peer-relay). Without this link the bridged call
+			// would leak on hangup. The ring-back leg is server-as-UAC (setParkUac),
+			// and stores the parker's 200 OK so onBye can build the inverted-role BYE.
+			if (auto parker = findClient(slot.parker); parker.has_value())
+			{
+				auto virt = std::make_shared<SipClient>(slot.parkedExt, slot.parkedAddr, 3600);
+				if (auto rb = allocateSession(slot.rbCallID, parker.value()))
+				{
+					rb->setDest(virt);
+					rb->setPeerCallID(slot.callID);
+					rb->setLocalTag(slot.rbFromTag);
+					rb->setParkUac(true);
+					rb->setInviteMessage(data);   // the parker's 200 OK (onBye builds the peer BYE from it)
+					_sessions.emplace(slot.rbCallID, rb);
+					rb->setState(Session::State::Connected);
+				}
+				if (auto parked = getSession(slot.callID); parked.has_value())
+				{
+					parked.value()->setPeerCallID(slot.rbCallID);
+				}
+			}
+
 			queueLog("Park: parker answered ring-back on " + slot.orbit + " — bridging");
 			slot = ParkSlot{};   // bridged; orbit released
 			refreshParkSnapshot();
