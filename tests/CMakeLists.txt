@@ -29,6 +29,7 @@ add_executable(sip_parser_tests
     SipDigest_test.cpp
     ArpLookup_test.cpp
     Pbx_test.cpp
+    PageZone_test.cpp
     Rtp_test.cpp
     Hold_test.cpp
     RtpReceiver_test.cpp

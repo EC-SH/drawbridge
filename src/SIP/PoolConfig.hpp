@@ -79,4 +79,21 @@
 #define POCKETDIAL_PARK_TIMEOUT_SEC 90
 #endif
 
+// Maximum number of configured paging zones (the 980–989 virtual extensions).
+// Bounds the _pageZones map exactly like _ringGroups is bounded; the 98x dial
+// range only has ten slots anyway, so this is also the semantic ceiling.
+#ifndef POCKETDIAL_MAX_PAGE_ZONES
+#define POCKETDIAL_MAX_PAGE_ZONES 10
+#endif
+
+// Maximum members per paging zone. A zone page forks one INVITE per registered
+// member through the shared message pool, so this cap bounds the transient
+// per-page message-pool pressure (POCKETDIAL_MSG_POOL) the same way the 999
+// all-page is bounded by POCKETDIAL_MAX_CLIENTS. splitZoneMembers() clamps to
+// this at config time, so an oversized list degrades to the first N members —
+// it never over-forks.
+#ifndef POCKETDIAL_ZONE_MEMBER_CAP
+#define POCKETDIAL_ZONE_MEMBER_CAP 8
+#endif
+
 #endif

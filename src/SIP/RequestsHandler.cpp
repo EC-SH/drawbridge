@@ -474,7 +474,7 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-	if (destNumber == "999")
+	if (destNumber == "999" || isPageZoneDialog(destNumber))
 	{
 		auto session = getSession(data->getCallID());
 		if (session.has_value())
@@ -503,7 +503,7 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 				_outbox.emplace_back(target->getAddress(), std::move(cancelMsg));
 			}
 		}
-		endCall(data->getCallID(), data->getFromNumber(), "999");
+		endCall(data->getCallID(), data->getFromNumber(), destNumber);
 		return;
 	}
 
@@ -647,6 +647,41 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 
 		startBroadcastFork(data, caller.value(), std::move(targets), /*intercom=*/true);
 		return;
+	}
+
+	// Paging zones (980–989): a configured zone is a scoped 999 — fork an intercom
+	// (auto-answer) INVITE to every registered zone member through exactly the same
+	// startBroadcastFork() machinery (first answer wins, onOk cancels the rest).
+	// An unconfigured 98x falls through to normal routing (and 404s, since 98x is
+	// rejected as a real extension/group/forward target).
+	if (pbx::isPageZoneExt(destNumber))
+	{
+		if (const pbx::PageZone* zone = findPageZone(destNumber))
+		{
+			std::vector<std::shared_ptr<SipClient>> targets;
+			for (const auto& m : zone->members)
+			{
+				if (m == caller.value()->getNumber()) continue;
+				auto mc = findClient(m);
+				if (mc.has_value())
+				{
+					targets.push_back(mc.value());
+				}
+			}
+
+			if (targets.empty())
+			{
+				std::shared_ptr<SipMessage> responseObj = getMessageFromPool(data->toString(), data->getSource());
+				responseObj->setHeader(SipMessageTypes::UNAVAILABLE);
+				responseObj->clearBody();
+				responseObj->setContact(buildContact(caller.value()->getNumber()));
+				_outbox.emplace_back(data->getSource(), std::move(responseObj));
+				return;
+			}
+
+			startBroadcastFork(data, caller.value(), std::move(targets), /*intercom=*/true);
+			return;
+		}
 	}
 
 	if (destNumber == "440")
@@ -1123,7 +1158,9 @@ void RequestsHandler::onBusy(std::shared_ptr<SipMessage> data)
 		if (session.value()->getPendingTargets().empty() && session.value()->getState() == Session::State::Invited)
 		{
 			endHandle(session.value()->getSrc()->getNumber(), data);
-			endCall(data->getCallID(), session.value()->getSrc()->getNumber(), "999", "all targets busy");
+			const std::string& gext = session.value()->getGroupExt();
+			endCall(data->getCallID(), session.value()->getSrc()->getNumber(),
+				gext.empty() ? "999" : gext, "all targets busy");
 		}
 		return;
 	}
@@ -1178,7 +1215,9 @@ void RequestsHandler::onUnavailable(std::shared_ptr<SipMessage> data)
 		if (session.value()->getPendingTargets().empty() && session.value()->getState() == Session::State::Invited)
 		{
 			endHandle(session.value()->getSrc()->getNumber(), data);
-			endCall(data->getCallID(), session.value()->getSrc()->getNumber(), "999", "all targets unavailable");
+			const std::string& gext = session.value()->getGroupExt();
+			endCall(data->getCallID(), session.value()->getSrc()->getNumber(),
+				gext.empty() ? "999" : gext, "all targets unavailable");
 		}
 		return;
 	}
@@ -1263,7 +1302,7 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-	if (destNumber == "999")
+	if (destNumber == "999" || isPageZoneDialog(destNumber))
 	{
 		auto response = getMessageFromPool(data->toString(), data->getSource());
 		response->setHeader(SipMessageTypes::OK);
@@ -1547,7 +1586,7 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-	if (destNumber == "999")
+	if (destNumber == "999" || isPageZoneDialog(destNumber))
 	{
 		auto answeringClient = session.value()->getDest();
 		if (answeringClient)
@@ -1776,9 +1815,15 @@ void RequestsHandler::startBroadcastFork(std::shared_ptr<SipMessage> invite,
 	newSession->setBroadcast(true);
 	newSession->setPendingTargets(targets);
 	newSession->setInviteMessage(invite);
+	// Record the dialled group/zone extension (999, a 6xx ring group or a 98x
+	// paging zone) so CDR rows and end reasons report what was actually dialled
+	// instead of hardcoding "999".
+	newSession->setGroupExt(std::string(invite->getToNumber()));
 	_sessions.emplace(invite->getCallID(), newSession);
 
-	std::string contactExt = intercom ? std::string("999") : std::string(invite->getToNumber());
+	// The caller's dialog Contact carries whatever virtual extension was dialled
+	// (999, zone ext or group ext) — it is the To-number in every fork path.
+	std::string contactExt(invite->getToNumber());
 
 	auto ringing = getMessageFromPool(invite->toString(), invite->getSource());
 	ringing->setHeader("SIP/2.0 180 Ringing");
@@ -2467,7 +2512,8 @@ void RequestsHandler::setForward(const std::string& extension, const std::string
 		std::lock_guard<std::mutex> lock(_mutex);
 
 		// Reject the virtual extensions outright; they are not real endpoints.
-		if (extension == "777" || extension == "999")
+		// 98x is the reserved paging-zone range — also not a forwardable endpoint.
+		if (extension == "777" || extension == "999" || pbx::isPageZoneExt(extension))
 		{
 			queueLog("Forward set ignored for virtual extension " + extension, true);
 		}
@@ -2543,7 +2589,7 @@ void RequestsHandler::setRingGroup(const std::string& groupExt, const std::strin
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 
-		if (groupExt == "777" || groupExt == "999")
+		if (groupExt == "777" || groupExt == "999" || pbx::isPageZoneExt(groupExt))
 		{
 			queueLog("Ring group ignored for reserved extension " + groupExt, true);
 		}
@@ -2605,6 +2651,88 @@ std::vector<std::tuple<std::string, std::string, std::string>> RequestsHandler::
 {
 	std::lock_guard<std::mutex> lock(_snapshotMutex);
 	return _snapshot.ringGroups;
+}
+
+// ── Paging zones (980–989) ────────────────────────────────────────────────────
+
+const pbx::PageZone* RequestsHandler::findPageZone(const std::string& extension) const
+{
+	// Internal lookup from onInvite() (already holds _mutex). Bounded map lookup.
+	auto it = _pageZones.find(extension);
+	return (it == _pageZones.end()) ? nullptr : &it->second;
+}
+
+bool RequestsHandler::isPageZoneDialog(const std::string& extension) const
+{
+	// Caller holds _mutex. True only for a CONFIGURED zone, so an unconfigured 98x
+	// dialog (which routed through normal handling) keeps normal teardown.
+	return pbx::isPageZoneExt(extension) && _pageZones.find(extension) != _pageZones.end();
+}
+
+void RequestsHandler::setPageZone(const std::string& zoneExt, const std::string& members)
+{
+	std::vector<std::pair<bool, std::string>> localLogs;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+
+		if (!pbx::isPageZoneExt(zoneExt))
+		{
+			queueLog("Page zone ignored for non-zone extension " + zoneExt +
+				" (zones are 980-989)", true);
+		}
+		else
+		{
+			std::vector<std::string> list = pbx::splitZoneMembers(members);
+			if (list.empty())
+			{
+				// Empty membership deletes the zone.
+				_pageZones.erase(zoneExt);
+				queueLog("Page zone " + zoneExt + " deleted");
+				persistPageZones();
+			}
+			else
+			{
+				bool isNew = (_pageZones.find(zoneExt) == _pageZones.end());
+				if (isNew && _pageZones.size() >= static_cast<size_t>(POCKETDIAL_MAX_PAGE_ZONES))
+				{
+					queueLog("Page zone ignored (table full) for " + zoneExt, true);
+				}
+				else
+				{
+					pbx::PageZone& z = _pageZones[zoneExt];
+					z.members = std::move(list);
+					queueLog("Page zone " + zoneExt + " = " + pbx::joinMembers(z.members));
+					persistPageZones();
+				}
+			}
+		}
+
+		// Refresh dashboard snapshot immediately (mirror setRingGroup).
+		{
+			std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+			_snapshot.pageZones.clear();
+			_snapshot.pageZones.reserve(_pageZones.size());
+			for (const auto& [ext, z] : _pageZones)
+			{
+				_snapshot.pageZones.emplace_back(ext, pbx::joinMembers(z.members));
+			}
+		}
+
+		localLogs = std::move(_logQueue);
+		_logQueue.clear();
+	}
+
+	for (const auto& log : localLogs)
+	{
+		if (log.first) std::cerr << log.second << std::endl;
+		else std::cout << log.second << std::endl;
+	}
+}
+
+std::vector<std::pair<std::string, std::string>> RequestsHandler::getPageZones()
+{
+	std::lock_guard<std::mutex> lock(_snapshotMutex);
+	return _snapshot.pageZones;
 }
 
 // ── Registrar mode (STAGE 2) ──────────────────────────────────────────────────
@@ -3218,6 +3346,13 @@ void RequestsHandler::tick()
 			nextSnapshot.ringGroups.emplace_back(ext,
 				g.mode == pbx::GroupMode::Hunt ? "hunt" : "ringall",
 				pbx::joinMembers(g.members));
+		}
+
+		// Paging-zone view.
+		nextSnapshot.pageZones.reserve(_pageZones.size());
+		for (const auto& [ext, z] : _pageZones)
+		{
+			nextSnapshot.pageZones.emplace_back(ext, pbx::joinMembers(z.members));
 		}
 
 		{
@@ -4062,6 +4197,17 @@ void RequestsHandler::loadPbxConfig()
 		if (!g.members.empty()) _ringGroups[rec[0]] = std::move(g);
 	}
 
+	// Paging zones: ext \t m1,m2,...
+	for (const auto& rec : deserializeBlob(readBlob("pzones")))
+	{
+		if (rec.size() < 2 || rec[0].empty()) continue;
+		if (!pbx::isPageZoneExt(rec[0])) continue;
+		if (_pageZones.size() >= static_cast<size_t>(POCKETDIAL_MAX_PAGE_ZONES)) break;
+		pbx::PageZone z;
+		z.members = pbx::splitZoneMembers(rec[1]);
+		if (!z.members.empty()) _pageZones[rec[0]] = std::move(z);
+	}
+
 	nvs_close(h);
 #endif
 }
@@ -4101,6 +4247,25 @@ void RequestsHandler::persistRingGroups()
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
 	{
 		nvs_set_str(h, "groups", blob.c_str());
+		nvs_commit(h);
+		nvs_close(h);
+	}
+#endif
+}
+
+void RequestsHandler::persistPageZones()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	std::string blob;
+	for (const auto& [ext, z] : _pageZones)
+	{
+		blob += ext; blob += '\t';
+		blob += pbx::joinMembers(z.members); blob += '\n';
+	}
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
+	{
+		nvs_set_str(h, "pzones", blob.c_str());
 		nvs_commit(h);
 		nvs_close(h);
 	}
