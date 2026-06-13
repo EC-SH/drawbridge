@@ -100,6 +100,13 @@ public:
 	void setRingGroup(const std::string& groupExt, const std::string& members, const std::string& mode);
 	std::vector<std::tuple<std::string, std::string, std::string>> getRingGroups();
 
+	// Paging zones (980–989). setPageZone replaces a zone's membership (deduped and
+	// clamped to POCKETDIAL_ZONE_MEMBER_CAP); an empty member list deletes the zone.
+	// Thread-safe and NVS-persisted, mirroring setRingGroup. The getter returns
+	// {zoneExt, "m1,m2,..."} pairs for the dashboard/TUI.
+	void setPageZone(const std::string& zoneExt, const std::string& members);
+	std::vector<std::pair<std::string, std::string>> getPageZones();
+
 	// ── Admin extension (Task 2B) ─────────────────────────────────────────────────
 	// NVS-persisted extension identity for the administrative endpoint.
 	// Default "101". Loaded from NVS namespace "pbxcfg", key "admin_ext" at boot.
@@ -247,6 +254,13 @@ private:
 	// getForwardTarget returns "" when no forward of that trigger is configured.
 	std::string getForwardTarget(const std::string& extension, const std::string& trigger) const;
 	const pbx::RingGroup* findRingGroup(const std::string& extension) const;
+
+	// Internal paging-zone lookups. Caller MUST already hold _mutex — bounded map
+	// lookups, no locking. findPageZone resolves a configured zone; isPageZoneDialog
+	// answers "does this dialog To-number address a configured paging zone?" so
+	// onCancel/onBye/onAck can route zone pages through the 999 broadcast paths.
+	const pbx::PageZone* findPageZone(const std::string& extension) const;
+	bool isPageZoneDialog(const std::string& extension) const;
 
 	// Fan an INVITE out to a set of targets (the reusable core extracted from the
 	// 999 all-page path). `targets` are pre-selected registered clients; `intercom`
@@ -440,6 +454,8 @@ private:
 		std::vector<std::tuple<std::string, std::string, std::string, std::string>> forwards;
 		// Ring/hunt groups: {groupExt, "ringall"|"hunt", "m1,m2,..."}.
 		std::vector<std::tuple<std::string, std::string, std::string>> ringGroups;
+		// Paging zones: {zoneExt, "m1,m2,..."}.
+		std::vector<std::pair<std::string, std::string>> pageZones;
 		// Adopted devices (STAGE 2): {mac, ext, state, online}. Mirrored from _devices
 		// under _mutex; copied out for the TUI under _snapshotMutex.
 		std::vector<AdoptedDevice> devices;
@@ -473,6 +489,12 @@ private:
 	// POCKETDIAL_MAX_CLIENTS groups; each member list is bounded by splitMembers().
 	// Guarded by _mutex; mirrored into the snapshot and persisted to NVS.
 	std::unordered_map<std::string, pbx::RingGroup> _ringGroups;
+
+	// Paging zones, keyed by the zone extension (980–989). Bounded by
+	// POCKETDIAL_MAX_PAGE_ZONES; each member list is deduped + clamped to
+	// POCKETDIAL_ZONE_MEMBER_CAP by splitZoneMembers(). Guarded by _mutex;
+	// mirrored into the snapshot and persisted to NVS ("pbxcfg"/"pzones").
+	std::unordered_map<std::string, pbx::PageZone> _pageZones;
 
 	// ── Registrar mode (STAGE 2) ──────────────────────────────────────────────────
 	// Atomic so onRegister() can read the policy without taking _mutex (it already
@@ -529,6 +551,7 @@ private:
 	TrunkConfig _trunkCfg;                // last-loaded/saved trunk config (under _mutex)
 	void persistForwards();               // write-through after a setForward mutation
 	void persistRingGroups();             // write-through after a setRingGroup mutation
+	void persistPageZones();              // write-through after a setPageZone mutation
 	bool _pbxConfigLoaded = false;
 
 	// Persistent CDR (Class A sweep). The CDR ring is flushed to the "cdrlog" NVS
