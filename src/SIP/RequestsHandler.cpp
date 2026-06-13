@@ -1234,7 +1234,7 @@ void RequestsHandler::onUnavailable(std::shared_ptr<SipMessage> data)
 // Park header helpers (defined with the park methods below); forward-declared so
 // onBye() can build the bridged-peer BYE from the stored dialog headers.
 static std::string parkTagOf(std::string_view header);
-static std::string parkCallIdValue(std::string_view fullLine);
+static std::string stripHeaderName(std::string_view fullLine);
 
 void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 {
@@ -1270,8 +1270,8 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 						// Server originated this peer leg (ring-back UAC): the stored
 						// message is the parker's 200 OK, whose From is us and To is the
 						// parker — reuse them directly (roles are inverted vs a UAS leg).
-						fromHeader = parkCallIdValue(peerInvite->getFrom());
-						toHeader = parkCallIdValue(peerInvite->getTo());
+						fromHeader = stripHeaderName(peerInvite->getFrom());
+						toHeader = stripHeaderName(peerInvite->getTo());
 					}
 					else
 					{
@@ -1285,7 +1285,7 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 							">;tag=" + peerTag;
 					}
 					auto bye = buildServerBye(peerClient->getNumber(), peerClient->getAddress(),
-						parkCallIdValue(peerId), fromHeader, toHeader);
+						stripHeaderName(peerId), fromHeader, toHeader);
 					if (bye) _outbox.emplace_back(peerClient->getAddress(), std::move(bye));
 				}
 				endCall(peerId, peerClient ? peerClient->getNumber() : std::string(),
@@ -1598,6 +1598,13 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 	if (session.value()->isAnchor())
 	{
 		queueLog("[3CX] Handset ACK received — SIP dialog CONNECTED for " + std::string(data->getCallID()));
+		// The server is the UAS for the handset leg of a WAN-anchor (trunk) call, so
+		// this ACK confirms our 200 OK and is the end of the transaction — ABSORB it.
+		// Falling through routes the ACK to getToNumber() (the dialed PSTN number,
+		// not a registered extension) via endHandle(), which answers the ACK with a
+		// 404 — illegal (you never respond to an ACK) and it makes tag-strict phones
+		// (Yealink) retransmit, storming the dialog until 3CX reaps the call (~15s).
+		return;
 	}
 
 	std::string destNumber(data->getToNumber());
@@ -3977,17 +3984,28 @@ static std::string parkTagOf(std::string_view header)
 	return std::string(header.substr(p, e - p));
 }
 
-// The Call-ID *value* (sans the "Call-ID:"/"i:" header name) for a stored full
-// header line, so server-minted requests/ACKs carry a clean value.
-static std::string parkCallIdValue(std::string_view fullLine)
+// Strips a leading "Name:" header prefix (e.g. "From:", "To:", "Call-ID:", compact
+// "i:"/"f:"/"t:") so server-minted requests carry a clean value and never emit a
+// doubled "To: From:" / "Call-ID: Call-ID:". SAFE to call on a bare value too: it
+// only strips when the text before the first ':' is a header-name token
+// (letters/hyphen) — so a value like "<sip:...>" or "\"PSTN\" <sip:...>" (whose ':'
+// is inside the URI) is returned unchanged. Idempotent.
+static std::string stripHeaderName(std::string_view h)
 {
-	size_t colon = fullLine.find(':');
-	if (colon == std::string_view::npos) return std::string(fullLine);
+	size_t colon = h.find(':');
+	if (colon == std::string_view::npos || colon == 0 || colon > 15)
+		return std::string(h);
+	for (size_t i = 0; i < colon; ++i)
+	{
+		char c = h[i];
+		if (!(std::isalpha(static_cast<unsigned char>(c)) || c == '-'))
+			return std::string(h);   // not a bare header name → it's a value, leave it
+	}
 	size_t v = colon + 1;
-	while (v < fullLine.size() && (fullLine[v] == ' ' || fullLine[v] == '\t')) ++v;
-	size_t e = fullLine.size();
-	while (e > v && (fullLine[e - 1] == '\r' || fullLine[e - 1] == '\n')) --e;
-	return std::string(fullLine.substr(v, e - v));
+	while (v < h.size() && (h[v] == ' ' || h[v] == '\t')) ++v;
+	size_t e = h.size();
+	while (e > v && (h[e - 1] == '\r' || h[e - 1] == '\n')) --e;
+	return std::string(h.substr(v, e - v));
 }
 
 int RequestsHandler::parkOrbitIndex(std::string_view ext) const
@@ -4156,7 +4174,7 @@ void RequestsHandler::byeParkedParty(const ParkSlot& slot)
 	const std::string fromHeader = "<sip:" + slot.orbit + "@" + srcIpPort + ">;tag=" + slot.localTag;
 	const std::string toHeader = "<sip:" + slot.parkedExt + "@" + activeIp + ">;tag=" + theirTag;
 	auto bye = buildServerBye(slot.parkedExt, slot.parkedAddr,
-		parkCallIdValue(slot.callID), fromHeader, toHeader);
+		stripHeaderName(slot.callID), fromHeader, toHeader);
 	if (bye) _outbox.emplace_back(slot.parkedAddr, std::move(bye));
 }
 
@@ -4228,8 +4246,8 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 		   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=z9hG4bK" << IDGen::GenerateID(12) << "\r\n"
 		   // getFrom()/getTo() already include the "From:"/"To:" name — strip it so the
 		   // ACK doesn't ship an RFC-illegal doubled prefix (strict UAs discard it).
-		   << "From: " << parkCallIdValue(data->getFrom()) << "\r\n"
-		   << "To: " << parkCallIdValue(data->getTo()) << "\r\n"
+		   << "From: " << stripHeaderName(data->getFrom()) << "\r\n"
+		   << "To: " << stripHeaderName(data->getTo()) << "\r\n"
 		   << callID << "\r\n"
 		   << "CSeq: 2 ACK\r\n"
 		   << "Max-Forwards: 70\r\n"
@@ -4254,7 +4272,7 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 			ss << "ACK sip:" << data->getToNumber() << "@" << destIpPort << " SIP/2.0\r\n"
 			   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << slot.rbBranch << "\r\n"
 			   << "From: \"PocketDial Park\" <sip:" << slot.orbit << "@" << srcIpPort << ">;tag=" << slot.rbFromTag << "\r\n"
-			   << "To: " << parkCallIdValue(data->getTo()) << "\r\n"   // strip the "To:" name (getTo() includes it)
+			   << "To: " << stripHeaderName(data->getTo()) << "\r\n"   // strip the "To:" name (getTo() includes it)
 			   << slot.rbCallID << "\r\n"
 			   << "CSeq: 1 ACK\r\n"
 			   << "Max-Forwards: 70\r\n"
@@ -5641,12 +5659,18 @@ std::shared_ptr<SipMessage> RequestsHandler::buildServerBye(
 	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(destAddr.sin_port));
 	std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
 
+	// Callers pass either bare values or full "Name: value" header lines (e.g. some
+	// hand getInviteMessage()->getFrom() / the _sessions map key, which include the
+	// name). Strip any leading header name so we never emit a doubled "To: From:" /
+	// "Call-ID: Call-ID:" that tag-strict phones (Yealink) reject — the cause of the
+	// handset staying off-hook on a dead trunk call (Issue #12). stripHeaderName is a
+	// no-op on bare values.
 	std::ostringstream ss;
 	ss << "BYE sip:" << destExt << "@" << destIpPort << " SIP/2.0\r\n"
 	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << branch << "\r\n"
-	   << "From: " << fromHeader << "\r\n"
-	   << "To: " << toHeader << "\r\n"
-	   << "Call-ID: " << callId << "\r\n"
+	   << "From: " << stripHeaderName(fromHeader) << "\r\n"
+	   << "To: " << stripHeaderName(toHeader) << "\r\n"
+	   << "Call-ID: " << stripHeaderName(callId) << "\r\n"
 	   << "CSeq: 2 BYE\r\n"
 	   << "Max-Forwards: 70\r\n"
 	   << "Content-Length: 0\r\n\r\n";
@@ -5843,7 +5867,7 @@ std::shared_ptr<SipMessage> RequestsHandler::buildInboundCancel(const std::share
 	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << session->getUacBranch() << "\r\n"
 	   << "From: \"" << srcNum << "\" <sip:" << dn << "@" << srcIpPort << ">;tag=" << session->getLocalTag() << "\r\n"
 	   << "To: <sip:" << dn << "@" << activeIp << ">\r\n"
-	   << "Call-ID: " << session->getCallID() << "\r\n"
+	   << "Call-ID: " << stripHeaderName(session->getCallID()) << "\r\n"   // getCallID() includes the name
 	   << "CSeq: 1 CANCEL\r\n"
 	   << "Max-Forwards: 70\r\n"
 	   << "Content-Length: 0\r\n\r\n";
