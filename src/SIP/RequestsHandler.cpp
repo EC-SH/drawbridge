@@ -1606,6 +1606,14 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	// Park/retrieve dialogs are server-terminated (the server is the UAS for the
+	// parked leg); absorb the ACK rather than relaying it to the virtual orbit
+	// "peer" (the caller's own address), which churns the dialog.
+	if (parkOrbitIndex(destNumber) >= 0)
+	{
+		return;
+	}
+
 	if (destNumber == "999" || isPageZoneDialog(destNumber))
 	{
 		auto answeringClient = session.value()->getDest();
@@ -4005,14 +4013,27 @@ void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
 
 	if (slot.state == ParkState::Free)
 	{
-		// ── PARK ── answer the parker echoing their own SDP (777-style); the leg is
-		// held on the orbit with the server as the silent far end (no RTP sourced).
+		// ── PARK ── answer the parker with an a=inactive hold SDP — NOT an echo of
+		// their own SDP. Echoing their c=/m= back pointed their RTP at themselves
+		// (the caller heard their own echo) and left the leg churning; a=inactive is
+		// a clean "parked / on hold" answer (silence; the phone shows hold). The
+		// parked party's REAL media address is preserved in slot.invite for the
+		// retrieve re-INVITE, so this does not affect retrieval. (Server-sourced MoH
+		// for the parked leg is a separate follow-up.)
+		const std::string holdSdp =
+			"v=0\r\n"
+			"o=- 0 0 IN IP4 " + activeIp + "\r\n"
+			"s=pocket-dial\r\n"
+			"c=IN IP4 " + activeIp + "\r\n"
+			"t=0 0\r\n"
+			"m=audio 9 RTP/AVP 0\r\n"
+			"a=inactive\r\n";
 		auto ok = getMessageFromPool(data->toString(), data->getSource());
 		ok->setHeader(SipMessageTypes::OK);
 		ok->setVia(std::string(data->getVia()) + ";received=" + activeIp);
 		ok->setTo(std::string(data->getTo()) + ";tag=" + toTag);
 		ok->setContact(buildContact(orbit));
-		ok->enforceG711();
+		ok->setBody(holdSdp);
 		ok->syncContentLength();
 		_outbox.emplace_back(data->getSource(), ok);
 
