@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased (recovered/all-features) - 2026-06-13
+
+### Added
+- **Call Hold / resume**: a mid-dialog re-INVITE (RFC 3261 §12.2) is relayed
+  untouched between the two legs (no `clearBody()`/`enforceG711()`, so the hold
+  SDP + Content-Length stay intact); the session tracks `Held`/`Connected` from
+  the SDP direction (`a=sendonly`/`recvonly`/`inactive` vs `sendrecv`), and CDR
+  talk-time spans the hold. `SipMessage::getSdpDirection()`. `tests/Hold_test.cpp`.
+- **Call Park** (park-orbit, virtual extensions `700`+): INVITE to a FREE orbit
+  parks the caller (silent `a=inactive` answer); INVITE to an OCCUPIED orbit
+  retrieves it — the retriever is answered with the parked party's SDP and the
+  parked party gets an in-dialog re-INVITE with the retriever's SDP, so media
+  renegotiates peer-to-peer; ring-back to the parker on timeout, else BYE; BYE
+  bridging on either leg. `getParkedCalls()` dashboard view. `tests/Park_test.cpp`.
+- **Page / Zone paging** (`98x` virtual extensions): `PbxConfig::PageZone`
+  one-INVITE-per-member fork with bounded zone membership. `tests/PageZone_test.cpp`.
+- **BLF / Presence**: RFC 6665 `SUBSCRIBE`/`NOTIFY` with the RFC 4235 "dialog"
+  event package; busy-lamp-field change detection after each handled packet plus
+  a 1 Hz sweep; bounded subscription pool (`POCKETDIAL_MAX_SUBSCRIPTIONS`).
+- **Telephony provider API**: a bounded, write-only-secret credential table
+  (`TelephonyApiConfig` / `TelephonyProvider`) that selects the boot-time WAN
+  anchor provider; thread-safe RequestsHandler getters/setters for the dashboard.
+
+### Changed
+- `SipMessage` gains `getBody()` / `setBody()` (body accessor + Content-Length
+  resync), backing the call-park retrieve SDP swap.
+- New `PoolConfig.hpp` knobs: `POCKETDIAL_PARK_SLOTS`, `POCKETDIAL_PARK_TIMEOUT_SEC`,
+  `POCKETDIAL_MAX_PAGE_ZONES`, `POCKETDIAL_ZONE_MEMBER_CAP`, `POCKETDIAL_MAX_SUBSCRIPTIONS`.
+
 ## Unreleased (fix/sip-engine-defects) - 2026-06-11
 
 ### Fixed

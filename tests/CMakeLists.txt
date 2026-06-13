@@ -29,8 +29,11 @@ add_executable(sip_parser_tests
     SipDigest_test.cpp
     ArpLookup_test.cpp
     Pbx_test.cpp
+    PageZone_test.cpp
     Rtp_test.cpp
+    Hold_test.cpp
     RtpReceiver_test.cpp
+    Park_test.cpp
     Tui_test.cpp
     # The ANSI sysop-terminal renderer is transport-agnostic and host-compilable
     # (no wolfSSH, no ESP — only an esp_timer guard, behind ESP_PLATFORM). It links
@@ -62,6 +65,11 @@ add_executable(sip_parser_tests
     # cap are unit-testable on the desktop build (see RtpReceiver_test.cpp).
     ../src/SIP/RtpReceiver.cpp
     ../src/SIP/RequestsHandler.cpp
+    # Telephony provider/API credential layer: RequestsHandler references these
+    # (getTelephonyApis/setTelephonyApi + the boot provider select), so the test
+    # binary must link them too. The host binary picks them up via GLOB.
+    ../src/SIP/TelephonyApiConfig.cpp
+    ../src/SIP/TelephonyProvider.cpp
     ../src/SIP/SipSdpMessage.cpp
     ../src/SIP/SipClient.cpp
     ../src/SIP/Session.cpp

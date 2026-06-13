@@ -484,6 +484,86 @@ void SipMessage::clearBody()
 	reparse();
 }
 
+SipMessage::SdpDirection SipMessage::getSdpDirection() const
+{
+	// Locate the body (after the header/body separator). Mirrors parse()'s
+	// tolerance for bare-LF messages.
+	size_t bodyStart = _messageStr.find("\r\n\r\n");
+	size_t sepLen = 4;
+	if (bodyStart == std::string::npos)
+	{
+		bodyStart = _messageStr.find("\n\n");
+		sepLen = 2;
+	}
+	if (bodyStart == std::string::npos)
+	{
+		return SdpDirection::None;
+	}
+
+	// Walk the body line by line; the attribute must be line-anchored ("a=..."
+	// at the start of a line) so a stray substring elsewhere can't match.
+	const std::string_view whole(_messageStr);
+	size_t pos = bodyStart + sepLen;
+	while (pos < whole.size())
+	{
+		size_t eol = whole.find('\n', pos);
+		size_t lineEnd = (eol == std::string_view::npos) ? whole.size() : eol;
+		std::string_view line = whole.substr(pos, lineEnd - pos);
+		if (!line.empty() && line.back() == '\r')
+		{
+			line.remove_suffix(1);
+		}
+		if (line == "a=sendrecv") return SdpDirection::SendRecv;
+		if (line == "a=sendonly") return SdpDirection::SendOnly;
+		if (line == "a=recvonly") return SdpDirection::RecvOnly;
+		if (line == "a=inactive") return SdpDirection::Inactive;
+		if (eol == std::string::npos)
+		{
+			break;
+		}
+		pos = eol + 1;
+	}
+	return SdpDirection::None;
+}
+
+std::string_view SipMessage::getBody() const
+{
+	size_t sep = _messageStr.find("\r\n\r\n");
+	size_t sepLen = 4;
+	if (sep == std::string::npos)
+	{
+		sep = _messageStr.find("\n\n");
+		sepLen = 2;
+	}
+	if (sep == std::string::npos)
+	{
+		return {};
+	}
+	return std::string_view(_messageStr).substr(sep + sepLen);
+}
+
+void SipMessage::setBody(const std::string& body)
+{
+	size_t sep = _messageStr.find("\r\n\r\n");
+	size_t sepLen = 4;
+	if (sep == std::string::npos)
+	{
+		sep = _messageStr.find("\n\n");
+		sepLen = 2;
+	}
+	if (sep == std::string::npos)
+	{
+		// No header/body separator yet: append one, then the body.
+		_messageStr += "\r\n\r\n";
+		sep = _messageStr.size() - 4;
+		sepLen = 4;
+	}
+	_messageStr.erase(sep + sepLen);
+	_messageStr += body;
+	syncContentLength();   // keep Content-Length honest (the 777-bug class)
+	reparse();
+}
+
 std::string SipMessage::toString() const
 {
 	return _messageStr;

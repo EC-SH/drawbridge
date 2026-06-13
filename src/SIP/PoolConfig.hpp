@@ -60,4 +60,51 @@
 #define POCKETDIAL_MAX_BEEPS 4
 #endif
 
+// Number of call-park orbit slots (virtual extensions 700, 701, ... 70(N-1), max
+// 10). The orbit table itself is a fixed std::array of small records — no heap in
+// the hot path, mirroring the pool discipline above. NOTE the real capacity cost
+// of a parked call is ONE Session slot out of POCKETDIAL_MAX_SESSIONS: the parked
+// dialog stays alive in the session pool for the whole time it sits on the orbit
+// (and a retrieve transiently holds a second slot for the retriever's leg). With
+// the default 8 sessions, parking more than a few calls will starve new INVITEs
+// into 503 — raise MAX_SESSIONS if you raise this.
+#ifndef POCKETDIAL_PARK_SLOTS
+#define POCKETDIAL_PARK_SLOTS 10
+#endif
+
+// How long a call may sit parked before the orbit times out (seconds). On expiry
+// tick() rings back the parker (the Referred-By party of the parking INVITE) if
+// they are registered, or tears the parked leg down with a BYE otherwise.
+#ifndef POCKETDIAL_PARK_TIMEOUT_SEC
+#define POCKETDIAL_PARK_TIMEOUT_SEC 90
+#endif
+
+// Maximum number of configured paging zones (the 980–989 virtual extensions).
+// Bounds the _pageZones map exactly like _ringGroups is bounded; the 98x dial
+// range only has ten slots anyway, so this is also the semantic ceiling.
+#ifndef POCKETDIAL_MAX_PAGE_ZONES
+#define POCKETDIAL_MAX_PAGE_ZONES 10
+#endif
+
+// Maximum members per paging zone. A zone page forks one INVITE per registered
+// member through the shared message pool, so this cap bounds the transient
+// per-page message-pool pressure (POCKETDIAL_MSG_POOL) the same way the 999
+// all-page is bounded by POCKETDIAL_MAX_CLIENTS. splitZoneMembers() clamps to
+// this at config time, so an oversized list degrades to the first N members —
+// it never over-forks.
+#ifndef POCKETDIAL_ZONE_MEMBER_CAP
+#define POCKETDIAL_ZONE_MEMBER_CAP 8
+#endif
+
+// Maximum number of concurrent BLF/presence dialog subscriptions (RFC 6665
+// SUBSCRIBE/NOTIFY with the RFC 4235 "dialog" event package). Each slot is a small
+// fixed record in a std::array — no heap. A SUBSCRIBE arriving with every slot in
+// use is answered 503 Service Unavailable (graceful degradation, never a crash).
+// Must stay ≤ POCKETDIAL_MSG_POOL: a single state change can fan one NOTIFY out to
+// every subscriber, and bounding subscriptions by the message-pool depth keeps that
+// burst allocation-free (it also caps the worst-case NOTIFY burst on the wire).
+#ifndef POCKETDIAL_MAX_SUBSCRIPTIONS
+#define POCKETDIAL_MAX_SUBSCRIPTIONS 16
+#endif
+
 #endif

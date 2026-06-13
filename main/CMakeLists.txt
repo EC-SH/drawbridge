@@ -103,6 +103,8 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/LoopbackAnchorClient.cpp"
                             "../src/SIP/MediaBridge.cpp"
                             "../src/SIP/PlayoutBuffer.cpp"
+                            "../src/SIP/TelephonyApiConfig.cpp"
+                            "../src/SIP/TelephonyProvider.cpp"
                     INCLUDE_DIRS "../src/Helpers" "../src/SIP" "drivers" "ui" "wifi"
                     REQUIRES nvs_flash lwip esp_netif esp_event freertos mdns app_update esp_driver_ledc console esp_timer esp_websocket_client esp_http_client cjson ${EXTRA_REQUIRES}
                     PRIV_REQUIRES esp_wifi)

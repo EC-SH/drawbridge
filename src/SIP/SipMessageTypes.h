@@ -25,6 +25,10 @@ public:
 	// Instant message (RFC 3428). Inbound MESSAGEs (delivery receipts / IMs) are
 	// acked with 200 OK for hygiene; the server never originates a MESSAGE.
 	static constexpr auto MESSAGE            = "MESSAGE";
+	// BLF/presence (RFC 6665 + RFC 4235). SUBSCRIBE with Event: dialog is accepted
+	// 202 + immediate NOTIFY; any other event package is rejected 489 Bad Event.
+	static constexpr auto SUBSCRIBE          = "SUBSCRIBE";
+	static constexpr auto BAD_EVENT          = "SIP/2.0 489 Bad Event";
 	static constexpr auto NOT_FOUND          = "SIP/2.0 404 Not Found";
 	static constexpr auto BAD_REQUEST        = "SIP/2.0 400 Bad Request";
 	static constexpr auto ACCEPTED           = "SIP/2.0 202 Accepted";

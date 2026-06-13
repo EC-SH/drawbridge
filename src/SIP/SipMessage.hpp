@@ -43,6 +43,14 @@ public:
 	void enforceG711();
 	void clearBody();
 
+	// The message body — everything after the header/body separator (the SDP for
+	// an INVITE/200 OK), or empty when there is none. The view is valid until the
+	// next mutation of this message. setBody() replaces the body and resyncs
+	// Content-Length; used by the call-park retrieve path to swap each leg's SDP
+	// onto the opposite dialog so media renegotiates peer-to-peer.
+	std::string_view getBody() const;
+	void setBody(const std::string& body);
+
 	// Recompute the Content-Length header from the actual body byte count and
 	// rewrite it in place (preserving the full/compact header-name form). Call
 	// after any edit that changes the body length; an out-of-sync Content-Length
@@ -67,6 +75,14 @@ public:
 	std::string_view getAuthorization() const;
 	sockaddr_in getSource() const;
 	std::optional<PocketDial::SipStatusInfo> getStatusInfo() const { return _statusInfo; }
+
+	// SDP media-direction attribute (RFC 4566 / RFC 3264): the line-anchored
+	// a=sendrecv / a=sendonly / a=recvonly / a=inactive attribute in the message
+	// body. Returns None when there is no body or no direction attribute (RFC
+	// 3264: an absent attribute implies sendrecv — the caller decides; we only
+	// report what is on the wire). Pure string scan, host-compilable.
+	enum class SdpDirection { None, SendRecv, SendOnly, RecvOnly, Inactive };
+	SdpDirection getSdpDirection() const;
 
 	// Issue #42: virtual SDP probe replaces dynamic_cast so call setup works
 	// on the Arduino ESP32 toolchain, which builds with RTTI disabled (-fno-rtti).

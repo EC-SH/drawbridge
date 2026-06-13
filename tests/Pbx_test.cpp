@@ -221,3 +221,58 @@ TEST(RegisterBeep, EnforceG711AndSyncKeepsContentLengthCorrect) {
     size_t actualBody = out.size() - (sep + 4);
     EXPECT_EQ(parsedContentLength(msg), actualBody);
 }
+
+// ── Paging zones (980–989) ────────────────────────────────────────────────────
+// Pure-helper coverage: zone-extension recognition, member dedupe and the
+// POCKETDIAL_ZONE_MEMBER_CAP clamp (which bounds per-page message-pool pressure).
+
+TEST(PageZone, ExtRangeIs980Through989) {
+    for (int d = 0; d <= 9; ++d) {
+        EXPECT_TRUE(pbx::isPageZoneExt("98" + std::to_string(d)));
+    }
+    EXPECT_FALSE(pbx::isPageZoneExt("979"));
+    EXPECT_FALSE(pbx::isPageZoneExt("990"));
+    EXPECT_FALSE(pbx::isPageZoneExt("98"));     // too short
+    EXPECT_FALSE(pbx::isPageZoneExt("9800"));   // too long
+    EXPECT_FALSE(pbx::isPageZoneExt("98a"));    // non-digit suffix
+    EXPECT_FALSE(pbx::isPageZoneExt(""));
+    EXPECT_FALSE(pbx::isPageZoneExt("999"));    // the all-page is NOT a zone
+}
+
+TEST(PageZone, SplitZoneMembersDedupesPreservingOrder) {
+    auto m = pbx::splitZoneMembers("101, 102, 101, 103, 102");
+    ASSERT_EQ(m.size(), 3u);
+    EXPECT_EQ(m[0], "101");
+    EXPECT_EQ(m[1], "102");
+    EXPECT_EQ(m[2], "103");
+}
+
+TEST(PageZone, SplitZoneMembersClampsToMemberCap) {
+    std::string csv;
+    for (int i = 0; i < POCKETDIAL_ZONE_MEMBER_CAP + 5; ++i) {
+        if (i) csv += ',';
+        csv += std::to_string(100 + i);
+    }
+    auto m = pbx::splitZoneMembers(csv);
+    ASSERT_EQ(m.size(), static_cast<size_t>(POCKETDIAL_ZONE_MEMBER_CAP));
+    // First N survive, in order.
+    EXPECT_EQ(m.front(), "100");
+    EXPECT_EQ(m.back(), std::to_string(100 + POCKETDIAL_ZONE_MEMBER_CAP - 1));
+}
+
+TEST(PageZone, SplitZoneMembersDedupeAppliesBeforeCap) {
+    // Duplicates must not consume cap slots: 2*CAP entries of CAP distinct values
+    // all fit.
+    std::string csv;
+    for (int i = 0; i < POCKETDIAL_ZONE_MEMBER_CAP * 2; ++i) {
+        if (i) csv += ',';
+        csv += std::to_string(100 + (i % POCKETDIAL_ZONE_MEMBER_CAP));
+    }
+    auto m = pbx::splitZoneMembers(csv);
+    EXPECT_EQ(m.size(), static_cast<size_t>(POCKETDIAL_ZONE_MEMBER_CAP));
+}
+
+TEST(PageZone, SplitZoneMembersEmptyYieldsNone) {
+    EXPECT_TRUE(pbx::splitZoneMembers("").empty());
+    EXPECT_TRUE(pbx::splitZoneMembers(" , ,,").empty());
+}
