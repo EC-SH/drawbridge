@@ -171,7 +171,7 @@ void UdpServer::receiveLoop()
 	{
 		senderEndPoint = {};
 		int bytesReceived = 0;
-#if defined(__linux__) || defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(__linux__) || defined(__APPLE__) || defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 		bytesReceived = static_cast<int>(recvfrom(_sockfd, buffer, BUFFER_SIZE, 0,
 			reinterpret_cast<struct sockaddr*>(&senderEndPoint), reinterpret_cast<socklen_t*>(&len)));
 #elif defined _WIN32 || defined _WIN64
@@ -195,7 +195,7 @@ void UdpServer::closeServer()
 	if (_sockfd >= 0)
 	{
 		shutdown(_sockfd, 2);
-#if defined(__linux__) || defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(__linux__) || defined(__APPLE__) || defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 		close(_sockfd);
 #elif defined _WIN32 || defined _WIN64
 		closesocket(_sockfd);
@@ -210,7 +210,15 @@ void UdpServer::closeServer()
 	// a backstop in case the task was never started.
 	if (_receiverExited != nullptr)
 	{
-		xSemaphoreTake(_receiverExited, pdMS_TO_TICKS(2000));
+		if (xSemaphoreTake(_receiverExited, pdMS_TO_TICKS(2000)) != pdTRUE && _receiverTaskHandle != nullptr)
+		{
+			// The receiver runs RequestsHandler::handle() inline, so at shutdown it can be
+			// mid-handle() rather than parked in recvfrom() — closing the socket above does
+			// not unblock that. Force-kill so we never delete the semaphore and destroy the
+			// object while the task is still running (it would then give on a freed handle).
+			vTaskDelete(_receiverTaskHandle);
+		}
+		_receiverTaskHandle = nullptr;
 		vSemaphoreDelete(_receiverExited);
 		_receiverExited = nullptr;
 	}
