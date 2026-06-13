@@ -33,6 +33,9 @@ void Session::reset(std::string callID, std::shared_ptr<SipClient> src)
 	_huntMembers.clear();
 	_huntIndex = 0;
 	_groupExt.clear();
+	_peerCallID.clear();
+	_parkUac = false;
+	_localTag.clear();
 }
 
 void Session::setState(State state)
@@ -121,4 +124,7 @@ void Session::release()
 	_huntMembers.clear();
 	_huntIndex = 0;
 	_groupExt.clear();
+	_peerCallID.clear();
+	_parkUac = false;
+	_localTag.clear();
 }

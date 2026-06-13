@@ -60,4 +60,23 @@
 #define POCKETDIAL_MAX_BEEPS 4
 #endif
 
+// Number of call-park orbit slots (virtual extensions 700, 701, ... 70(N-1), max
+// 10). The orbit table itself is a fixed std::array of small records — no heap in
+// the hot path, mirroring the pool discipline above. NOTE the real capacity cost
+// of a parked call is ONE Session slot out of POCKETDIAL_MAX_SESSIONS: the parked
+// dialog stays alive in the session pool for the whole time it sits on the orbit
+// (and a retrieve transiently holds a second slot for the retriever's leg). With
+// the default 8 sessions, parking more than a few calls will starve new INVITEs
+// into 503 — raise MAX_SESSIONS if you raise this.
+#ifndef POCKETDIAL_PARK_SLOTS
+#define POCKETDIAL_PARK_SLOTS 10
+#endif
+
+// How long a call may sit parked before the orbit times out (seconds). On expiry
+// tick() rings back the parker (the Referred-By party of the parking INVITE) if
+// they are registered, or tears the parked leg down with a BYE otherwise.
+#ifndef POCKETDIAL_PARK_TIMEOUT_SEC
+#define POCKETDIAL_PARK_TIMEOUT_SEC 90
+#endif
+
 #endif

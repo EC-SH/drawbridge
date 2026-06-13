@@ -94,6 +94,15 @@ public:
 	void setForward(const std::string& extension, const std::string& trigger, const std::string& target);
 	std::vector<std::tuple<std::string, std::string, std::string, std::string>> getForwards();
 
+	// Call parking (park-orbit). Thread-safe snapshot of every occupied orbit slot
+	// for the dashboard/TUI: {orbit ext ("700".."70N"), parked extension, parker
+	// (the ring-back target on timeout), seconds parked}. Mirrors the other
+	// snapshot getters (takes _snapshotMutex only).
+	std::vector<std::tuple<std::string, std::string, std::string, int>> getParkedCalls();
+	// Override the parked-call timeout (default POCKETDIAL_PARK_TIMEOUT_SEC).
+	// Admin/test hook; thread-safe (takes _mutex).
+	void setParkTimeout(std::chrono::seconds t);
+
 	// Ring/hunt groups. setRingGroup replaces a group's membership + mode; an empty
 	// member list deletes the group. Thread-safe and NVS-persisted. The getter
 	// returns {groupExt, "ringall"|"hunt", "m1,m2,..."} for the dashboard.
@@ -303,6 +312,66 @@ private:
 	// 2nd dial while busy is rejected 486 Busy Here. Caller holds _mutex.
 	void onMediaInvite(std::shared_ptr<SipMessage> data, const std::shared_ptr<SipClient>& caller);
 
+	// ── Call parking / park-orbit (roadmap §3.1 P1) ──────────────────────────────
+	// Virtual orbit extensions 700..70(N-1). An INVITE to a FREE orbit parks the
+	// caller's leg there (the server answers 777-style — the caller's own SDP is
+	// echoed back, no server media); an INVITE to an OCCUPIED orbit retrieves it:
+	// the retriever is answered with the parked party's SDP and the parked party is
+	// re-INVITEd (in its existing dialog) with the retriever's SDP, so media
+	// renegotiates peer-to-peer. The orbit table is a fixed array (pool discipline);
+	// each parked call additionally pins ONE Session slot — see PoolConfig.hpp.
+	// tick() sweeps timed-out parks: ring back the parker (Referred-By of the
+	// parking INVITE) when registered, else tear down with BYE. All helpers assume
+	// the caller holds _mutex and only enqueue to _outbox.
+	enum class ParkState : uint8_t { Free, Parked, RingingBack, Retrieving };
+	struct ParkSlot
+	{
+		ParkState state = ParkState::Free;
+		std::string orbit;              // "700".."70N"
+		std::string callID;             // full "Call-ID: ..." line of the parked dialog
+		std::string parkedExt;          // the parked party's extension
+		sockaddr_in parkedAddr{};       // the parked party's signaling address
+		std::shared_ptr<SipMessage> invite;  // parking INVITE (SDP + dialog headers)
+		std::string localTag;           // our UAS To-tag on the parked dialog
+		std::string parker;             // ring-back target on timeout
+		std::chrono::steady_clock::time_point parkedAt{};
+		// Ring-back UAC dialog toward the parker (server-minted, fresh Call-ID).
+		std::string rbCallID;           // full "Call-ID: ..." line
+		std::string rbFromTag;
+		std::string rbBranch;
+		sockaddr_in rbAddr{};
+		std::chrono::steady_clock::time_point deadline{};   // ring-back / re-INVITE guard
+	};
+	std::array<ParkSlot, POCKETDIAL_PARK_SLOTS> _parkSlots;
+	std::chrono::seconds _parkTimeout{POCKETDIAL_PARK_TIMEOUT_SEC};
+	// Call-IDs of parked dialogs we have sent an in-dialog re-INVITE to (retrieve /
+	// ring-back media re-point) and still owe an ACK for, once the parked party
+	// 200s it. Bounded by the orbit table (one entry per in-flight retrieve).
+	std::vector<std::string> _parkPendingAcks;
+
+	// Orbit index for an AOR ("700".."70N" → 0..N-1), or -1 if not an orbit.
+	int parkOrbitIndex(std::string_view ext) const;
+	// INVITE routed at an orbit extension: park (free slot) or retrieve (occupied).
+	void onParkInvite(std::shared_ptr<SipMessage> data,
+		const std::shared_ptr<SipClient>& caller, int orbitIdx);
+	// In-dialog re-INVITE to the parked party carrying `sdp` (the retriever's or
+	// ring-back answerer's offer) so the two phones renegotiate media P2P.
+	void sendParkReinvite(ParkSlot& slot, const std::string& sdp);
+	// Server-as-UAS BYE tearing down the parked dialog (timeout / failure paths).
+	void byeParkedParty(const ParkSlot& slot);
+	// Server-as-UAC INVITE ringing the parker back after a park timeout.
+	void startParkRingback(ParkSlot& slot, const std::shared_ptr<SipClient>& parker,
+		std::chrono::steady_clock::time_point now);
+	// 200 OK hook (called from onOk before the session lookup, like the beep table).
+	// Returns true when the OK belonged to a park dialog and was consumed.
+	bool handleParkOk(const std::shared_ptr<SipMessage>& data);
+	// Timed-out park sweep, polled from tick().
+	void parkSweep(std::chrono::steady_clock::time_point now);
+	// Free any slot owned by `callID` (parked or ring-back leg); endCall() hook.
+	void freeParkSlot(std::string_view callID);
+	// Mirror the orbit table into the dashboard snapshot (caller holds _mutex).
+	void refreshParkSnapshot();
+
 	bool registerClient(std::shared_ptr<SipClient> client);
 	void unregisterClient(std::string_view number);
 
@@ -455,6 +524,8 @@ private:
 		// Adopted devices (STAGE 2): {mac, ext, state, online}. Mirrored from _devices
 		// under _mutex; copied out for the TUI under _snapshotMutex.
 		std::vector<AdoptedDevice> devices;
+		// Parked calls: {orbit, parkedExt, parker, secondsParked}.
+		std::vector<std::tuple<std::string, std::string, std::string, int>> parked;
 		uint64_t packetsProcessed = 0;
 		uint64_t packetsDropped = 0;
 	};

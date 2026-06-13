@@ -465,6 +465,15 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	if (parkOrbitIndex(destNumber) >= 0)
+	{
+		// CANCEL of a parking/retrieving INVITE: tear the leg down. endCall() also
+		// frees the orbit slot if this Call-ID owns one (freeParkSlot hook).
+		endCall(data->getCallID(), data->getFromNumber(), destNumber);
+		refreshParkSnapshot();
+		return;
+	}
+
 	if (destNumber == "999")
 	{
 		auto session = getSession(data->getCallID());
@@ -645,6 +654,19 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		// Media beachhead: the server answers and sources a one-way RTP tone stream.
 		onMediaInvite(data, caller.value());
 		return;
+	}
+
+	// Call parking (park-orbit, 700..70N): an INVITE to a FREE orbit parks the
+	// caller's leg there; an INVITE to an OCCUPIED orbit retrieves the parked call
+	// (the server re-INVITEs the parked party toward the retriever's media — no
+	// media is ever held here). Resolved before ring groups/DND like 777/999.
+	{
+		int orbitIdx = parkOrbitIndex(destNumber);
+		if (orbitIdx >= 0)
+		{
+			onParkInvite(data, caller.value(), orbitIdx);
+			return;
+		}
 	}
 
 	// Ring / hunt groups (Class A sweep): a configured group extension (e.g. 6xx)
@@ -1164,10 +1186,58 @@ void RequestsHandler::onUnavailable(std::shared_ptr<SipMessage> data)
 	endHandle(data->getFromNumber(), data);
 }
 
+// Park header helpers (defined with the park methods below); forward-declared so
+// onBye() can build the bridged-peer BYE from the stored dialog headers.
+static std::string parkTagOf(std::string_view header);
+static std::string parkCallIdValue(std::string_view fullLine);
+
 void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 {
 	auto session = getSession(data->getCallID());
 	std::string destNumber(data->getToNumber());
+
+	// Call parking: a BYE whose To is an orbit ("70x"), or any leg linked to a
+	// bridged peer. Always 200 OK the BYE; if the leg has a retrieved/rung-back
+	// peer, relay a server BYE to that phone too, then end both dialogs. A still-
+	// parked leg just frees its orbit (endCall -> freeParkSlot).
+	if (parkOrbitIndex(destNumber) >= 0 ||
+		(session.has_value() && !session.value()->getPeerCallID().empty()))
+	{
+		const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		auto response = getMessageFromPool(data->toString(), data->getSource());
+		response->setHeader(SipMessageTypes::OK);
+		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		_outbox.emplace_back(data->getSource(), std::move(response));
+
+		if (session.has_value() && !session.value()->getPeerCallID().empty())
+		{
+			const std::string peerId = session.value()->getPeerCallID();
+			if (auto peer = getSession(peerId); peer.has_value())
+			{
+				auto peerSess = peer.value();
+				auto peerInvite = peerSess->getInviteMessage();
+				auto peerClient = peerSess->getSrc();
+				if (peerInvite && peerClient)
+				{
+					const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+					const std::string peerTag = parkTagOf(peerInvite->getFrom());
+					const std::string fromHeader = "<sip:" + std::string(peerInvite->getToNumber()) +
+						"@" + srcIpPort + ">;tag=" + peerSess->getLocalTag();
+					const std::string toHeader = "<sip:" + peerClient->getNumber() + "@" + activeIp +
+						">;tag=" + peerTag;
+					auto bye = buildServerBye(peerClient->getNumber(), peerClient->getAddress(),
+						parkCallIdValue(peerId), fromHeader, toHeader);
+					if (bye) _outbox.emplace_back(peerClient->getAddress(), std::move(bye));
+				}
+				endCall(peerId, peerClient ? peerClient->getNumber() : std::string(),
+					destNumber, "park bridge peer BYE");
+			}
+		}
+		endCall(data->getCallID(), data->getFromNumber(), destNumber, "park BYE");
+		refreshParkSnapshot();
+		return;
+	}
+
 	if (destNumber == "777")
 	{
 		auto response = getMessageFromPool(data->toString(), data->getSource());
@@ -1279,6 +1349,13 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 		{
 			*bd = BeepDialog{};   // BYE acknowledged: dialog fully torn down, free slot
 		}
+		return;
+	}
+
+	// Park dialogs (server-originated re-INVITE ACKs + ring-back answers). Like the
+	// beep table these are recognised by Call-ID before the normal session lookup.
+	if (handleParkOk(data))
+	{
 		return;
 	}
 
@@ -1875,6 +1952,10 @@ void RequestsHandler::endCall(std::string_view callID, std::string_view srcNumbe
 	// DTMF accumulators are keyed by Call-ID and share the dialog lifecycle; drop
 	// this dialog's entry so _dtmfState can't grow unbounded across calls (Fix #4).
 	_dtmfState.erase(std::string(callID));
+
+	// Reclaim any park-orbit slot owned by this dialog (parked leg torn down by any
+	// path: BYE, lease loss, force-disconnect). No-op when the dialog isn't parked.
+	freeParkSlot(callID);
 
 	// Capture the session (for CDR start time / final state) BEFORE we erase it.
 	std::shared_ptr<Session> ending;
@@ -3073,6 +3154,9 @@ void RequestsHandler::tick()
 			bd = BeepDialog{};   // free the slot
 		}
 
+		// Call-park orbit timeouts (ring back the parker / tear down stale parks).
+		parkSweep(now);
+
 		// Build snapshot under registrar mutex lock, then save it under snapshot mutex lock
 		RegistrarSnapshot nextSnapshot;
 		nextSnapshot.packetsProcessed = _packetsProcessed.load(std::memory_order_relaxed);
@@ -3092,6 +3176,16 @@ void RequestsHandler::tick()
 		{
 			(void)callID;
 			nextSnapshot.sessions.push_back(sessionTuple(session, now));
+		}
+
+		// Parked calls (orbit table) into the dashboard view. Mirrors refreshParkSnapshot
+		// — done here too so the 1 Hz wholesale snapshot swap keeps the parked rows.
+		for (const auto& slot : _parkSlots)
+		{
+			if (slot.state == ParkState::Free) continue;
+			int secs = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+				now - slot.parkedAt).count());
+			nextSnapshot.parked.emplace_back(slot.orbit, slot.parkedExt, slot.parker, secs);
 		}
 
 		// CDR view: copy the ring out newest-first into the snapshot.
@@ -3383,6 +3477,378 @@ std::shared_ptr<SipMessage> RequestsHandler::buildBeepCancel(std::size_t slot)
 	   << "Content-Length: 0\r\n\r\n";
 
 	return getMessageFromPool(ss.str(), bd.addr);
+}
+
+// ── Call parking (park-orbit, roadmap §3.1) ──────────────────────────────────
+// Helpers shared by the park methods. Kept file-local (no header surface).
+
+// The dialog tag from a From/To header line (";tag=XXXX"), or "".
+static std::string parkTagOf(std::string_view header)
+{
+	size_t p = header.find(";tag=");
+	if (p == std::string_view::npos) return {};
+	p += 5;
+	size_t e = p;
+	while (e < header.size() && header[e] != ';' && header[e] != '>' &&
+		header[e] != ' ' && header[e] != '\r' && header[e] != '\n')
+	{
+		++e;
+	}
+	return std::string(header.substr(p, e - p));
+}
+
+// The Call-ID *value* (sans the "Call-ID:"/"i:" header name) for a stored full
+// header line, so server-minted requests/ACKs carry a clean value.
+static std::string parkCallIdValue(std::string_view fullLine)
+{
+	size_t colon = fullLine.find(':');
+	if (colon == std::string_view::npos) return std::string(fullLine);
+	size_t v = colon + 1;
+	while (v < fullLine.size() && (fullLine[v] == ' ' || fullLine[v] == '\t')) ++v;
+	size_t e = fullLine.size();
+	while (e > v && (fullLine[e - 1] == '\r' || fullLine[e - 1] == '\n')) --e;
+	return std::string(fullLine.substr(v, e - v));
+}
+
+int RequestsHandler::parkOrbitIndex(std::string_view ext) const
+{
+	// Orbit extensions "700".."70(N-1)" (N == POCKETDIAL_PARK_SLOTS, ≤ 10).
+	if (ext.size() != 3 || ext[0] != '7' || ext[1] != '0') return -1;
+	if (ext[2] < '0' || ext[2] > '9') return -1;
+	int idx = ext[2] - '0';
+	return (idx < static_cast<int>(_parkSlots.size())) ? idx : -1;
+}
+
+void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
+	const std::shared_ptr<SipClient>& caller, int orbitIdx)
+{
+	if (orbitIdx < 0 || orbitIdx >= static_cast<int>(_parkSlots.size()) || !caller)
+	{
+		return;
+	}
+	ParkSlot& slot = _parkSlots[orbitIdx];
+	const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	const std::string orbit = "70" + std::to_string(orbitIdx);
+	const std::string toTag = IDGen::GenerateID(9);
+
+	if (slot.state == ParkState::Free)
+	{
+		// ── PARK ── answer the parker echoing their own SDP (777-style); the leg is
+		// held on the orbit with the server as the silent far end (no RTP sourced).
+		auto ok = getMessageFromPool(data->toString(), data->getSource());
+		ok->setHeader(SipMessageTypes::OK);
+		ok->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		ok->setTo(std::string(data->getTo()) + ";tag=" + toTag);
+		ok->setContact(buildContact(orbit));
+		ok->enforceG711();
+		ok->syncContentLength();
+		_outbox.emplace_back(data->getSource(), ok);
+
+		slot = ParkSlot{};
+		slot.state      = ParkState::Parked;
+		slot.orbit      = orbit;
+		slot.callID     = std::string(data->getCallID());   // full "Call-ID: ..." line
+		slot.parkedExt  = caller->getNumber();
+		slot.parkedAddr = data->getSource();
+		slot.invite     = data;
+		slot.localTag   = toTag;
+		slot.parker     = caller->getNumber();
+		slot.parkedAt   = std::chrono::steady_clock::now();
+
+		// Pin a Session slot so the parked dialog shows in the dashboard and is
+		// torn down on BYE / lease loss like any call.
+		auto virt = std::make_shared<SipClient>(orbit, data->getSource(), 3600);
+		if (auto session = allocateSession(std::string(data->getCallID()), caller))
+		{
+			session->setDest(virt);
+			session->setLocalTag(toTag);
+			session->setInviteMessage(data);
+			_sessions.emplace(std::string(data->getCallID()), session);
+			session->setState(Session::State::Connected);
+		}
+		queueLog("Park: " + caller->getNumber() + " parked on " + orbit);
+		refreshParkSnapshot();
+		return;
+	}
+
+	// ── RETRIEVE ── the orbit is occupied: bridge the retriever to the parked party
+	// peer-to-peer. Answer the retriever with the parked party's SDP, re-INVITE the
+	// parked party with the retriever's SDP, link the two legs for BYE bridging, and
+	// free the orbit (the call is now a live ordinary bridged call).
+	const std::string parkedSdp(slot.invite ? std::string(slot.invite->getBody()) : std::string());
+	const std::string retrieverSdp(data->getBody());
+
+	auto ok = getMessageFromPool(data->toString(), data->getSource());
+	ok->setHeader(SipMessageTypes::OK);
+	ok->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+	ok->setTo(std::string(data->getTo()) + ";tag=" + toTag);
+	ok->setContact(buildContact(orbit));
+	if (!parkedSdp.empty()) ok->setBody(parkedSdp);
+	ok->enforceG711();
+	ok->syncContentLength();
+	_outbox.emplace_back(data->getSource(), ok);
+
+	sendParkReinvite(slot, retrieverSdp);   // re-point the parked party at the retriever
+
+	// Bridge: a session for the retriever leg, linked to the parked session so a BYE
+	// on either relays a server BYE to the other (onBye peer-relay).
+	auto virt = std::make_shared<SipClient>(slot.parkedExt, slot.parkedAddr, 3600);
+	if (auto rsession = allocateSession(std::string(data->getCallID()), caller))
+	{
+		rsession->setDest(virt);
+		rsession->setPeerCallID(slot.callID);
+		rsession->setLocalTag(toTag);
+		rsession->setInviteMessage(data);
+		_sessions.emplace(std::string(data->getCallID()), rsession);
+		rsession->setState(Session::State::Connected);
+	}
+	if (auto parked = getSession(slot.callID); parked.has_value())
+	{
+		parked.value()->setPeerCallID(std::string(data->getCallID()));
+	}
+	queueLog("Park: " + caller->getNumber() + " retrieved " + slot.parkedExt + " from " + orbit);
+
+	slot = ParkSlot{};   // orbit free again
+	refreshParkSnapshot();
+}
+
+void RequestsHandler::sendParkReinvite(ParkSlot& slot, const std::string& sdp)
+{
+	if (slot.callID.empty() || !slot.invite) return;
+	const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+
+	char ipBuf[INET_ADDRSTRLEN]{};
+	inet_ntop(AF_INET, &slot.parkedAddr.sin_addr, ipBuf, sizeof(ipBuf));
+	const std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(slot.parkedAddr.sin_port));
+
+	// In-dialog re-INVITE: the parked party is the original UAC (their From-tag),
+	// we are the UAS (our localTag). As the sender now, From = us (localTag),
+	// To = the parked party (their tag). CSeq spaces are per-UA, so 2 is safe.
+	const std::string theirTag = parkTagOf(slot.invite->getFrom());
+	const std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
+	const std::string body = sdp;
+
+	std::ostringstream ss;
+	ss << "INVITE sip:" << slot.parkedExt << "@" << destIpPort << " SIP/2.0\r\n"
+	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << branch << "\r\n"
+	   << "From: <sip:" << slot.orbit << "@" << srcIpPort << ">;tag=" << slot.localTag << "\r\n"
+	   << "To: <sip:" << slot.parkedExt << "@" << activeIp << ">;tag=" << theirTag << "\r\n"
+	   << slot.callID << "\r\n"
+	   << "CSeq: 2 INVITE\r\n"
+	   << "Max-Forwards: 70\r\n"
+	   << "Contact: <sip:" << slot.orbit << "@" << srcIpPort << ";transport=UDP>\r\n"
+	   << "User-Agent: pocket-dial\r\n"
+	   << "Content-Type: application/sdp\r\n"
+	   << "Content-Length: " << body.size() << "\r\n\r\n"
+	   << body;
+
+	auto inv = getMessageFromPool(ss.str(), slot.parkedAddr);
+	inv->enforceG711();
+	inv->syncContentLength();
+	_outbox.emplace_back(slot.parkedAddr, std::move(inv));
+	// We owe an ACK once the parked party 200s this re-INVITE (handleParkOk).
+	_parkPendingAcks.push_back(slot.callID);
+	queueLog("Park: re-INVITE -> parked party " + slot.parkedExt);
+}
+
+void RequestsHandler::byeParkedParty(const ParkSlot& slot)
+{
+	if (slot.callID.empty()) return;
+	const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+	const std::string theirTag = slot.invite ? parkTagOf(slot.invite->getFrom()) : std::string();
+	// Server-as-UAS BYE (we minted localTag on the 200): From = us+localTag,
+	// To = parked party + their tag.
+	const std::string fromHeader = "<sip:" + slot.orbit + "@" + srcIpPort + ">;tag=" + slot.localTag;
+	const std::string toHeader = "<sip:" + slot.parkedExt + "@" + activeIp + ">;tag=" + theirTag;
+	auto bye = buildServerBye(slot.parkedExt, slot.parkedAddr,
+		parkCallIdValue(slot.callID), fromHeader, toHeader);
+	if (bye) _outbox.emplace_back(slot.parkedAddr, std::move(bye));
+}
+
+void RequestsHandler::startParkRingback(ParkSlot& slot, const std::shared_ptr<SipClient>& parker,
+	std::chrono::steady_clock::time_point now)
+{
+	if (!parker) { byeParkedParty(slot); freeParkSlot(slot.callID); return; }
+	const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+	const sockaddr_in& addr = parker->getAddress();
+
+	char ipBuf[INET_ADDRSTRLEN]{};
+	inet_ntop(AF_INET, &addr.sin_addr, ipBuf, sizeof(ipBuf));
+	const std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(addr.sin_port));
+
+	// Server-as-UAC INVITE toward the parker carrying the parked party's SDP, so on
+	// answer the parker's media points at the parked party; handleParkOk() then
+	// ACKs and re-INVITEs the parked party with the parker's SDP to finish the
+	// bridge. Fresh dialog (rbCallID/rbFromTag/rbBranch).
+	slot.rbCallID  = "Call-ID: " + IDGen::GenerateID(16) + "@" + activeIp;
+	slot.rbFromTag = IDGen::GenerateID(9);
+	slot.rbBranch  = "z9hG4bK" + IDGen::GenerateID(12);
+	slot.rbAddr    = addr;
+	slot.state     = ParkState::RingingBack;
+	slot.deadline  = now + std::chrono::seconds(30);
+
+	const std::string body = slot.invite ? std::string(slot.invite->getBody()) : std::string();
+	std::ostringstream ss;
+	ss << "INVITE sip:" << parker->getNumber() << "@" << destIpPort << " SIP/2.0\r\n"
+	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << slot.rbBranch << "\r\n"
+	   << "From: \"PocketDial Park\" <sip:" << slot.orbit << "@" << srcIpPort << ">;tag=" << slot.rbFromTag << "\r\n"
+	   << "To: <sip:" << parker->getNumber() << "@" << activeIp << ">\r\n"
+	   << slot.rbCallID << "\r\n"
+	   << "CSeq: 1 INVITE\r\n"
+	   << "Max-Forwards: 70\r\n"
+	   << "Contact: <sip:" << slot.orbit << "@" << srcIpPort << ";transport=UDP>\r\n"
+	   << "User-Agent: pocket-dial\r\n"
+	   << "Content-Type: application/sdp\r\n"
+	   << "Content-Length: " << body.size() << "\r\n\r\n"
+	   << body;
+
+	auto inv = getMessageFromPool(ss.str(), addr);
+	inv->enforceG711();
+	inv->syncContentLength();
+	_outbox.emplace_back(addr, std::move(inv));
+	queueLog("Park: timeout on " + slot.orbit + " — ringing back parker " + parker->getNumber());
+}
+
+bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
+{
+	const std::string cseq(data->getCSeq());
+	const std::string callID(data->getCallID());
+	const bool isInviteOk = cseq.find(SipMessageTypes::INVITE) != std::string::npos;
+	if (!isInviteOk) return false;
+
+	// (a) 200 OK to a park re-INVITE we sent the parked party (retrieve / ring-back
+	//     media re-point): ACK it (server-as-UAC) so the dialog confirms.
+	if (auto it = std::find(_parkPendingAcks.begin(), _parkPendingAcks.end(), callID);
+		it != _parkPendingAcks.end())
+	{
+		const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+		const sockaddr_in srcAddr = data->getSource();
+		char ipBuf[INET_ADDRSTRLEN]{};
+		inet_ntop(AF_INET, &srcAddr.sin_addr, ipBuf, sizeof(ipBuf));
+		const std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(srcAddr.sin_port));
+		std::ostringstream ss;
+		ss << "ACK sip:" << data->getToNumber() << "@" << destIpPort << " SIP/2.0\r\n"
+		   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=z9hG4bK" << IDGen::GenerateID(12) << "\r\n"
+		   << "From: " << data->getFrom() << "\r\n"
+		   << "To: " << data->getTo() << "\r\n"
+		   << callID << "\r\n"
+		   << "CSeq: 2 ACK\r\n"
+		   << "Max-Forwards: 70\r\n"
+		   << "Content-Length: 0\r\n\r\n";
+		_outbox.emplace_back(data->getSource(), getMessageFromPool(ss.str(), data->getSource()));
+		_parkPendingAcks.erase(it);
+		return true;
+	}
+
+	// (b) 200 OK to a ring-back INVITE we sent the parker: ACK the parker, then
+	//     re-INVITE the parked party with the parker's SDP to finish the bridge.
+	for (auto& slot : _parkSlots)
+	{
+		if (slot.state == ParkState::RingingBack && slot.rbCallID == callID)
+		{
+			const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+			const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+			char ipBuf[INET_ADDRSTRLEN]{};
+			inet_ntop(AF_INET, &slot.rbAddr.sin_addr, ipBuf, sizeof(ipBuf));
+			const std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(slot.rbAddr.sin_port));
+			std::ostringstream ss;
+			ss << "ACK sip:" << data->getToNumber() << "@" << destIpPort << " SIP/2.0\r\n"
+			   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << slot.rbBranch << "\r\n"
+			   << "From: \"PocketDial Park\" <sip:" << slot.orbit << "@" << srcIpPort << ">;tag=" << slot.rbFromTag << "\r\n"
+			   << "To: " << data->getTo() << "\r\n"
+			   << slot.rbCallID << "\r\n"
+			   << "CSeq: 1 ACK\r\n"
+			   << "Max-Forwards: 70\r\n"
+			   << "Content-Length: 0\r\n\r\n";
+			_outbox.emplace_back(slot.rbAddr, getMessageFromPool(ss.str(), slot.rbAddr));
+
+			// Re-point the parked party at the parker (the parker's answer SDP).
+			sendParkReinvite(slot, std::string(data->getBody()));
+			queueLog("Park: parker answered ring-back on " + slot.orbit + " — bridging");
+			slot = ParkSlot{};   // bridged; orbit released
+			refreshParkSnapshot();
+			return true;
+		}
+	}
+	return false;
+}
+
+void RequestsHandler::parkSweep(std::chrono::steady_clock::time_point now)
+{
+	for (auto& slot : _parkSlots)
+	{
+		if (slot.state == ParkState::Parked &&
+			(now - slot.parkedAt) >= _parkTimeout)
+		{
+			// Park expired: ring the parker back if they are registered, else tear
+			// the parked leg down so the orbit (and its session slot) is reclaimed.
+			auto parker = findClient(slot.parker);
+			if (parker.has_value())
+			{
+				startParkRingback(slot, parker.value(), now);
+			}
+			else
+			{
+				queueLog("Park: timeout on " + slot.orbit + " — parker " + slot.parker +
+					" gone, tearing down");
+				byeParkedParty(slot);
+				freeParkSlot(slot.callID);
+			}
+		}
+		else if (slot.state == ParkState::RingingBack && now >= slot.deadline)
+		{
+			// Parker never answered the ring-back: give up, tear the parked leg down.
+			queueLog("Park: ring-back on " + slot.orbit + " not answered — tearing down");
+			byeParkedParty(slot);
+			freeParkSlot(slot.callID);
+		}
+	}
+	refreshParkSnapshot();
+}
+
+void RequestsHandler::freeParkSlot(std::string_view callID)
+{
+	for (auto& slot : _parkSlots)
+	{
+		if (slot.state != ParkState::Free && slot.callID == callID)
+		{
+			slot = ParkSlot{};
+		}
+	}
+	// Also drop any outstanding ACK owed on this dialog.
+	_parkPendingAcks.erase(
+		std::remove(_parkPendingAcks.begin(), _parkPendingAcks.end(), std::string(callID)),
+		_parkPendingAcks.end());
+}
+
+void RequestsHandler::refreshParkSnapshot()
+{
+	const auto now = std::chrono::steady_clock::now();
+	std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+	_snapshot.parked.clear();
+	for (const auto& slot : _parkSlots)
+	{
+		if (slot.state == ParkState::Free) continue;
+		int secs = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+			now - slot.parkedAt).count());
+		_snapshot.parked.emplace_back(slot.orbit, slot.parkedExt, slot.parker, secs);
+	}
+}
+
+std::vector<std::tuple<std::string, std::string, std::string, int>> RequestsHandler::getParkedCalls()
+{
+	std::lock_guard<std::mutex> lock(_snapshotMutex);
+	return _snapshot.parked;
+}
+
+void RequestsHandler::setParkTimeout(std::chrono::seconds t)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_parkTimeout = t;
 }
 
 std::shared_ptr<SipClient> RequestsHandler::allocateClient(std::string number, sockaddr_in address, int expiresSeconds)

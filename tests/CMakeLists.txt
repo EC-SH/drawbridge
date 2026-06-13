@@ -32,6 +32,7 @@ add_executable(sip_parser_tests
     Rtp_test.cpp
     Hold_test.cpp
     RtpReceiver_test.cpp
+    Park_test.cpp
     Tui_test.cpp
     # The ANSI sysop-terminal renderer is transport-agnostic and host-compilable
     # (no wolfSSH, no ESP — only an esp_timer guard, behind ESP_PLATFORM). It links
