@@ -179,6 +179,12 @@ private:
 	// hold SDP and its Content-Length stay intact) and tracks the Held/Connected
 	// state from the offered SDP direction. Caller holds _mutex (via handle()).
 	void onReinvite(std::shared_ptr<SipMessage> data);
+	// Rebuild and publish the dashboard session view from the live _sessions map
+	// immediately, without waiting for the next 1 Hz tick(). Caller holds _mutex;
+	// this takes _snapshotMutex (the _mutex -> _snapshotMutex order used by
+	// tick()/setDnd()). Used so a hold/resume state change surfaces on the
+	// dashboard at once.
+	void refreshSessionSnapshot();
 	void onTrying(std::shared_ptr<SipMessage> data);
 	void onRinging(std::shared_ptr<SipMessage> data);
 	void onBusy(std::shared_ptr<SipMessage> data);

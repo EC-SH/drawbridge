@@ -502,12 +502,13 @@ SipMessage::SdpDirection SipMessage::getSdpDirection() const
 
 	// Walk the body line by line; the attribute must be line-anchored ("a=..."
 	// at the start of a line) so a stray substring elsewhere can't match.
+	const std::string_view whole(_messageStr);
 	size_t pos = bodyStart + sepLen;
-	while (pos < _messageStr.size())
+	while (pos < whole.size())
 	{
-		size_t eol = _messageStr.find('\n', pos);
-		size_t lineEnd = (eol == std::string::npos) ? _messageStr.size() : eol;
-		std::string_view line(_messageStr.data() + pos, lineEnd - pos);
+		size_t eol = whole.find('\n', pos);
+		size_t lineEnd = (eol == std::string_view::npos) ? whole.size() : eol;
+		std::string_view line = whole.substr(pos, lineEnd - pos);
 		if (!line.empty() && line.back() == '\r')
 		{
 			line.remove_suffix(1);

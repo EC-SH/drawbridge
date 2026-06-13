@@ -897,6 +897,10 @@ void RequestsHandler::onReinvite(std::shared_ptr<SipMessage> data)
 		session->setState(Session::State::Connected);
 		queueLog("Hold: call " + std::string(data->getCallID()) + " resumed");
 	}
+
+	// Surface the hold/resume state on the dashboard at once — tick() only
+	// rebuilds the session view at 1 Hz, so without this the change would lag.
+	refreshSessionSnapshot();
 }
 
 std::string RequestsHandler::buildMediaSdp(const std::string& serverIp, int rtpPort, bool sendRecv)
@@ -2181,6 +2185,39 @@ static const char* sessionStateToString(Session::State s)
 	}
 }
 
+// One dashboard session-view row from a live Session. Single source of truth for
+// the (caller, callee, state, talk-seconds) tuple, shared by tick()'s snapshot
+// build and refreshSessionSnapshot(). Talk time is counted only once the call is
+// answered (Connected or Held — a held call is still an answered call).
+static std::tuple<std::string, std::string, std::string, int> sessionTuple(
+	const std::shared_ptr<Session>& session,
+	std::chrono::steady_clock::time_point now)
+{
+	std::string caller = session->getSrc() ? session->getSrc()->getNumber() : "?";
+	std::string callee = session->getDest() ? session->getDest()->getNumber() : "?";
+	int durationSec = 0;
+	if (session->getState() == Session::State::Connected ||
+		session->getState() == Session::State::Held)
+	{
+		durationSec = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
+			now - session->getStartTime()).count());
+	}
+	return {caller, callee, sessionStateToString(session->getState()), durationSec};
+}
+
+void RequestsHandler::refreshSessionSnapshot()
+{
+	const auto now = std::chrono::steady_clock::now();
+	std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+	_snapshot.sessions.clear();
+	_snapshot.sessions.reserve(_sessions.size());
+	for (const auto& [callID, session] : _sessions)
+	{
+		(void)callID;
+		_snapshot.sessions.push_back(sessionTuple(session, now));
+	}
+}
+
 std::vector<std::pair<std::string, std::string>> RequestsHandler::getActiveClients()
 {
 	std::lock_guard<std::mutex> lock(_snapshotMutex);
@@ -3053,17 +3090,8 @@ void RequestsHandler::tick()
 		nextSnapshot.sessions.reserve(_sessions.size());
 		for (const auto& [callID, session] : _sessions)
 		{
-			std::string caller = session->getSrc() ? session->getSrc()->getNumber() : "?";
-			std::string callee = session->getDest() ? session->getDest()->getNumber() : "?";
-
-			int durationSec = 0;
-			if (session->getState() == Session::State::Connected ||
-				session->getState() == Session::State::Held)
-			{
-				durationSec = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(
-					now - session->getStartTime()).count());
-			}
-			nextSnapshot.sessions.emplace_back(caller, callee, sessionStateToString(session->getState()), durationSec);
+			(void)callID;
+			nextSnapshot.sessions.push_back(sessionTuple(session, now));
 		}
 
 		// CDR view: copy the ring out newest-first into the snapshot.
