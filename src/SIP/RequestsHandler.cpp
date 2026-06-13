@@ -465,6 +465,15 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	if (parkOrbitIndex(destNumber) >= 0)
+	{
+		// CANCEL of a parking/retrieving INVITE: tear the leg down. endCall() also
+		// frees the orbit slot if this Call-ID owns one (freeParkSlot hook).
+		endCall(data->getCallID(), data->getFromNumber(), destNumber);
+		refreshParkSnapshot();
+		return;
+	}
+
 	if (destNumber == "999")
 	{
 		auto session = getSession(data->getCallID());
@@ -634,6 +643,19 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		// Media beachhead: the server answers and sources a one-way RTP tone stream.
 		onMediaInvite(data, caller.value());
 		return;
+	}
+
+	// Call parking (park-orbit, 700..70N): an INVITE to a FREE orbit parks the
+	// caller's leg there; an INVITE to an OCCUPIED orbit retrieves the parked call
+	// (the server re-INVITEs the parked party toward the retriever's media — no
+	// media is ever held here). Resolved before ring groups/DND like 777/999.
+	{
+		int orbitIdx = parkOrbitIndex(destNumber);
+		if (orbitIdx >= 0)
+		{
+			onParkInvite(data, caller.value(), orbitIdx);
+			return;
+		}
 	}
 
 	// Ring / hunt groups (Class A sweep): a configured group extension (e.g. 6xx)

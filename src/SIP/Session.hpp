@@ -104,6 +104,16 @@ public:
 	size_t getHuntIndex() const { return _huntIndex; }
 	void setHuntIndex(size_t i) { _huntIndex = i; }
 
+	// ── Call parking (park-orbit bridge) ──────────────────────────────
+	// peerCallID links the two dialog legs of a retrieved (or rung-back) parked
+	// call so a BYE from either side relays a server BYE to the other leg.
+	// parkUac marks the leg the SERVER originated (the park-timeout ring-back
+	// INVITE toward the parker), which inverts the From/To roles of that relay.
+	const std::string& getPeerCallID() const { return _peerCallID; }
+	void setPeerCallID(const std::string& id) { _peerCallID = id; }
+	bool isParkUac() const { return _parkUac; }
+	void setParkUac(bool v) { _parkUac = v; }
+
 	// The group extension this fork is servicing (for CDR / logging), if any.
 	const std::string& getGroupExt() const { return _groupExt; }
 	void setGroupExt(const std::string& g) { _groupExt = g; }
@@ -137,6 +147,10 @@ private:
 	size_t _huntIndex = 0;
 
 	std::string _groupExt;
+
+	// Call parking (park-orbit bridge): linked peer leg + server-as-UAC marker.
+	std::string _peerCallID;
+	bool _parkUac = false;
 };
 
 #endif
