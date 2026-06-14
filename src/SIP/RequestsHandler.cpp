@@ -114,25 +114,19 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 
 RequestsHandler::~RequestsHandler()
 {
+	// Issue #42/#55: flush any pending debounced NVS writes one last time so a final
+	// teardown CDR / config edit that landed after the last tick still survives. No-op
+	// on host. tick() is no longer running by destruction time, so this takes the lock
+	// itself; no concurrent writer remains.
+	flushDirtyNvs();
 #if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
 	if (_anchorStartThread.joinable())
 	{
 		_anchorStartThread.join();
 	}
-	{
-		std::vector<std::thread> workers;
-		{
-			std::lock_guard<std::mutex> lock(_anchorWorkMutex);
-			workers = std::move(_anchorWorkThreads);
-		}
-		for (auto& t : workers)
-		{
-			if (t.joinable())
-			{
-				t.join();
-			}
-		}
-	}
+	// Issue #67: drain+join all remaining anchor workers (tick() reaps finished ones
+	// during normal operation; this catches any still in flight at teardown).
+	reapAnchorWorkers(/*drainAll=*/true);
 #endif
 	// Stop the anchor BEFORE member destruction begins: the loopback client's
 	// simulation threads call back into this handler (locking _mutex, touching
@@ -3757,6 +3751,17 @@ void RequestsHandler::tick()
 		_onHandled(event.first, std::move(event.second));
 	}
 
+	// Issue #42/#55: debounced NVS write-back. The persistXxx() mutators ran under
+	// _mutex during this tick (or an intervening handle()) and only set dirty bits;
+	// the actual flash commit happens here, OUTSIDE the registrar lock, so a 10–100 ms
+	// erase/program never stalls SIP signaling. No-op on host.
+	flushDirtyNvs();
+
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+	// Issue #67: reap finished host anchor-call workers so they don't accumulate as
+	// joinable thread objects until destruction. (ESP uses self-deleting tasks.)
+	reapAnchorWorkers();
+#endif
 }
 
 std::optional<std::shared_ptr<SipClient>> RequestsHandler::findClientByAddress(const sockaddr_in& addr)
@@ -4662,9 +4667,13 @@ void RequestsHandler::loadPbxConfig()
 #endif
 }
 
-void RequestsHandler::persistForwards()
+// ── Blob serializers (read-only over the in-memory maps; caller holds _mutex) ────
+// These were previously inlined in the persistXxx() write-through functions. They
+// are now standalone so flushDirtyNvs() can serialize under a SHORT lock and then
+// write to flash OUTSIDE the lock (Issue #42 / #55). Pure string work, no NVS — so
+// they compile on host too (where they are unused but keep the TU symmetric).
+std::string RequestsHandler::serializeForwardsBlob() const
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	std::string blob;
 	for (const auto& [ext, cfg] : _forwards)
 	{
@@ -4673,19 +4682,11 @@ void RequestsHandler::persistForwards()
 		blob += cfg.busy; blob += '\t';
 		blob += cfg.noAnswer; blob += '\n';
 	}
-	nvs_handle_t h;
-	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
-	{
-		nvs_set_str(h, "forwards", blob.c_str());
-		nvs_commit(h);
-		nvs_close(h);
-	}
-#endif
+	return blob;
 }
 
-void RequestsHandler::persistRingGroups()
+std::string RequestsHandler::serializeRingGroupsBlob() const
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	std::string blob;
 	for (const auto& [ext, g] : _ringGroups)
 	{
@@ -4693,34 +4694,25 @@ void RequestsHandler::persistRingGroups()
 		blob += (g.mode == pbx::GroupMode::Hunt ? "hunt" : "ringall"); blob += '\t';
 		blob += pbx::joinMembers(g.members); blob += '\n';
 	}
-	nvs_handle_t h;
-	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
-	{
-		nvs_set_str(h, "groups", blob.c_str());
-		nvs_commit(h);
-		nvs_close(h);
-	}
-#endif
+	return blob;
 }
 
-void RequestsHandler::persistPageZones()
+std::string RequestsHandler::serializePageZonesBlob() const
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	std::string blob;
 	for (const auto& [ext, z] : _pageZones)
 	{
 		blob += ext; blob += '\t';
 		blob += pbx::joinMembers(z.members); blob += '\n';
 	}
-	nvs_handle_t h;
-	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
-	{
-		nvs_set_str(h, "pzones", blob.c_str());
-		nvs_commit(h);
-		nvs_close(h);
-	}
-#endif
+	return blob;
 }
+
+// Issue #42/#55: mark-dirty mutators. Called under _mutex; the blocking flash write
+// is deferred to flushDirtyNvs() after the lock is released.
+void RequestsHandler::persistForwards()   { _nvsDirty |= kNvsDirtyForwards; }
+void RequestsHandler::persistRingGroups() { _nvsDirty |= kNvsDirtyRingGroups; }
+void RequestsHandler::persistPageZones()  { _nvsDirty |= kNvsDirtyPageZones; }
 
 // ── Registrar mode + device registry persistence (STAGE 2) ───────────────────
 
@@ -4790,12 +4782,10 @@ void RequestsHandler::loadDevices()
 #endif
 }
 
-void RequestsHandler::persistDevices()
+// mac \t extension \t state(int). Bounded by POCKETDIAL_MAX_CLIENTS, so the blob is
+// fixed-footprint. Online state is NOT persisted (it is volatile registration state).
+std::string RequestsHandler::serializeDevicesBlob() const
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
-	// mac \t extension \t state(int). Bounded by POCKETDIAL_MAX_CLIENTS, so the blob
-	// is fixed-footprint. Write-through after each adoption / secure / forget. Caller
-	// holds _mutex; online state is NOT persisted (it is volatile registration state).
 	std::string blob;
 	for (const auto& [mac, rec] : _devices)
 	{
@@ -4803,15 +4793,12 @@ void RequestsHandler::persistDevices()
 		blob += rec.extension; blob += '\t';
 		blob += std::to_string(static_cast<int>(rec.state)); blob += '\n';
 	}
-	nvs_handle_t h;
-	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
-	{
-		nvs_set_str(h, "devices", blob.c_str());
-		nvs_commit(h);
-		nvs_close(h);
-	}
-#endif
+	return blob;
 }
+
+// Issue #55: mark devices dirty after each adoption / secure / forget. Called under
+// _mutex from the Learn/star-code paths; flushed to flash off-lock by flushDirtyNvs().
+void RequestsHandler::persistDevices() { _nvsDirty |= kNvsDirtyDevices; }
 
 void RequestsHandler::loadCdrRing()
 {
@@ -4852,13 +4839,10 @@ void RequestsHandler::loadCdrRing()
 #endif
 }
 
-void RequestsHandler::persistCdrRing()
+// Serialize the ring oldest-first (same order loadCdrRing replays). Bounded by
+// POCKETDIAL_CDR_RECORDS, so the blob is fixed-footprint. Caller holds _mutex.
+std::string RequestsHandler::serializeCdrBlob() const
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
-	// Serialize the ring oldest-first (same order loadCdrRing replays). Bounded by
-	// POCKETDIAL_CDR_RECORDS, so the blob is fixed-footprint. Write-through on each
-	// teardown: the CDR ring is small (default 32) and calls end infrequently
-	// relative to flash endurance, so a per-call rewrite is acceptable — see summary.
 	std::string blob;
 	for (size_t i = 0; i < _cdrCount; ++i)
 	{
@@ -4870,12 +4854,75 @@ void RequestsHandler::persistCdrRing()
 		blob += std::to_string(r.durationSec); blob += '\t';
 		blob += std::to_string(static_cast<int>(r.result)); blob += '\n';
 	}
-	nvs_handle_t h;
-	if (nvs_open(NVS_CDR_NS, NVS_READWRITE, &h) == ESP_OK)
+	return blob;
+}
+
+// Issue #42: previously this did nvs_open/commit inline — a flash erase/program
+// (10–100+ ms) while the caller (endCall, under _mutex) held the registrar lock,
+// stalling ALL SIP signaling on every BYE / no-answer teardown. Now it only marks
+// the ring dirty; flushDirtyNvs() writes it back from tick() AFTER the lock drops.
+// Coalescing also means a burst of teardowns in one tick costs a single flash write.
+void RequestsHandler::persistCdrRing() { _nvsDirty |= kNvsDirtyCdr; }
+
+// ── Off-lock NVS write-back (Issue #42 / #55) ────────────────────────────────────
+// Called from tick() AFTER the registrar lock has been released. For each dirty
+// store it takes a SHORT lock just long enough to snapshot the bit and serialize the
+// in-memory blob, then performs the blocking nvs_open/set_str/commit/close OUTSIDE
+// any lock. No-op on host (the in-memory maps are the store). If a write fails the
+// bit stays cleared for this pass; the next mutation re-arms it (best-effort, matches
+// the prior write-through's silent-failure behaviour).
+void RequestsHandler::flushDirtyNvs()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	uint8_t dirty;
 	{
-		nvs_set_str(h, "ring", blob.c_str());
-		nvs_commit(h);
-		nvs_close(h);
+		std::lock_guard<std::mutex> lock(_mutex);
+		dirty = _nvsDirty;
+		_nvsDirty = 0;
+	}
+	if (dirty == 0) return;
+
+	// Helper: write an already-serialized blob to NVS (outside any lock). const-ref —
+	// it only reads the bytes.
+	auto writeKey = [](const char* ns, const char* key, const std::string& blob) {
+		nvs_handle_t h;
+		if (nvs_open(ns, NVS_READWRITE, &h) == ESP_OK)
+		{
+			nvs_set_str(h, key, blob.c_str());
+			nvs_commit(h);
+			nvs_close(h);
+		}
+	};
+
+	if (dirty & kNvsDirtyForwards)
+	{
+		std::string blob;
+		{ std::lock_guard<std::mutex> lock(_mutex); blob = serializeForwardsBlob(); }
+		writeKey(NVS_PBX_NS, "forwards", blob);
+	}
+	if (dirty & kNvsDirtyRingGroups)
+	{
+		std::string blob;
+		{ std::lock_guard<std::mutex> lock(_mutex); blob = serializeRingGroupsBlob(); }
+		writeKey(NVS_PBX_NS, "groups", blob);
+	}
+	if (dirty & kNvsDirtyPageZones)
+	{
+		std::string blob;
+		{ std::lock_guard<std::mutex> lock(_mutex); blob = serializePageZonesBlob(); }
+		writeKey(NVS_PBX_NS, "pzones", blob);
+	}
+	if (dirty & kNvsDirtyDevices)
+	{
+		std::string blob;
+		{ std::lock_guard<std::mutex> lock(_mutex); blob = serializeDevicesBlob(); }
+		writeKey(NVS_PBX_NS, "devices", blob);
+	}
+	if (dirty & kNvsDirtyCdr)
+	{
+		std::string blob;
+		{ std::lock_guard<std::mutex> lock(_mutex); blob = serializeCdrBlob(); }
+		writeKey(NVS_CDR_NS, "ring", blob);
 	}
 #endif
 }
@@ -6073,7 +6120,7 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		// 12288: makeCall is a TLS HTTPS round trip — same overflow as 3cx_start.
 	}, "3cx_makecall", 12288, arg, 5, NULL);
 #else
-	std::thread worker([this, destination, callId, callerNumber]() {
+	spawnAnchorWorker([this, destination, callId, callerNumber]() {
 		if (!_anchorClient->makeCall(destination))
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
@@ -6086,10 +6133,6 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 			queueLog("[3CX] Initiating outbound call to " + destination);
 		}
 	});
-	{
-		std::lock_guard<std::mutex> lock(_anchorWorkMutex);
-		_anchorWorkThreads.push_back(std::move(worker));
-	}
 #endif
 }
 
@@ -6111,13 +6154,9 @@ void RequestsHandler::asyncDropCall(const std::string& participantId)
 		// 12288: dropCall is a TLS HTTPS round trip — same overflow as 3cx_start.
 	}, "3cx_dropcall", 12288, arg, 5, NULL);
 #else
-	std::thread worker([this, participantId]() {
+	spawnAnchorWorker([this, participantId]() {
 		_anchorClient->dropCall(participantId);
 	});
-	{
-		std::lock_guard<std::mutex> lock(_anchorWorkMutex);
-		_anchorWorkThreads.push_back(std::move(worker));
-	}
 #endif
 }
 
@@ -6145,17 +6184,75 @@ void RequestsHandler::asyncAnswerCall(const std::string& participantId)
 		// 12288: answerCall is a TLS HTTPS round trip — same overflow as 3cx_start.
 	}, "3cx_answer", 12288, arg, 5, NULL);
 #else
-	std::thread worker([this, participantId]() {
+	spawnAnchorWorker([this, participantId]() {
 		if (!_anchorClient->answerCall(participantId))
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
 			queueLog("[3CX] Failed to answer inbound participant " + participantId, true);
 		}
 	});
-	{
-		std::lock_guard<std::mutex> lock(_anchorWorkMutex);
-		_anchorWorkThreads.push_back(std::move(worker));
-	}
 #endif
 }
+
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+// Issue #67: spawn a host anchor worker that runs `job` then flips its done-flag.
+// The flag lets reapAnchorWorkers() join+erase finished threads in tick(), so the
+// live thread count tracks in-flight calls rather than growing without bound. We
+// reap opportunistically here too, so a steady call rate never lets the vector grow.
+void RequestsHandler::spawnAnchorWorker(std::function<void()> job)
+{
+	auto done = std::make_shared<std::atomic<bool>>(false);
+	std::thread worker([job = std::move(job), done]() {
+		job();
+		done->store(true, std::memory_order_release);
+	});
+	std::lock_guard<std::mutex> lock(_anchorWorkMutex);
+	// Reap already-finished siblings before appending (bounds the vector under churn).
+	reapFinishedLocked();
+	_anchorWorkThreads.push_back(AnchorWorker{ std::move(worker), std::move(done) });
+}
+
+// Caller MUST hold _anchorWorkMutex. Join + erase every worker whose done-flag is set.
+void RequestsHandler::reapFinishedLocked()
+{
+	for (auto it = _anchorWorkThreads.begin(); it != _anchorWorkThreads.end(); )
+	{
+		if (it->done && it->done->load(std::memory_order_acquire))
+		{
+			if (it->thread.joinable()) it->thread.join();
+			it = _anchorWorkThreads.erase(it);
+		}
+		else
+		{
+			++it;
+		}
+	}
+}
+
+// Called from tick(): reap finished anchor workers. With drainAll, blocks until every
+// worker has finished (used by the destructor as a belt-and-suspenders join).
+void RequestsHandler::reapAnchorWorkers(bool drainAll)
+{
+	std::vector<AnchorWorker> toJoin;
+	{
+		std::lock_guard<std::mutex> lock(_anchorWorkMutex);
+		if (drainAll)
+		{
+			toJoin = std::move(_anchorWorkThreads);
+			_anchorWorkThreads.clear();
+		}
+		else
+		{
+			reapFinishedLocked();
+			return;
+		}
+	}
+	// drainAll: join outside the lock so a still-running worker that needs _anchorWorkMutex
+	// (it doesn't today, but be safe) can't deadlock us.
+	for (auto& w : toJoin)
+	{
+		if (w.thread.joinable()) w.thread.join();
+	}
+}
+#endif
 

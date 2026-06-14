@@ -39,6 +39,10 @@ add_executable(sip_parser_tests
     # sizing, #70 virtual-peer pool). Drives RequestsHandler + the static message
     # pool directly; host-compilable like the other RequestsHandler-backed suites.
     PoolSafety_test.cpp
+    # Audit lock-discipline cluster (#42 H-1 / #55 M-3): the config/CDR persisters no
+    # longer block on NVS under _mutex — they mark dirty and tick() flushes off-lock.
+    # This suite guards that the refactor is behaviour-preserving for engine state.
+    NvsWriteback_test.cpp
     Tui_test.cpp
     # The ANSI sysop-terminal renderer is transport-agnostic and host-compilable
     # (no wolfSSH, no ESP — only an esp_timer guard, behind ESP_PLATFORM). It links
