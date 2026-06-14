@@ -112,6 +112,28 @@ std::shared_ptr<SipMessage> makeOk(const std::string& from,
     return RequestsHandler::getMessageFromPool(raw + body, makeAddr(srcIp));
 }
 
+// A dialog-event SUBSCRIBE from `watcher` (at `srcIp`) watching extension `to`.
+// expires=0 unsubscribes. Mirrors the headers RequestsHandler::onSubscribe parses.
+std::shared_ptr<SipMessage> makeSubscribe(const std::string& watcher,
+                                          const std::string& to,
+                                          const std::string& srcIp,
+                                          const std::string& callID,
+                                          int cseq,
+                                          int expires) {
+    std::string raw =
+        "SUBSCRIBE sip:" + to + "@server SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP " + srcIp + ":5060;branch=z9hG4bKs" + std::to_string(cseq) + "\r\n"
+        "From: <sip:" + watcher + "@server>;tag=fs" + watcher + "\r\n"
+        "To: <sip:" + to + "@server>\r\n"
+        "Call-ID: " + callID + "\r\n"
+        "CSeq: " + std::to_string(cseq) + " SUBSCRIBE\r\n"
+        "Contact: <sip:" + watcher + "@" + srcIp + ":5060>\r\n"
+        "Event: dialog\r\n"
+        "Expires: " + std::to_string(expires) + "\r\n"
+        "Content-Length: 0\r\n\r\n";
+    return RequestsHandler::getMessageFromPool(raw, makeAddr(srcIp));
+}
+
 struct Captured {
     std::vector<std::pair<sockaddr_in, std::shared_ptr<SipMessage>>> out;
     void clear() { out.clear(); }
@@ -149,6 +171,19 @@ struct HoldFixture {
             return std::get<2>(s);
         }
         return "";
+    }
+
+    // Body of the most recent captured NOTIFY (a SIP request with no status code),
+    // or "" if none. Used to read the dialog-info+xml BLF state the watcher sees.
+    std::string lastNotifyBody() const {
+        std::string body;
+        for (const auto& ev : cap.out) {
+            const std::string wire = ev.second->toString();
+            if (wire.compare(0, 7, "NOTIFY ") != 0) continue;
+            size_t sep = wire.find("\r\n\r\n");
+            body = (sep == std::string::npos) ? "" : wire.substr(sep + 4);
+        }
+        return body;
     }
 };
 
@@ -284,4 +319,81 @@ TEST(Hold, RetransmittedInitialInviteStillSilentlyDropped) {
                                 "sendrecv", "ft100", ""));
     EXPECT_TRUE(f.cap.out.empty());
     EXPECT_EQ(f.sessionState(), "Connected");
+}
+
+// ── BLF / presence: a watched call on hold stays busy (#53) ──────────────────
+//
+// A 3rd extension (102 @ .52) watches 101 via a dialog-event SUBSCRIBE. While
+// 100<->101 is Connected the watcher's lamp is lit (NOTIFY: confirmed). When the
+// call is put on hold, computeDialogState() must STILL report confirmed — the
+// line is busy-held, not idle.
+//
+// Regression mechanics: refreshSubscriptions() only re-NOTIFYs on a state-token
+// *change*. With the fix, Connected and Held both map to "confirmed" so the token
+// is unchanged and the lamp simply stays lit (no churn NOTIFY). The pre-fix bug
+// mapped Held to idle, so the token flipped confirmed->idle and the watcher got
+// an idle NOTIFY (empty dialog-info body, lamp dark). We therefore assert on the
+// LAST NOTIFY the watcher ever received across the whole sequence: it must be
+// confirmed. On the buggy code an idle NOTIFY overwrites it and this fails.
+
+TEST(Blf, WatchedCallOnHoldStaysConfirmed) {
+    HoldFixture f;
+    const std::string watcherIp = "192.168.4.52";
+
+    // 102 subscribes to 101. The immediate NOTIFY reports the established call.
+    f.cap.clear();
+    f.handler.handle(makeSubscribe("102", "101", watcherIp, "blf-sub-1", 1, 3600));
+    {
+        const std::string body = f.lastNotifyBody();
+        ASSERT_FALSE(body.empty()) << "SUBSCRIBE must trigger an immediate NOTIFY";
+        EXPECT_NE(body.find("<state>confirmed</state>"), std::string::npos)
+            << "watched 101 is in an established call: lamp must be lit";
+    }
+
+    // 100 puts the call on hold (sendonly re-INVITE). Do NOT clear cap: we want the
+    // most recent NOTIFY the watcher saw across SUBSCRIBE + hold.
+    f.handler.handle(makeInvite("100", "101", f.callerIp, f.callID, 2,
+                                "sendonly", "ft100", "tt101"));
+    ASSERT_EQ(f.sessionState(), "Held");
+    f.handler.tick();   // refreshSubscriptions(): NOTIFY only if the token changed
+
+    const std::string body = f.lastNotifyBody();
+    ASSERT_FALSE(body.empty()) << "watcher must have at least the SUBSCRIBE NOTIFY";
+    EXPECT_NE(body.find("<state>confirmed</state>"), std::string::npos)
+        << "held line is still busy: BLF lamp must stay lit (#53)";
+    // An idle NOTIFY omits the <dialog id=...> element entirely (only the wrapping
+    // <dialog-info> remains) — that empty body is the dark lamp. Match "<dialog id"
+    // so the check doesn't collide with the "<dialog-info" wrapper tag.
+    EXPECT_NE(body.find("<dialog id"), std::string::npos)
+        << "an idle body (no <dialog id=...>) would dark the lamp — the #53 bug";
+    EXPECT_EQ(body.find("<dialog id"), body.rfind("<dialog id"))
+        << "exactly one dialog element";
+}
+
+TEST(Blf, WatchedCallStaysConfirmedAcrossHoldAndResume) {
+    HoldFixture f;
+    const std::string watcherIp = "192.168.4.52";
+    f.handler.handle(makeSubscribe("102", "101", watcherIp, "blf-sub-2", 1, 3600));
+
+    auto watchedStateAfterReinvite = [&](int cseq, const std::string& dir) {
+        f.handler.handle(makeInvite("100", "101", f.callerIp, f.callID, cseq,
+                                    dir, "ft100", "tt101"));
+        f.cap.clear();
+        f.handler.tick();
+        const std::string body = f.lastNotifyBody();
+        // tick() only NOTIFYs on a *changed* token; if unchanged, the lamp is
+        // whatever the previous NOTIFY set — confirmed throughout this sequence.
+        if (body.empty()) return std::string("unchanged");
+        return body.find("<state>confirmed</state>") != std::string::npos
+                   ? std::string("confirmed")
+                   : std::string("idle");
+    };
+
+    // hold -> resume -> hold: never idle, the lamp never blinks off.
+    EXPECT_NE(watchedStateAfterReinvite(2, "sendonly"), std::string("idle"));
+    EXPECT_EQ(f.sessionState(), "Held");
+    EXPECT_NE(watchedStateAfterReinvite(3, "sendrecv"), std::string("idle"));
+    EXPECT_EQ(f.sessionState(), "Connected");
+    EXPECT_NE(watchedStateAfterReinvite(4, "inactive"), std::string("idle"));
+    EXPECT_EQ(f.sessionState(), "Held");
 }
