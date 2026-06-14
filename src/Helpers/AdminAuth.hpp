@@ -36,6 +36,21 @@ namespace AdminAuth
 	constexpr uint64_t kLockoutMs         = 60ULL * 1000ULL;           // 60 s cooldown
 	constexpr uint32_t kHashIterations    = 50000;    // PBKDF-style iterated SHA-256 rounds
 
+	// Authentication channel for brute-force lockout accounting. Each channel keeps
+	// an INDEPENDENT failure counter + cooldown so a flood of wrong PINs on one
+	// surface cannot throttle the legitimate admin on another (issue #57: SSH PIN
+	// spraying used to trip the single global lockout shared with HTTP login — a
+	// cross-channel login-DoS). The credential itself is shared; only the
+	// rate-limit state is per-channel. (Per-IP tracking WITHIN a channel remains a
+	// documented follow-up — see docs/THREAT_MODEL.md D-3.)
+	enum class Channel : int
+	{
+		Http = 0,   // HTTP dashboard /api/admin/login
+		Ssh  = 1,   // SSH sysop terminal password auth (wolfSSH / littlessh)
+		Dtmf = 2,   // in-call DTMF admin menu (*PIN#code)
+		Count       // sentinel: size of the per-channel lockout table
+	};
+
 	// True iff an admin credential (salt + hash) is currently stored.
 	bool isProvisioned();
 
@@ -45,14 +60,18 @@ namespace AdminAuth
 	// fails. The caller (endpoint layer) decides *when* this is allowed.
 	bool setPin(const std::string& pin);
 
-	// Constant-time verification of a candidate PIN against the stored hash.
-	// Honors the brute-force lockout: returns false while locked out (without even
-	// hashing). On a correct PIN, resets the failure counter. On a wrong PIN,
-	// increments it and may engage the lockout. Returns false if not provisioned.
-	bool verifyPin(const std::string& pin);
+	// Constant-time verification of a candidate PIN against the stored hash, scoped
+	// to a brute-force `channel`. Honors that channel's lockout: returns false while
+	// the channel is locked out (without even hashing). On a correct PIN, resets the
+	// channel's failure counter. On a wrong PIN, increments it and may engage the
+	// channel's lockout. Returns false if not provisioned. The default `Http` keeps
+	// every existing caller (and the on-device DTMF/SSH paths pass their own channel)
+	// source-compatible.
+	bool verifyPin(const std::string& pin, Channel channel = Channel::Http);
 
-	// True while the brute-force lockout is engaged (cooldown not yet elapsed).
-	bool isLockedOut();
+	// True while the given channel's brute-force lockout is engaged (cooldown not yet
+	// elapsed). Channels are independent (issue #57).
+	bool isLockedOut(Channel channel = Channel::Http);
 
 	// Create a new server-side session and return its opaque random token
 	// (kSessionTokenHex hex chars). Evicts the oldest/expired entry if the table

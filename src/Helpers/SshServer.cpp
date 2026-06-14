@@ -499,7 +499,8 @@ static int wsUserAuth(byte authType, WS_UserAuthData* authData, void* ctx)
     {
         std::string pw(reinterpret_cast<const char*>(authData->sf.password.password),
                        authData->sf.password.passwordSz);
-        if (AdminAuth::verifyPin(pw))
+        // Issue #57: account SSH brute-force on the SSH channel (decoupled from HTTP).
+        if (AdminAuth::verifyPin(pw, AdminAuth::Channel::Ssh))
             return WOLFSSH_USERAUTH_SUCCESS;
         return WOLFSSH_USERAUTH_INVALID_PASSWORD;
     }
@@ -1011,7 +1012,8 @@ static void runTuiSession(WOLFSSH* ssh)
 
     // ── [4]/[P] change-PIN apply: verify current (if provisioned) + set new. ──
     tui.setPinChanger([](const std::string& cur, const std::string& neu) -> std::string {
-        if (AdminAuth::isProvisioned() && !AdminAuth::verifyPin(cur))
+        // Issue #57: re-auth on the SSH channel (this runs in the SSH TUI session).
+        if (AdminAuth::isProvisioned() && !AdminAuth::verifyPin(cur, AdminAuth::Channel::Ssh))
             return "Current PIN is wrong.";
         if (!AdminAuth::setPin(neu))
             return "New PIN rejected (too short?).";
