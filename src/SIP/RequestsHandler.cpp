@@ -247,8 +247,20 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 		// printf the parser used to do. softFail -> warning (stdout), else error (stderr).
 		if (status.has_value() && status->klass == PocketDial::SipStatusClass::ClientError)
 		{
-			queueLog("[SIP] " + std::string(status->softFail ? "WARN " : "ERROR ")
-				+ std::string(request->getHeader()), !status->softFail);
+			// A 487/481 that belongs to a register-beep dialog is expected teardown-race
+			// noise — the phone finalising our cancelled beep INVITE (#90), not a fault.
+			// Log it as a benign beep event so it never reads as a teardown failure.
+			if ((status->code == 487 || status->code == 481) &&
+				findBeepByCallID(request->getCallID()) != nullptr)
+			{
+				queueLog("[SIP] beep teardown: " + std::to_string(status->code)
+					+ " (expected cancel race)");
+			}
+			else
+			{
+				queueLog("[SIP] " + std::string(status->softFail ? "WARN " : "ERROR ")
+					+ std::string(request->getHeader()), !status->softFail);
+			}
 		}
 
 		// Task 2C: SIP INFO with DTMF relay body — handle before the handler table
@@ -561,6 +573,24 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 
 void RequestsHandler::onReqTerminated(std::shared_ptr<SipMessage> data)
 {
+	// Register-beep 487: the phone's final response to a beep INVITE we CANCELled (or
+	// that the phone terminated on its own). RFC 3261 §17.1.1.3 — the UAC MUST ACK a
+	// non-2xx final response within the INVITE transaction (same branch). The #90 bug
+	// freed the dialog the instant the CANCEL was queued, so this 487 found no slot, was
+	// never ACKed, and the phone retransmitted it. ACK it, THEN free — the BEAST's
+	// "complete the teardown before releasing the leg" discipline (cf. lnp-audit).
+	if (BeepDialog* bd = findBeepByCallID(data->getCallID()))
+	{
+		if (bd->state == BeepState::AwaitingInviteOk ||
+			bd->state == BeepState::AwaitingCancelDone)
+		{
+			auto ack = buildBeepAck(data);   // same INVITE branch, To-tag from the 487
+			if (ack) _outbox.emplace_back(bd->addr, std::move(ack));
+		}
+		*bd = BeepDialog{};   // INVITE transaction complete — now release the slot
+		return;
+	}
+
 	auto session = getSession(data->getCallID());
 	if (session.has_value() && session.value()->isBroadcast())
 	{
@@ -3710,11 +3740,24 @@ void RequestsHandler::tick()
 			}
 			if (bd.state == BeepState::AwaitingInviteOk)
 			{
+				// No auto-answer in time: CANCEL the INVITE, but do NOT free the slot
+				// yet. RFC 3261 §17.1.1.3 — the INVITE client transaction is not complete
+				// until the phone's 487 final response arrives and is ACKed. Freeing here
+				// (the #90 bug) orphaned that 487: findBeepByCallID() then failed, no ACK
+				// went out, the phone retransmitted 487, and a CANCEL racing the phone's
+				// own finalisation drew a 481. Linger in AwaitingCancelDone until
+				// onReqTerminated() ACKs the 487; the re-armed deadline below guarantees a
+				// silent phone still frees the slot (bounded — never leaks).
 				auto cancel = buildBeepCancel(i);
 				if (cancel) _outbox.emplace_back(bd.addr, std::move(cancel));
 				queueLog("Register beep: no answer from " + bd.ext + ", cancelled");
+				bd.state    = BeepState::AwaitingCancelDone;
+				bd.deadline = now + std::chrono::seconds(5);
+				continue;
 			}
-			bd = BeepDialog{};   // free the slot
+			// AwaitingByeOk, or AwaitingCancelDone whose linger elapsed without a 487:
+			// the teardown is complete (or the phone went silent) — now safe to free.
+			bd = BeepDialog{};
 		}
 
 		// Call-park orbit timeouts (ring back the parker / tear down stale parks).
@@ -3894,9 +3937,22 @@ std::shared_ptr<SipMessage> RequestsHandler::buildOptionsPing(const std::shared_
 
 RequestsHandler::BeepDialog* RequestsHandler::findBeepByCallID(std::string_view callID)
 {
+	// SipMessage::getCallID() yields the FULL header line ("Call-ID: <value>"), but
+	// sendRegisterBeep() stores slot->callID as the BARE value (it builds "Call-ID: " +
+	// callID itself). Normalise the incoming key to its bare value before comparing, or
+	// the lookup never matches — which silently broke the answered-beep ACK/BYE path and
+	// blocked the #90 teardown ACK. Caller holds _mutex.
+	if (size_t colon = callID.find(':'); colon != std::string_view::npos)
+	{
+		callID.remove_prefix(colon + 1);
+		while (!callID.empty() && (callID.front() == ' ' || callID.front() == '\t'))
+		{
+			callID.remove_prefix(1);
+		}
+	}
 	for (auto& bd : _beepDialogs)
 	{
-		if (bd.state != BeepState::Free && bd.callID == callID)
+		if (bd.state != BeepState::Free && std::string_view(bd.callID) == callID)
 		{
 			return &bd;
 		}
@@ -3989,9 +4045,11 @@ void RequestsHandler::sendRegisterBeep(const std::shared_ptr<SipClient>& phone)
 
 std::shared_ptr<SipMessage> RequestsHandler::buildBeepAck(const std::shared_ptr<SipMessage>& ok)
 {
-	// ACK the phone's 200 OK to our beep INVITE (RFC 3261 §13.2.2.4 / §17.1.1.3).
-	// Same Call-ID/branch/From-tag as the INVITE; To carries the phone's tag from the
-	// 200. CSeq stays "1 ACK" (matches the INVITE transaction). No body.
+	// ACK the phone's final response to our beep INVITE — either the 200 OK (auto-answer
+	// path) or a 487 Request Terminated after we CANCELled (#90 teardown path). Same
+	// Call-ID/branch/From-tag as the INVITE; To carries the phone's tag from the final
+	// response. CSeq stays "1 ACK" (matches the INVITE transaction). No body. Reusing the
+	// INVITE branch is exactly right for the non-2xx (487) ACK (RFC 3261 §17.1.1.3).
 	BeepDialog* bd = findBeepByCallID(ok->getCallID());
 	if (!bd)
 	{

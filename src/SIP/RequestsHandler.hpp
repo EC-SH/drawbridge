@@ -309,16 +309,22 @@ private:
 	// State machine (per beep dialog):
 	//   sendRegisterBeep() : allocate a slot, send INVITE (auto-answer headers), arm
 	//                        a deadline; if no slot free, skip the beep (it's cosmetic).
-	//   onOk() INVITE 200  : send ACK, then BYE, advance to AwaitingByeOk.
-	//   onOk() BYE 200     : free the slot.
-	//   tick() deadline    : if still AwaitingInviteOk, CANCEL and free; if
-	//                        AwaitingByeOk, just free (best-effort BYE already sent).
+	//   onOk() INVITE 200       : send ACK, then BYE, advance to AwaitingByeOk.
+	//   onOk() BYE 200          : free the slot.
+	//   tick() deadline (Invite): CANCEL the INVITE and advance to AwaitingCancelDone —
+	//                             do NOT free yet (the INVITE transaction isn't done
+	//                             until the phone's 487 is received and ACKed; #90).
+	//   onReqTerminated() 487   : ACK the final response (RFC 3261 §17.1.1.3), free slot.
+	//   tick() deadline (Bye /  : free the slot (BYE was best-effort; or the CANCEL
+	//   CancelDone)               linger elapsed without a 487 — bounded, never leaks).
 	void sendRegisterBeep(const std::shared_ptr<SipClient>& phone);
-	std::shared_ptr<SipMessage> buildBeepAck(const std::shared_ptr<SipMessage>& ok);
+	std::shared_ptr<SipMessage> buildBeepAck(const std::shared_ptr<SipMessage>& finalResp);
 	std::shared_ptr<SipMessage> buildBeepBye(const std::shared_ptr<SipMessage>& ok);
 	std::shared_ptr<SipMessage> buildBeepCancel(std::size_t slot);
 
-	enum class BeepState { Free, AwaitingInviteOk, AwaitingByeOk };
+	// AwaitingCancelDone: CANCEL sent, lingering until the 487 final response is ACKed
+	// (or a bounded deadline frees the slot). Added for #90 — see the teardown notes above.
+	enum class BeepState { Free, AwaitingInviteOk, AwaitingByeOk, AwaitingCancelDone };
 	struct BeepDialog
 	{
 		BeepState state = BeepState::Free;

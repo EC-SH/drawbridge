@@ -41,6 +41,9 @@ add_executable(sip_parser_tests
     JsonEscape_test.cpp
     AdminAuthLockout_test.cpp
     Teardown_test.cpp
+    # #90: register-beep CANCEL must complete the INVITE transaction (ACK the 487)
+    # rather than freeing the dialog early (orphaned 487 → retransmits + 481).
+    BeepTeardown_test.cpp
     # Audit concurrency & memory-safety cluster (#41 message-pool race, #54 pool
     # sizing, #70 virtual-peer pool). Drives RequestsHandler + the static message
     # pool directly; host-compilable like the other RequestsHandler-backed suites.
