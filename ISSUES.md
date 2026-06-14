@@ -8,37 +8,24 @@ This document serves as the active issue tracker and architectural roadmap for *
 
 This backlog is prioritized by architectural dependency and deployment urgency.
 
-### 🔴 Critical Priority: 3CX Call Control & Media Loopback (WAN Bridge)
+### 🔴 Critical Priority: Commercial-Softswitch Call Control & Media Loopback (WAN Bridge)
 
-#### 🔴 Issue #61: RTP Receive Path + µ-law→PCM16 Decode (uplink)
-* **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `media`, `rtp`
-* **Severity**: Critical
-* **Description**: Add the inverse of `RtpSender` — receive the handset's RTP on the media socket, strip the RTP header, decode G.711 µ-law➔PCM16 (inverse of `linearToUlaw`), and feed it to the 3CX `POST /stream`. Requires a small jitter buffer to handle packet arrival variance.
+> **Status (2026-06-13):** The core WAN-anchor capability — RTP receive/decode (#61), the
+> call-control client (#63), and bridge orchestration (#64) — **shipped via PR #39** (merged to
+> `main`, commits `46d27a3`/`f3a4efa`) and is hardware-confirmed. Those three are now under
+> [Resolved Issues](#resolved-issues). The items below remain genuinely open follow-ups.
 
-#### 🔴 Issue #63: 3CX Call Control Client (token + makecall + /stream + events)
+#### 🔴 Issue #86: WAN Anchor: Optimize WS Event Task Stack Size
 * **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `3cx`, `http`
-* **Severity**: Critical
-* **Description**: Implement the outbound 3CX leg per the Call Control specification: JWT `exp` token lifecycle management, `makecall` trigger, and concurrent `GET`/`POST /stream` (chunked transfer) over mTLS. Integrate WebSocket `wss://` updates to detect call connection and remote hangups.
-
-#### 🔴 Issue #64: Bridge Orchestration (virtual-ext intercept + leg mapping)
-* **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `sip`, `media`
-* **Severity**: Critical
-* **Description**: Wire the SIP state machine to the 3CX leg: intercept INVITEs on virtual extension blocks, negotiate `a=sendrecv` SDP, map SIP INVITE ➔ 3CX `makecall`, and bridge audio streams dynamically. Handle teardowns gracefully by mapping SIP BYE/CANCEL ↔ 3CX participant drops.
-
-#### 🔴 Issue #86: 3CX Anchor: Optimize WS Event Task Stack Size
-* **Status**: ⏳ Open / Planned
-* **Labels**: `performance`, `3cx`, `memory-safety`
+* **Labels**: `performance`, `anchor`, `memory-safety`
 * **Severity**: Critical
 * **Description**: The WebSocket task stack is currently set to 16,384 bytes to accommodate blocking HTTP GET calls (like `getParticipantStatus`) executing directly inside the WebSocket callback thread. Move these blocking calls off the WebSocket thread by dispatching events asynchronously to an event loop/queue, allowing the task stack to shrink to ~4-6 KB.
 
-#### 🔴 Issue #29: ThreeCx/Loopback: Call Setup and Teardown Latency Optimizations
+#### 🔴 Issue #29: Anchor/Loopback: Call Setup and Teardown Latency Optimizations
 * **Status**: ✅ Resolved (Implemented on branch `optimize-call-performance`)
-* **Labels**: `performance`, `3cx`
+* **Labels**: `performance`, `anchor`
 * **Severity**: Critical
-* **Description**: Optimize call setup and teardown latency for the 3CX Media Anchor client and Loopback mock client. Parse status directly from WebSocket Upset attached_data, implement exponential back-off on GET stream retries, configure 2-second HTTP client timeouts, and reduce mock simulation delays.
+* **Description**: Optimize call setup and teardown latency for the commercial-softswitch Media Anchor client and Loopback mock client. Parse status directly from WebSocket Upset attached_data, implement exponential back-off on GET stream retries, configure 2-second HTTP client timeouts, and reduce mock simulation delays.
 
 ---
 
@@ -50,11 +37,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Severity**: High
 * **Description**: Currently, the `RtpSender` socket and pacing are gated behind `#if ESP_PLATFORM`, leaving desktop builds with no-op stubs. Implement standard POSIX UDP socket writes and a platform-independent 20ms pacing loop to support audio bridging on desktop (Linux/Windows) gateway installations.
 
-#### 🟡 Issue #87: 3CX Anchor: Implement Desktop/Host Media Transport Support
+#### 🟡 Issue #87: WAN Anchor: Implement Desktop/Host Media Transport Support
 * **Status**: ⏳ Open / Planned
-* **Labels**: `api-integration`, `media`, `desktop`, `3cx`
+* **Labels**: `api-integration`, `media`, `desktop`, `anchor`
 * **Severity**: High
-* **Description**: `ThreeCxAnchorClient` is currently completely stubbed out on host/desktop builds. Refactor the network socket, task, and HTTP/WebSocket client interfaces to use POSIX/Windows compatible headers (instead of `esp_websocket_client` / `esp_http_client`), allowing the 3CX gateway integration to be testable and runnable on local PCs.
+* **Description**: `ThreeCxAnchorClient` is currently completely stubbed out on host/desktop builds. Refactor the network socket, task, and HTTP/WebSocket client interfaces to use POSIX/Windows compatible headers (instead of `esp_websocket_client` / `esp_http_client`), allowing the WAN-anchor gateway integration to be testable and runnable on local PCs.
 
 ---
 
@@ -88,41 +75,41 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Severity**: Low
 * **Description**: Expose an HTTP endpoint `/api/diagnostics/pcap` to export a rolling ring-buffer of captured network packets in raw PCAP format for native analysis in Wireshark.
 
-#### 🔵 Issue #41: SIP core: Arduino IDE platform detection guards need verification (ESP32/ARDUINO defines)
+#### 🔵 Issue: SIP core: Arduino IDE platform detection guards need verification (ESP32/ARDUINO defines)
 * **Status**: ⏳ Open / Planned
 * **Labels**: `build-system`, `compatibility`
 * **Severity**: Low
-* **Description**: Audit preprocessor directives (`ESP32`, `ARDUINO`, `ESP_PLATFORM`) to guarantee compiling out the box for hobbyists utilizing the Arduino IDE workspace instead of standard ESP-IDF.
+* **Description**: Audit preprocessor directives (`ESP32`, `ARDUINO`, `ESP_PLATFORM`) to guarantee compiling out the box for hobbyists utilizing the Arduino IDE workspace instead of standard ESP-IDF. (Tracked on GitHub under the Arduino-guard verification item; not to be confused with the audit's GitHub issue #41 [C-1], which is the now-resolved SIP message-pool race below.)
 
-#### 🔵 Issue #88: 3CX Anchor: Compile-Gate Peak Amplitude Diagnostics on Hot Path
+#### 🔵 Issue #88: WAN Anchor: Compile-Gate Peak Amplitude Diagnostics on Hot Path
 * **Status**: ⏳ Open / Planned
-* **Labels**: `performance`, `3cx`
+* **Labels**: `performance`, `anchor`
 * **Severity**: Low
 * **Description**: `writeAudio()` computes the peak amplitude of each PCM sample block. This runs on Core 1's real-time loop every 20ms. Compile-gate this diagnostic loop out in release builds (`#ifndef NDEBUG` or similar) to save CPU cycles on the hot path.
 
 ---
 
-## API Integration: 3CX Call Control Connector (Epic Reference)
+## API Integration: WAN-Anchor Call-Control Connector (Epic Reference)
 
-> **Goal**: let a pocket-dial / tincan handset place calls to **3CX extensions** over WAN by bridging pocket-dial's SIP/RTP world to 3CX's HTTP-based **Call Control API**.
+> **Goal**: let a pocket-dial / tincan handset place calls to **upstream extensions** over WAN by bridging pocket-dial's SIP/RTP world to a commercial softswitch's HTTP-based **call-control API**.
 >
-> **Why no SBC / NAT / STUN / TURN / ICE is needed**: the connector *terminates the handset's RTP locally* (one SIP hop, on-box) and re-originates the call into 3CX over **HTTPS, not SIP/RTP** — so there is no second SIP/RTP peer for ICE to traverse. Both legs are 8 kHz, so media is a pure companding swap (G.711 ⇄ PCM16) with **no resampling and no media server**. Over WAN this only requires a flat L3 (WireGuard/overlay or public IP) so the connector's advertised SDP address is directly reachable.
+> **Why no SBC / NAT / STUN / TURN / ICE is needed**: the connector *terminates the handset's RTP locally* (one SIP hop, on-box) and re-originates the call into the softswitch over **HTTPS, not SIP/RTP** — so there is no second SIP/RTP peer for ICE to traverse. Both legs are 8 kHz, so media is a pure companding swap (G.711 ⇄ PCM16) with **no resampling and no media server**. Over WAN this only requires a flat L3 (WireGuard/overlay or public IP) so the connector's advertised SDP address is directly reachable.
 
 ### Architecture Decision
 The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocketdial-desktop as an ordinary extension (e.g. `3000`, or a dialing prefix). pocket-dial's **existing** `onInvite` forward path (`RequestsHandler.cpp`) delivers the INVITE to it with **zero changes to the signaling-only server** — the registrar keeps sourcing no media. The connector mirrors the **`440` `RtpSender` beachhead**, except it:
 * answers `200 OK` with its **own** SDP carrying a real media address and `a=sendrecv` (the `440` path uses the server media port but is send-only/tone),
-* bridges audio to 3CX instead of synthesizing a tone,
-* maps SIP `BYE`/`CANCEL` ↔ 3CX participant `drop`.
+* bridges audio to the softswitch instead of synthesizing a tone,
+* maps SIP `BYE`/`CANCEL` ↔ upstream participant `drop`.
 
-### Reference: 3CX Call Control API (verified)
-* **License**: 3CX **Enterprise + CFD**; an API Client scoped to **Call Control Access**; a **Route Point DN** (`type Wroutepoint`) for origination.
-* **Auth**: OAuth2 `client_credentials` → `POST https://{fqdn}/connect/token` → Bearer. ⚠️ `expires_in` misreports ~60 s for a ~1 h grant — **trust the JWT `exp` claim**, and do **not** refresh early (a new token invalidates the one a live media stream is holding).
-* **Two planes** — don't confuse them: `/xapi/v1` (a.k.a. "Configuration REST API", OData, config/management only) vs **`/callcontrol`** (calls + media). This connector is entirely `/callcontrol`.
+### Reference: commercial-softswitch call-control API (verified)
+* **License**: a per-vendor licence tier that exposes call-control access; an API client scoped to **call-control access**; a **route-point DN** for origination. (Vendor-specific SKU/entitlement names live in the gitignored `reference/`, not in this public doc.)
+* **Auth**: OAuth2 `client_credentials` → `POST https://{fqdn}/connect/token` → Bearer. ⚠️ `expires_in` may misreport ~60 s for a ~1 h grant — **trust the JWT `exp` claim**, and do **not** refresh early (a new token invalidates the one a live media stream is holding).
+* **Two planes** — don't confuse them: a configuration/management REST plane (OData, config only) vs the **`/callcontrol`** plane (calls + media). This connector is entirely `/callcontrol`.
 * **Originate**: `POST /callcontrol/{dn}/makecall` (or `/callcontrol/{dn}/devices/{deviceId}/makecall` for a deterministic participant id under concurrency).
 * **Participant control**: `POST /callcontrol/{dn}/participants/{id}/{drop|answer|divert|routeto|transferto}`.
 * **Audio (bidirectional)**: `GET /callcontrol/{dn}/participants/{id}/stream` receives the party's audio; `POST` to the same path **injects** audio. Format both ways: **PCM 16-bit, 8 kHz, mono**, HTTP chunked octet-stream.
 * **Events**: `wss://{fqdn}/callcontrol/ws` (participant-updated, DTMF, etc.), each event carrying an `entity` path to `GET`. Polling `participants` at ~300 ms is a proven fallback.
-* **Codec alignment**: 3CX PCM16 @ 8 kHz ⇄ G.711 @ 8 kHz is a 256-entry lookup-table companding conversion — same rate, **no resampling**. 20 ms / 160-sample framing matches `RtpSender`.
+* **Codec alignment**: softswitch PCM16 @ 8 kHz ⇄ G.711 @ 8 kHz is a 256-entry lookup-table companding conversion — same rate, **no resampling**. 20 ms / 160-sample framing matches `RtpSender`.
 
 ### Foundations (✅ Completed — the enabling base, branch `2.0`)
 * 🟢 **`RtpSender` media beachhead** (`119ca84`): first server-sourced RTP path — virtual ext **`440`** streams a one-way G.711 µ-law tone (PCMU PT0, 8 kHz, 20 ms) to the caller, answering with the server's **own** SDP (media port `5062`). Pure helpers `linearToUlaw` / `synthTone` / `buildRtpHeader` are platform-independent and host-unit-tested (`tests/Rtp_test.cpp`); the real socket + 20 ms FreeRTOS pacing task are ESP-only; single-stream cap (2nd dial → `486`).
@@ -131,6 +118,28 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 ---
 
 ## Resolved Issues
+
+### 🟢 Issue #61: RTP Receive Path + µ-law→PCM16 Decode (uplink)
+* **Status**: ✅ Resolved (PR #39 — `RtpReceiver.cpp`)
+* **Labels**: `api-integration`, `media`, `rtp`
+* **Description**: The inverse of `RtpSender` — receive the handset's RTP on the media socket, strip the RTP header, decode G.711 µ-law➔PCM16, and feed it to the anchor `POST /stream` with a small jitter buffer. Shipped as part of the WAN-anchor media path.
+
+### 🟢 Issue #63: Call-Control Client (token + makecall + /stream + events)
+* **Status**: ✅ Resolved (PR #39 — `ThreeCxAnchorClient.cpp`)
+* **Labels**: `api-integration`, `anchor`, `http`
+* **Description**: The outbound anchor leg per the call-control specification: JWT `exp` token lifecycle management, `makecall` trigger, concurrent `GET`/`POST /stream` (chunked transfer) over mTLS, and WebSocket `wss://` updates to detect call connection and remote hangups. Hardware-confirmed.
+
+### 🟢 Issue #64: Bridge Orchestration (virtual-ext intercept + leg mapping)
+* **Status**: ✅ Resolved (PR #39 — `RequestsHandler` ↔ `ThreeCxAnchorClient`)
+* **Labels**: `api-integration`, `sip`, `media`
+* **Description**: The SIP state machine wired to the anchor leg: intercept INVITEs on virtual extension blocks, negotiate `a=sendrecv` SDP, map SIP INVITE ➔ `makecall`, bridge audio streams, and map SIP BYE/CANCEL ↔ upstream participant drops (reliable teardown via reconcile + watchdog). Hardware-confirmed.
+
+> **Audit cluster (PR #77).** The multi-agent audit's concurrency & memory-safety findings —
+> GitHub issues **#41** [C-1] SIP message-pool data race, **#54** [M-2] message-pool exhaustion
+> cliff, **#65** [L-1] rx-task TLS-socket leak, **#69** [L-5] park-slot pool pinning, and **#70**
+> [L-6] virtual-peer `make_shared` in the hot path — are all **resolved** and closed on GitHub.
+> (These audit-renumbered issues are tracked on the GitHub issue tracker; they are distinct from
+> this document's older internal numbering.)
 
 ### 🟢 Issue #48: `RequestsHandler` Mutex Lock Contention under Status Polling
 * **Status**: ✅ Resolved (v1.3.0 / `32166b5` & `f09a98c`)

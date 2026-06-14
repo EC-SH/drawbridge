@@ -1,4 +1,4 @@
-# drawbridge — an ENGAGE product
+# drawbridge
 
 > [!NOTE]
 > **Latest release: [v1.2.0](../../releases/latest)** — hardware-verified on the JC3248W535 display board (boots, joins Wi-Fi, SIP + dashboard confirmed working). **Prebuilt, flashable firmware is attached to the release** — see [Install](#install). `main` carries newer in-development changes; pin to a release tag for production.
@@ -479,4 +479,4 @@ Parses headers and extracts SDP details through an O(n) non-mutating index-walki
 
 ## License
 
-Drawbridge is a **commercial product of the ENGAGE product line** — see the [LICENSE](LICENSE) file. It is built on the MIT-licensed SipServer foundation (notice retained). The SSH sysop console uses one of two backends depending on the build: the **display** firmware links GPL-dual-licensed **wolfSSL/wolfSSH**, while the **eth / wifi / lan8720** firmware uses the in-tree **littlessh** backend (`components/littlessh`) built on ESP-IDF's bundled **mbedTLS** (Apache-2.0) — so the wired/PoE builds carry **no GPL SSH dependency**. All upstream licenses are cited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Drawbridge is a **commercial product line** — see the [LICENSE](LICENSE) file. It is built on the MIT-licensed SipServer foundation (notice retained). The SSH sysop console uses one of two backends depending on the build: the **display** firmware links GPL-dual-licensed **wolfSSL/wolfSSH**, while the **eth / wifi / lan8720** firmware uses the in-tree **littlessh** backend (`components/littlessh`) built on ESP-IDF's bundled **mbedTLS** (Apache-2.0) — so the wired/PoE builds carry **no GPL SSH dependency**. All upstream licenses are cited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

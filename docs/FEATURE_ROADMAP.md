@@ -228,6 +228,10 @@ all later config growth.)
 
 ## 7. Strategic exploration: edge gateway / upstream SIP trunk (B2BUA)
 
+> **Deep-dive design:** [SBC_TRUNK.md](SBC_TRUNK.md) expands this section into a build-ready,
+> vendor-neutral engineering design for the raw-SIP-trunk (B2BUA / mini-SBC) variant — media model,
+> digest-UAC reuse, NAT-for-trunks, security, dial-plan, config surface, and phased build order.
+
 > **Status (2026-06-12):** the **call-control-API variant of this track is now built** — the WAN
 > trunk anchor (§1, [ARCHITECTURE.md](ARCHITECTURE.md) §6) ships outbound trunk calls **and**
 > inbound PSTN→extension Mode 1 via a commercial softswitch's HTTPS call-control API. The

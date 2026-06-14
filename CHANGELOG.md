@@ -2,7 +2,7 @@
 
 ## Unreleased (fix/anchor-trunk-teardown) - 2026-06-13
 
-Pre-existing 3CX outbound-trunk (WAN-anchor) teardown bugs — surfaced when the
+Pre-existing commercial-softswitch outbound-trunk (WAN-anchor) teardown bugs — surfaced when the
 PSTN/cell leg lingered after the handset hung up. Diagnosed on hardware with a
 purpose-built CLI SIP UAC (`sip_probe.py`) registered to the device + serial
 capture (a switched LAN hides the phone↔device unicast from a normal pcap).
@@ -11,26 +11,26 @@ capture (a switched LAN hides the phone↔device unicast from a normal pcap).
 - **`onAck` answered the handset ACK with `404`**: a WAN-anchor 200 OK's ACK fell
   through to `endHandle(getToNumber())`, routing the ACK at the dialed PSTN number
   (not a registered extension). You never respond to an ACK; tag-strict phones
-  (Yealink) then retransmit → dialog storm → 3CX reaps the call (~15s "self-drop").
+  (Yealink) then retransmit → dialog storm → the softswitch reaps the call (~15s "self-drop").
   Absorb the ACK when `isAnchor()`.
 - **Malformed teardown BYE**: `buildServerBye` re-prepended header names onto values
   that already carried them (`To: From:` / `Call-ID: Call-ID:`); Yealinks reject it
   and stay off-hook. `buildServerBye` now strips a leading header name from its
   From/To/Call-ID args (generalized `parkCallIdValue` → `stripHeaderName`).
 - **Outbound drop never identified the participant**: only the inbound path stored
-  the 3CX participant id, so `asyncDropCall("")` fell back to an empty
+  the softswitch participant id, so `asyncDropCall("")` fell back to an empty
   `_activeParticipantId`. Store `ev.participantId` on the answered session; pass
   `getAnchorParticipantId()` from `onBye`/`onCancel`.
 - **`dropCall()`/`answerCall()` POSTed an empty body with no `Content-Type`**: the
-  3CX participant-action endpoint requires an `application/json` body; the reference
-  posts `"{}"` (and `makeCall` already did). 3CX silently rejected the empty drop —
+  softswitch participant-action endpoint requires an `application/json` body; the reference
+  posts `"{}"` (and `makeCall` already did). The softswitch silently rejected the empty drop —
   the real reason teardown never fired even after the id/socket fixes. Now sends
   `Content-Type: application/json` + `"{}"`.
 
 ### Changed
 - **`CONFIG_LWIP_MAX_SOCKETS` 10 → 16.** The W5500 runs in MACRAW mode, so the
   ESP32-S3's LWIP stack owns every socket (not the chip's 8-socket HW TCP engine).
-  10 was too tight for the 3 persistent 3CX TLS sockets (control WS + GET + POST
+  10 was too tight for the 3 persistent softswitch-anchor TLS sockets (control WS + GET + POST
   audio streams) on top of SIP/dashboard/SSH — exhaustion showed as `sock < 0` /
   mbedTLS `create_ssl_handle failed`, blocking the drop POST.
 - Re-enabled the **ESP32-S3R8 8 MB octal PSRAM** for the headless eth build. The
