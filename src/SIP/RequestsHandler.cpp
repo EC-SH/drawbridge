@@ -76,6 +76,13 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	{
 		_sessionPool.push_back(std::make_shared<Session>());
 	}
+	// Issue #70: pre-allocate the virtual-peer pool (777/440/park/PSTN legs) so the
+	// packet handler never make_shares a SipClient in the hot path.
+	_virtualPeerPool.reserve(POCKETDIAL_VIRTUAL_PEERS);
+	for (int i = 0; i < POCKETDIAL_VIRTUAL_PEERS; ++i)
+	{
+		_virtualPeerPool.push_back(std::make_shared<SipClient>());
+	}
 	if (_messagePool.empty())
 	{
 		_messagePool.reserve(POCKETDIAL_MSG_POOL);
@@ -626,7 +633,7 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		okResponse->enforceG711();
 		_outbox.emplace_back(data->getSource(), std::move(okResponse));
 
-		auto virtualClient = std::make_shared<SipClient>("777", data->getSource(), 3600);
+		auto virtualClient = allocateVirtualPeer("777", data->getSource());
 		auto newSession = allocateSession(std::string(data->getCallID()), caller.value());
 		if (newSession)
 		{
@@ -1095,7 +1102,7 @@ void RequestsHandler::onMediaInvite(std::shared_ptr<SipMessage> data,
 	_outbox.emplace_back(data->getSource(), std::move(ok));
 
 	// Track a Session so the dashboard shows the call and CDR is recorded on teardown.
-	auto virtualClient = std::make_shared<SipClient>("440", data->getSource(), 3600);
+	auto virtualClient = allocateVirtualPeer("440", data->getSource());
 	auto newSession = allocateSession(std::string(data->getCallID()), caller);
 	if (newSession)
 	{
@@ -4050,7 +4057,7 @@ void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
 		// their own SDP. Echoing their c=/m= back pointed their RTP at themselves
 		// (the caller heard their own echo) and left the leg churning; a=inactive is
 		// a clean "parked / on hold" answer (silence; the phone shows hold). The
-		// parked party's REAL media address is preserved in slot.invite for the
+		// parked party's REAL media address is preserved in slot.parkedSdp for the
 		// retrieve re-INVITE, so this does not affect retrieval. (Server-sourced MoH
 		// for the parked leg is a separate follow-up.)
 		const std::string holdSdp =
@@ -4076,14 +4083,18 @@ void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
 		slot.callID     = std::string(data->getCallID());   // full "Call-ID: ..." line
 		slot.parkedExt  = caller->getNumber();
 		slot.parkedAddr = data->getSource();
-		slot.invite     = data;
+		// Issue #69: capture only the SDP + From-tag we actually reuse, so the pooled
+		// SipMessage is not pinned for the whole park lifetime (M-2 pressure relief).
+		slot.parked        = true;
+		slot.parkedSdp     = std::string(data->getBody());
+		slot.parkedFromTag = parkTagOf(data->getFrom());
 		slot.localTag   = toTag;
 		slot.parker     = caller->getNumber();
 		slot.parkedAt   = std::chrono::steady_clock::now();
 
 		// Pin a Session slot so the parked dialog shows in the dashboard and is
 		// torn down on BYE / lease loss like any call.
-		auto virt = std::make_shared<SipClient>(orbit, data->getSource(), 3600);
+		auto virt = allocateVirtualPeer(orbit, data->getSource());
 		if (auto session = allocateSession(std::string(data->getCallID()), caller))
 		{
 			session->setDest(virt);
@@ -4101,7 +4112,7 @@ void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
 	// peer-to-peer. Answer the retriever with the parked party's SDP, re-INVITE the
 	// parked party with the retriever's SDP, link the two legs for BYE bridging, and
 	// free the orbit (the call is now a live ordinary bridged call).
-	const std::string parkedSdp(slot.invite ? std::string(slot.invite->getBody()) : std::string());
+	const std::string parkedSdp(slot.parkedSdp);
 	const std::string retrieverSdp(data->getBody());
 
 	auto ok = getMessageFromPool(data->toString(), data->getSource());
@@ -4118,7 +4129,7 @@ void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
 
 	// Bridge: a session for the retriever leg, linked to the parked session so a BYE
 	// on either relays a server BYE to the other (onBye peer-relay).
-	auto virt = std::make_shared<SipClient>(slot.parkedExt, slot.parkedAddr, 3600);
+	auto virt = allocateVirtualPeer(slot.parkedExt, slot.parkedAddr);
 	if (auto rsession = allocateSession(std::string(data->getCallID()), caller))
 	{
 		rsession->setDest(virt);
@@ -4140,7 +4151,7 @@ void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
 
 void RequestsHandler::sendParkReinvite(ParkSlot& slot, const std::string& sdp)
 {
-	if (slot.callID.empty() || !slot.invite) return;
+	if (slot.callID.empty() || !slot.parked) return;
 	const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 	const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
 
@@ -4151,7 +4162,7 @@ void RequestsHandler::sendParkReinvite(ParkSlot& slot, const std::string& sdp)
 	// In-dialog re-INVITE: the parked party is the original UAC (their From-tag),
 	// we are the UAS (our localTag). As the sender now, From = us (localTag),
 	// To = the parked party (their tag). CSeq spaces are per-UA, so 2 is safe.
-	const std::string theirTag = parkTagOf(slot.invite->getFrom());
+	const std::string theirTag = slot.parkedFromTag;
 	const std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
 	const std::string body = sdp;
 
@@ -4183,7 +4194,7 @@ void RequestsHandler::byeParkedParty(const ParkSlot& slot)
 	if (slot.callID.empty()) return;
 	const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 	const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-	const std::string theirTag = slot.invite ? parkTagOf(slot.invite->getFrom()) : std::string();
+	const std::string theirTag = slot.parkedFromTag;
 	// Server-as-UAS BYE (we minted localTag on the 200): From = us+localTag,
 	// To = parked party + their tag.
 	const std::string fromHeader = "<sip:" + slot.orbit + "@" + srcIpPort + ">;tag=" + slot.localTag;
@@ -4216,7 +4227,7 @@ void RequestsHandler::startParkRingback(ParkSlot& slot, const std::shared_ptr<Si
 	slot.state     = ParkState::RingingBack;
 	slot.deadline  = now + std::chrono::seconds(30);
 
-	const std::string body = slot.invite ? std::string(slot.invite->getBody()) : std::string();
+	const std::string body = slot.parkedSdp;
 	std::ostringstream ss;
 	ss << "INVITE sip:" << parker->getNumber() << "@" << destIpPort << " SIP/2.0\r\n"
 	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << slot.rbBranch << "\r\n"
@@ -4304,7 +4315,7 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 			// and stores the parker's 200 OK so onBye can build the inverted-role BYE.
 			if (auto parker = findClient(slot.parker); parker.has_value())
 			{
-				auto virt = std::make_shared<SipClient>(slot.parkedExt, slot.parkedAddr, 3600);
+				auto virt = allocateVirtualPeer(slot.parkedExt, slot.parkedAddr);
 				if (auto rb = allocateSession(slot.rbCallID, parker.value()))
 				{
 					rb->setDest(virt);
@@ -4455,6 +4466,27 @@ std::shared_ptr<Session> RequestsHandler::allocateSession(std::string callID, st
 		}
 	}
 	return nullptr;
+}
+
+std::shared_ptr<SipClient> RequestsHandler::allocateVirtualPeer(std::string number, sockaddr_in address, int expiresSeconds)
+{
+	// Issue #70 (L-6): a virtual peer is owned solely by the Session._dest (or a park
+	// slot's bridged session) it backs, so a pool slot is free precisely when only the
+	// pool itself still references it (use_count()==1). Reset it in place and hand it
+	// out — no heap allocation in the handler. Caller holds _mutex.
+	for (auto& peer : _virtualPeerPool)
+	{
+		if (peer.use_count() == 1)
+		{
+			peer->reset(std::move(number), address, expiresSeconds);
+			return peer;
+		}
+	}
+	// Pool drained (more concurrent virtual-ext legs than provisioned): fall back to a
+	// one-off heap SipClient rather than failing the call — mirrors the message-pool
+	// degradation policy. Bounded by MAX_SESSIONS, so this is a rare safety valve.
+	std::cerr << "[WARNING] Virtual-peer pool exhausted! Fallback to heap allocation.\n";
+	return std::make_shared<SipClient>(std::move(number), address, expiresSeconds);
 }
 
 bool RequestsHandler::ipAllowed(const sockaddr_in& src) const
@@ -5140,8 +5172,8 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			auto session = getSession(callId);
 			if (session.has_value())
 			{
-				auto virtualClient = std::make_shared<SipClient>("777", session.value()->getSrc()
-					? session.value()->getSrc()->getAddress() : sockaddr_in{}, 3600);
+				auto virtualClient = allocateVirtualPeer("777", session.value()->getSrc()
+					? session.value()->getSrc()->getAddress() : sockaddr_in{});
 				session.value()->setDest(virtualClient);
 			}
 		}
@@ -5162,7 +5194,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			auto src = session.value()->getSrc();
 			if (src)
 			{
-				auto virtualClient = std::make_shared<SipClient>("777", src->getAddress(), 3600);
+				auto virtualClient = allocateVirtualPeer("777", src->getAddress());
 				session.value()->setDest(virtualClient);
 				queueLog("*11 echo loopback for call " + callId);
 			}
@@ -5746,7 +5778,7 @@ void RequestsHandler::routeAnchorCall(const std::shared_ptr<SipMessage>& data,
 		return;
 	}
 
-	auto virtualClient = std::make_shared<SipClient>(dialed, data->getSource(), 3600);
+	auto virtualClient = allocateVirtualPeer(dialed, data->getSource());
 	newSession->setDest(virtualClient);
 	newSession->setInviteMessage(data);
 	newSession->setState(Session::State::Invited);
@@ -5827,7 +5859,7 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 
 	// src = synthetic PSTN party (keeps getSrc() valid for snapshots/CDR); the display
 	// name doubles as the dialog's local From display, reconstructed verbatim on ACK/BYE.
-	auto pstn = std::make_shared<SipClient>(callerDisplay, addr, 3600);
+	auto pstn = allocateVirtualPeer(callerDisplay, addr);
 	auto session = allocateSession(callId, pstn);
 	if (!session)
 	{

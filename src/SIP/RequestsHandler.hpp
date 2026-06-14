@@ -425,7 +425,15 @@ private:
 		std::string callID;             // full "Call-ID: ..." line of the parked dialog
 		std::string parkedExt;          // the parked party's extension
 		sockaddr_in parkedAddr{};       // the parked party's signaling address
-		std::shared_ptr<SipMessage> invite;  // parking INVITE (SDP + dialog headers)
+		// Issue #69 (L-5): the orbit used to pin the whole pooled SipMessage here for
+		// up to PARK_TIMEOUT_SEC, holding a MSG_POOL slot hostage and feeding the M-2
+		// exhaustion cliff. We only ever read the parked party's SDP body and their
+		// From-tag off it, so copy just those two minimal dialog fields out and let the
+		// pooled message return to the pool immediately. `parked` (set true on park)
+		// replaces the old "is slot.invite non-null?" validity guard.
+		bool        parked = false;     // slot has a captured parked dialog
+		std::string parkedSdp;          // parked party's SDP (for retrieve / ring-back offers)
+		std::string parkedFromTag;      // parked party's From-tag (re-INVITE / BYE To-tag)
 		std::string localTag;           // our UAS To-tag on the parked dialog
 		std::string parker;             // ring-back target on timeout
 		std::chrono::steady_clock::time_point parkedAt{};
@@ -508,6 +516,12 @@ private:
 
 	std::shared_ptr<SipClient> allocateClient(std::string number, sockaddr_in address, int expiresSeconds);
 	std::shared_ptr<Session> allocateSession(std::string callID, std::shared_ptr<SipClient> src);
+	// Issue #70 (L-6): draw a transient virtual-peer SipClient (777/440/park/PSTN leg)
+	// from the fixed _virtualPeerPool instead of make_shared'ing one in the packet
+	// handler. A slot is free when only the pool holds it (use_count()==1); on
+	// exhaustion it falls back to a one-off heap SipClient (graceful, never a crash).
+	// Caller holds _mutex (the pool scan/reset is not otherwise serialised).
+	std::shared_ptr<SipClient> allocateVirtualPeer(std::string number, sockaddr_in address, int expiresSeconds = 3600);
 	void dumpWire(const char* label, const std::shared_ptr<SipMessage>& msg);
 	void dumpWire(const char* label, std::string_view method, std::string_view callID, std::string_view to);
 	std::shared_ptr<SipMessage> buildOkWithSdp(
@@ -734,6 +748,10 @@ private:
 
 	// Pre-allocated static memory pools (Issue #53)
 	std::vector<std::shared_ptr<SipClient>> _clientPool;
+	// Fixed pool of transient virtual-peer SipClients (Issue #70). Distinct from
+	// _clientPool: these are NOT registered endpoints and never appear in registrar
+	// scans — they only back a Session's _dest for the call's lifetime.
+	std::vector<std::shared_ptr<SipClient>> _virtualPeerPool;
 	std::vector<std::shared_ptr<Session>> _sessionPool;
 	static std::vector<std::shared_ptr<SipMessage>> _messagePool;
 	// Issue #41: dedicated leaf mutex guarding the static _messagePool. The pool is
