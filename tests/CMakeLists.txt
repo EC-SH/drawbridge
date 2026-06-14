@@ -35,6 +35,10 @@ add_executable(sip_parser_tests
     Hold_test.cpp
     RtpReceiver_test.cpp
     Park_test.cpp
+    # Audit concurrency & memory-safety cluster (#41 message-pool race, #54 pool
+    # sizing, #70 virtual-peer pool). Drives RequestsHandler + the static message
+    # pool directly; host-compilable like the other RequestsHandler-backed suites.
+    PoolSafety_test.cpp
     Tui_test.cpp
     # The ANSI sysop-terminal renderer is transport-agnostic and host-compilable
     # (no wolfSSH, no ESP — only an esp_timer guard, behind ESP_PLATFORM). It links

@@ -18,8 +18,11 @@
 //
 //     cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-DPOCKETDIAL_MAX_CLIENTS=64 -DPOCKETDIAL_MAX_SESSIONS=16"
 //
-// The defaults reproduce the historical hardcoded values exactly (32 clients,
-// 8 sessions, 32 messages) so existing builds are bit-for-bit unchanged.
+// The client/session defaults reproduce the historical hardcoded values exactly
+// (32 clients, 8 sessions). The message-pool default was historically 32 (== client
+// count); it is now sized to cover the worst-case broadcast + BLF-NOTIFY burst
+// (MAX_CLIENTS + MAX_SUBSCRIPTIONS + headroom, Issue #54) so peak fan-out no longer
+// spills into the hot-path heap fallback.
 //
 // Trade-off in one line: raise these for capacity, lower them to claw back RAM
 // on a constrained SoftAP node. See docs/SCALING.md for per-tier recommendations,
@@ -40,14 +43,33 @@
 #define POCKETDIAL_MAX_SESSIONS 8
 #endif
 
-// Depth of the shared in-flight SipMessage scratch pool. Defaults to one slot per
-// potential client, which comfortably covers steady-state REGISTER/OPTIONS churn.
-// Broadcast/forking (the 999 all-page) transiently needs one message per target;
-// if the pool is momentarily drained, getMessageFromPool() falls back to a single
-// heap allocation rather than failing, so this value trades steady-state
-// allocation-free operation against static footprint.
+// Maximum number of concurrent BLF/presence dialog subscriptions (RFC 6665
+// SUBSCRIBE/NOTIFY with the RFC 4235 "dialog" event package). Each slot is a small
+// fixed record in a std::array — no heap. A SUBSCRIBE arriving with every slot in
+// use is answered 503 Service Unavailable (graceful degradation, never a crash).
+// Must stay ≤ POCKETDIAL_MSG_POOL: a single state change can fan one NOTIFY out to
+// every subscriber, and bounding subscriptions by the message-pool depth keeps that
+// burst allocation-free (it also caps the worst-case NOTIFY burst on the wire).
+// Defined BEFORE POCKETDIAL_MSG_POOL because the pool depth is sized from it (M-2).
+#ifndef POCKETDIAL_MAX_SUBSCRIPTIONS
+#define POCKETDIAL_MAX_SUBSCRIPTIONS 16
+#endif
+
+// Depth of the shared in-flight SipMessage scratch pool.
+//
+// The worst-case simultaneous draw (Issue #54 / M-2) happens when a 999 all-page
+// builds one forked INVITE per registered client AND refreshSubscriptions() queues
+// one NOTIFY per active BLF subscription into the SAME locked critical section before
+// _outbox is flushed. Those pooled refs all live at once, so the pool must cover
+// MAX_CLIENTS (fan-out) + MAX_SUBSCRIPTIONS (NOTIFY burst), plus a little headroom
+// for the inbound request being processed and its direct response(s). Sizing it this
+// way keeps the broadcast+NOTIFY peak allocation-free instead of spilling to the
+// hot-path heap fallback in getMessageFromPool(). If the pool is ever momentarily
+// drained beyond this, that fallback is a single heap allocation rather than a
+// failure, so this value trades steady-state allocation-free operation against static
+// footprint. Override to claw back RAM on a constrained node (see docs/SCALING.md).
 #ifndef POCKETDIAL_MSG_POOL
-#define POCKETDIAL_MSG_POOL POCKETDIAL_MAX_CLIENTS
+#define POCKETDIAL_MSG_POOL (POCKETDIAL_MAX_CLIENTS + POCKETDIAL_MAX_SUBSCRIPTIONS + 4)
 #endif
 
 // Maximum number of concurrent server-originated "register beep" dialogs. Each new
@@ -72,6 +94,20 @@
 #define POCKETDIAL_PARK_SLOTS 10
 #endif
 
+// Depth of the virtual-peer SipClient pool (Issue #70 / L-6). The 777 echo, the 440
+// media-beachhead, park (parked/retriever/ring-back legs) and the trunk PSTN peer all
+// need a transient SipClient that is NOT a registered endpoint — historically each
+// was make_shared'd inside the UDP packet handler, breaking invariant #1 (zero heap in
+// the hot path). They are now drawn from this fixed pool and recycled by use_count():
+// every virtual peer is owned by a Session's _dest (or a park slot's bridged session),
+// so when that session is freed the pool's slot becomes reusable. One per concurrent
+// session, plus the park orbits' transient bridge legs, bounds the worst case. If the
+// pool is momentarily drained the handler falls back to a one-off heap SipClient
+// (same graceful policy as the message pool) — it never crashes.
+#ifndef POCKETDIAL_VIRTUAL_PEERS
+#define POCKETDIAL_VIRTUAL_PEERS (POCKETDIAL_MAX_SESSIONS + POCKETDIAL_PARK_SLOTS)
+#endif
+
 // How long a call may sit parked before the orbit times out (seconds). On expiry
 // tick() rings back the parker (the Referred-By party of the parking INVITE) if
 // they are registered, or tears the parked leg down with a BYE otherwise.
@@ -94,17 +130,6 @@
 // it never over-forks.
 #ifndef POCKETDIAL_ZONE_MEMBER_CAP
 #define POCKETDIAL_ZONE_MEMBER_CAP 8
-#endif
-
-// Maximum number of concurrent BLF/presence dialog subscriptions (RFC 6665
-// SUBSCRIBE/NOTIFY with the RFC 4235 "dialog" event package). Each slot is a small
-// fixed record in a std::array — no heap. A SUBSCRIBE arriving with every slot in
-// use is answered 503 Service Unavailable (graceful degradation, never a crash).
-// Must stay ≤ POCKETDIAL_MSG_POOL: a single state change can fan one NOTIFY out to
-// every subscriber, and bounding subscriptions by the message-pool depth keeps that
-// burst allocation-free (it also caps the worst-case NOTIFY burst on the wire).
-#ifndef POCKETDIAL_MAX_SUBSCRIPTIONS
-#define POCKETDIAL_MAX_SUBSCRIPTIONS 16
 #endif
 
 #endif

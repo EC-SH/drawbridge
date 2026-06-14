@@ -11,7 +11,7 @@ LoopbackAnchorClient::LoopbackAnchorClient() = default;
 
 LoopbackAnchorClient::~LoopbackAnchorClient()
 {
-	stop();
+	shutdownImpl();   // non-virtual: never dispatch a virtual call from a destructor
 }
 
 bool LoopbackAnchorClient::init(const std::string& baseUrl,
@@ -32,6 +32,11 @@ bool LoopbackAnchorClient::start()
 }
 
 void LoopbackAnchorClient::stop()
+{
+	shutdownImpl();
+}
+
+void LoopbackAnchorClient::shutdownImpl()
 {
 	_connected = false;
 	_stopSimThread = true;

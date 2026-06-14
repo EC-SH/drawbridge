@@ -116,7 +116,9 @@ namespace
 		{
 			return out;
 		}
-		// len includes the NUL; build lines from the C-string content.
+		// len includes the NUL; build lines from the C-string content (intentional
+		// truncation at the embedded NUL — not a redundant c_str() construction).
+		// cppcheck-suppress stlcstrConstructor
 		std::string s(buf.c_str());
 		size_t start = 0;
 		while (start < s.size())

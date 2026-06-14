@@ -97,6 +97,23 @@ private:
 	// loses the CAS and returns immediately, so only the winner frees _getClient.
 	std::atomic<bool> _tearingDown{false};
 
+	// Issue #65 (L-1): on the rare 2 s join-timeout path stopMediaStreams() force-kills
+	// the rx task with vTaskDelete; if that task was holding _getMutex it is permanently
+	// poisoned and we deliberately LEAK _getClient (closing it under a poisoned mutex
+	// could deadlock/double-free). Each leak burns one of the 16 LWIP sockets, so we
+	// count them and, once kLeakRestartThreshold accumulate, request a full anchor
+	// stop()/start() cycle to reclaim the socket pool. The restart runs OFF the SIP
+	// task (tick() only spawns the worker — it never blocks).
+	std::atomic<int>  _leakedGetClients{0};
+	std::atomic<bool> _restartRequested{false};
+	std::atomic<bool> _restartInFlight{false};
+	// How many leaked GET sockets we tolerate before forcing a reclaiming restart. The
+	// pool is 16 and the anchor itself needs 3 persistent sockets + SIP/dashboard/SSH,
+	// so a handful of leaks is the safe ceiling before sockets start starving.
+	static constexpr int kLeakRestartThreshold = 3;
+	// One-shot worker that performs the full stop()/start() reclaim cycle off-SIP.
+	static void restartTaskTrampoline(void* arg);
+
 	static void wsEventTrampoline(void* handlerArgs, esp_event_base_t base, int32_t eventId, void* eventData);
 	void handleWsEvent(int32_t eventId, void* eventData);
 
@@ -111,6 +128,10 @@ private:
 
 	bool startMediaStreams(const std::string& participantId);
 	void stopMediaStreams();
+	// Non-virtual teardown shared by stop() and the destructor so ~ThreeCxAnchorClient()
+	// never makes a virtual call (cppcheck virtualCallInConstructor; dynamic binding is
+	// not used in a destructor anyway).
+	void shutdownImpl();
 	// Spawn the Rx task (GET-stream retry loop) if it isn't running yet. Called
 	// at RINGING so the loop is already polling on a warm TLS connection when
 	// the leg connects — inbound audio then opens ~one RTT after answer.

@@ -216,6 +216,9 @@ thing that fails first.
   why high client counts belong on the W5500/PoE board, not a SoftAP node.
 
 **Rule of thumb:** scale clients/sessions to match your *network tier* (SoftAP →
-stay near defaults; wired Ethernet → scale up), keep the message pool ≈ the client
-count, and watch the dashboard headroom counters. Doubling is routine; 10× needs a
-wired board, internal-SRAM math, and probably the message pool in PSRAM.
+stay near defaults; wired Ethernet → scale up), keep the message pool **≥ client
+count + BLF-subscription count** (the default now sizes itself to
+`MAX_CLIENTS + MAX_SUBSCRIPTIONS + 4` so the worst-case 999-page-plus-NOTIFY burst
+stays off the hot-path heap — Issue #54), and watch the dashboard headroom counters.
+Doubling is routine; 10× needs a wired board, internal-SRAM math, and probably the
+message pool in PSRAM.
