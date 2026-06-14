@@ -10,6 +10,16 @@ CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
 CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
 
 # SPIRAM (OPI PSRAM) Configurations
+#
+# ⚠ HARD PSRAM REQUIREMENT (audit #71). This image targets the S3R8 (ESP32-S3
+# with 8 MB octal PSRAM). CONFIG_SPIRAM_BOOT_INIT=y below initialises PSRAM in
+# the bootloader; on an S3 module WITHOUT octal PSRAM that init panics at boot
+# with no usable diagnostic (and the display framebuffer alloc asserts anyway).
+# Do NOT flash this image to a non-PSRAM module. If a cross-board image is ever
+# needed, add CONFIG_SPIRAM_IGNORE_NOTFOUND=y so a missing chip degrades to a
+# warning instead of a brick — deliberately omitted here so a silent PSRAM-off
+# drift (regenerated sdkconfig) fails loudly at build/boot rather than shipping a
+# half-functional unit.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_TYPE_AUTO=y
 CONFIG_SPIRAM_MODE_OCT=y
