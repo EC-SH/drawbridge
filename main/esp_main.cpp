@@ -18,6 +18,7 @@
 #include "OtaUpdater.hpp"
 #include "AdminAuth.hpp"
 #include "LogQueue.hpp"
+#include "SshServer.hpp"
 #include "host_compat.h"
 
 // ── Default INFRA (AP) profile settings ───────────────────────────────────────
@@ -181,6 +182,12 @@ void sip_server_task(void *pvParameters)
     ESP_LOGI("SipServerTask", "Starting SipServer on %s:%d", s_sip_ip.c_str(), port);
 
     g_sipServer = new SipServer(s_sip_ip, port);
+    // Plumb the live registrar into the SSH sysop-terminal TUI. The SSH console is
+    // already running (started before the provisioning gate, mirroring eth); its TUI
+    // snapshot getters null-check the handler, so attaching it here is the late
+    // hand-off. The dashboard getters snapshot-copy under their own mutex, so the raw
+    // pointer is thread-safe and lives for the process lifetime.
+    SshServer::instance().attachHandler(&g_sipServer->getHandler());
     while (1) {
         if (g_sipServer) {
             g_sipServer->getHandler().tick();
@@ -317,6 +324,18 @@ extern "C" void app_main(void)
     // The HTTP dashboard must start even on an unprovisioned device so the admin
     // can submit credentials via the web interface.
     xTaskCreatePinnedToCore(&http_server_task, "http_server_task", 8192, NULL, 4, NULL, 0);
+
+    // ── littlessh SSH console (PSA/mbedTLS) — start BEFORE the provisioning gate ─
+    // Mirrors esp_main_eth.cpp (audit #44): without this, a headless Wi-Fi unit has
+    // NO SSH console despite littlessh being linked (POCKETDIAL_HAS_LITTLESSH) — it
+    // can't be onboarded over SSH. Auth is "open until an admin PIN is provisioned",
+    // so SSH must be reachable on a fresh device. The TUI reads the live registrar
+    // through a null-guarded handler the SIP task attaches after the gate, so starting
+    // early is safe. Net label reflects the active topology (AP vs STA).
+    SshServer::instance().setNetInfo(s_sip_ip.c_str(),
+                                     topology_mode == TOPOLOGY_CLIENT ? 1 : 2,
+                                     topology_mode == TOPOLOGY_CLIENT ? "wifi-sta" : "wifi-ap");
+    SshServer::instance().start();
 
     if (!is_provisioned) {
         ESP_LOGW(TAG, "[boot] device unprovisioned — SIP stack held dark until credential committed");
