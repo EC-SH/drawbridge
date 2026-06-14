@@ -598,11 +598,28 @@ private:
 	// the previous detached thread captured `this` and outlived the handler in
 	// unit tests, segfaulting the suite nondeterministically.
 	std::thread _anchorStartThread;
-	// asyncMakeCall/asyncDropCall workers (host builds). Same lifetime rule as
-	// _anchorStartThread: they capture `this`, so they must be joined in the
-	// destructor — never detached.
+	// asyncMakeCall/asyncDropCall/asyncAnswerCall workers (host builds). Same lifetime
+	// rule as _anchorStartThread: they capture `this`, so they must be joined — never
+	// detached. Issue #67: previously these accumulated in a bare vector<thread> joined
+	// only in ~RequestsHandler, so a long-lived host/CI session leaked one joinable
+	// thread object per call action. Each worker now flips a `done` flag as its last
+	// act; reapAnchorWorkers() (called from tick()) joins and erases the finished ones,
+	// bounding the live count to in-flight calls instead of total-calls-ever.
+	struct AnchorWorker
+	{
+		std::thread thread;
+		std::shared_ptr<std::atomic<bool>> done;
+	};
 	std::mutex _anchorWorkMutex;
-	std::vector<std::thread> _anchorWorkThreads;
+	std::vector<AnchorWorker> _anchorWorkThreads;
+	// Spawn a detach-free anchor worker: runs `job`, then sets its done-flag. Pushes
+	// it onto _anchorWorkThreads under _anchorWorkMutex. Host-only.
+	void spawnAnchorWorker(std::function<void()> job);
+	// Join + erase any workers that have finished. Called from tick(); also drains all
+	// remaining workers when `drainAll` is true (used by the destructor). Host-only.
+	void reapAnchorWorkers(bool drainAll = false);
+	// Join + erase finished workers. Caller MUST hold _anchorWorkMutex. Host-only.
+	void reapFinishedLocked();
 #endif
 
 	// RequestsHandler.hpp: Issues #24 and #28 resolved.
@@ -707,7 +724,7 @@ private:
 	};
 	std::unordered_map<std::string, DeviceRecord> _devices;   // mac -> record
 	void loadDevices();                   // boot-time reload; caller holds _mutex
-	void persistDevices();                // write-through after a mutation; holds _mutex
+	void persistDevices();                // mark devices dirty (Issue #55); holds _mutex
 	void refreshDeviceSnapshot();         // mirror _devices into _snapshot; holds both mutexes
 
 	// Learn-mode REGISTER admission. Caller holds _mutex. Resolves the source MAC,
@@ -748,16 +765,46 @@ private:
 	void loadPbxConfig();                 // boot-time reload into the maps
 	void loadThreeCxConfig();             // boot-time reload of 3CX settings
 	TrunkConfig _trunkCfg;                // last-loaded/saved trunk config (under _mutex)
-	void persistForwards();               // write-through after a setForward mutation
-	void persistRingGroups();             // write-through after a setRingGroup mutation
-	void persistPageZones();              // write-through after a setPageZone mutation
+	// Issue #42/#55: these no longer touch NVS inline. Called under _mutex from the
+	// signaling/star-code paths, they only mark the corresponding store dirty (a bit
+	// in _nvsDirty). The blocking nvs_open/commit happens later in flushDirtyNvs(),
+	// run AFTER the registrar lock is released (debounced write-back) — restoring the
+	// "no blocking flash I/O under _mutex" invariant. Caller holds _mutex.
+	void persistForwards();               // mark forwards dirty (setForward mutation)
+	void persistRingGroups();             // mark ring groups dirty (setRingGroup mutation)
+	void persistPageZones();              // mark page zones dirty (setPageZone mutation)
 	bool _pbxConfigLoaded = false;
 
 	// Persistent CDR (Class A sweep). The CDR ring is flushed to the "cdrlog" NVS
-	// namespace on teardown (write-through) and reloaded on boot, so records survive
-	// reboot. No-ops on host. Caller holds _mutex.
+	// namespace (write-back) and reloaded on boot, so records survive reboot. No-ops
+	// on host. Caller holds _mutex.
 	void loadCdrRing();                   // boot-time reload of the ring
-	void persistCdrRing();                // flush the whole ring (bounded, fixed size)
+	void persistCdrRing();                // mark the CDR ring dirty (flushed off-lock)
+
+	// ── Debounced NVS write-back (Issue #42 / #55) ───────────────────────────────
+	// The persistXxx() mutators above run under _mutex and must NOT block on flash.
+	// Each instead sets a bit in _nvsDirty (guarded by _mutex). flushDirtyNvs() runs
+	// from tick() AFTER the registrar lock is dropped: it snapshots+clears the dirty
+	// bits and serializes each pending store under a SHORT lock (into a local blob),
+	// then performs the blocking nvs_open/set/commit OUTSIDE any lock. No-op on host
+	// (the in-memory maps are the store). Coalesces repeated dirtying between ticks
+	// into a single flash write, also cutting wear under call/config churn.
+	enum NvsDirtyBit : uint8_t {
+		kNvsDirtyForwards   = 1u << 0,
+		kNvsDirtyRingGroups = 1u << 1,
+		kNvsDirtyPageZones  = 1u << 2,
+		kNvsDirtyDevices    = 1u << 3,
+		kNvsDirtyCdr        = 1u << 4,
+	};
+	uint8_t _nvsDirty = 0;                 // pending-write bitmask; guarded by _mutex
+	void flushDirtyNvs();                  // off-lock; called from tick()
+	// Blob serializers — read the in-memory store; the caller holds _mutex while
+	// calling them (flushDirtyNvs takes a short lock around each).
+	std::string serializeForwardsBlob() const;
+	std::string serializeRingGroupsBlob() const;
+	std::string serializePageZonesBlob() const;
+	std::string serializeDevicesBlob() const;
+	std::string serializeCdrBlob() const;
 
 	// Pre-allocated static memory pools (Issue #53)
 	std::vector<std::shared_ptr<SipClient>> _clientPool;
