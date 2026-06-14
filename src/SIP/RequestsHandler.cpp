@@ -1964,6 +1964,12 @@ std::string RequestsHandler::computeDialogState(const std::string& targetAor,
 				dir   = isDest ? "recipient" : "initiator";
 				break;
 			case Session::State::Connected:
+			case Session::State::Held:
+				// RFC 4235 §4: a held call is an *established* dialog — its media is
+				// merely on hold (sendonly/recvonly/inactive), so the dialog state stays
+				// "confirmed" and the watcher's BLF lamp must remain lit. Without the
+				// Held case this fell through to default/idle and darkened the lamp
+				// mid-hold (#53), even though the line is still busy.
 				state = "confirmed";
 				dir   = isSrc ? "initiator" : "recipient";
 				break;
