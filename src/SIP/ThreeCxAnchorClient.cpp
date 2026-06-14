@@ -69,6 +69,7 @@ void ThreeCxAnchorClient::tick()
 #include "lwip/sockets.h"
 #include "cJSON.h"
 #include "UrlEncode.hpp"
+#include "JsonEscape.hpp"
 #include <sstream>
 #include <cstring>
 #include <cstdio>
@@ -299,7 +300,13 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 		return baseUrl + "/callcontrol/" + sourceDn + "/devices/" + urlEncode(id) + "/makecall";
 	};
 	std::string makeCallUrl = deviceId.empty() ? legacyUrl : deviceUrl(deviceId);
-	const std::string postData = "{\"destination\":\"" + destination + "\"}";
+	// Issue #56: JSON-escape the destination before concatenating it into the
+	// control-plane POST body. Today isValidAor (RequestsHandler) rejects "/\ on the
+	// SIP path, but this is the anchor's own trust boundary — any future non-SIP
+	// caller (dashboard dial, automation) that reaches makeCall without that filter
+	// must not be able to inject control characters or break out of the JSON string.
+	const std::string postData =
+		"{\"destination\":\"" + jsonEscapeString(destination) + "\"}";
 
 	// Mark an outbound call in flight BEFORE the POST so the participant upserts 3CX pushes for it
 	// are classified as ours (not mistaken for an inbound PSTN call). Stamp the set-time in the
