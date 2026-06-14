@@ -132,6 +132,15 @@ private:
 	bool httpGetBody(const std::string& url, std::string& bodyOut, int* statusOut = nullptr);
 	// First participant id currently on our DN (single-leg assumption), or "" if none / on error.
 	std::string reconcileParticipantId();
+	// POST + capture the response body (for makecall result.id). Fresh client (not the persistent
+	// ctrl connection) so the body is readable; creds snapshot under _mutex, blocking I/O lock-free.
+	bool httpPostBody(const std::string& url, const char* contentType, const std::string& body, std::string& respBody, int* statusOut = nullptr);
+	// The leg WE control for an outbound call: makecall result.id, else a destination digit-suffix
+	// match in the live participant list — the id 3CX authorizes us to stream/drop (issue #40).
+	std::string resolveOutboundLeg(const std::string& makecallRespBody, const std::string& destination);
+	// Status of a specific leg read from the LIST (GET /participants -> find id). Replaces
+	// getParticipantStatus(id), which 403s for a leg this DN cannot directly control (issue #40).
+	std::string getLegStatus(const std::string& legId);
 	// Device-specific makecall transport.
 	std::string pickDeviceId(const std::string& body);   // parse a /devices array → a device_id
 	bool resolveDevice();                                 // GET /devices → pickDeviceId → _deviceId

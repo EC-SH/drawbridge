@@ -306,8 +306,12 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 		_outboundActive.store(true, std::memory_order_release);
 	}
 
+	// Capture the makecall RESPONSE BODY (not just the status) so we can read result.id — the
+	// initiator's OWN leg on our DN, which is the leg 3CX authorizes us to stream/drop. (httpPostBody
+	// uses a fresh client; performCtrl's persistent handle does not expose the body.)
 	int status = 0;
-	bool success = performCtrl(makeCallUrl, "application/json", postData, &status);
+	std::string respBody;
+	bool success = httpPostBody(makeCallUrl, "application/json", postData, respBody, &status);
 
 	// A device-path 404 means the cached device_id went stale (registration flap). Re-resolve once
 	// on a fresh id and retry; if that still fails, fall back to the legacy endpoint.
@@ -326,20 +330,37 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 		}
 		if (!freshId.empty())
 		{
-			status = 0;
-			success = performCtrl(deviceUrl(freshId), "application/json", postData, &status);
+			status = 0; respBody.clear();
+			success = httpPostBody(deviceUrl(freshId), "application/json", postData, respBody, &status);
 		}
 		if (!success)
 		{
 			ESP_LOGW(TAG, "makeCall: falling back to legacy makecall endpoint");
-			status = 0;
-			success = performCtrl(legacyUrl, "application/json", postData, &status);
+			status = 0; respBody.clear();
+			success = httpPostBody(legacyUrl, "application/json", postData, respBody, &status);
 		}
 	}
 
 	if (success)
 	{
-		ESP_LOGI(TAG, "Successfully initiated call to %s", destination.c_str());
+		// Select the leg WE control: makecall result.id, else a destination digit-suffix match in
+		// the live participant list (lnp-audit's _makecall id resolution). We deliberately do NOT
+		// adopt the participant id 3CX later surfaces over the WS — that can be the far leg, on which
+		// a specific-id GET/drop returns 403 (issue #40). Drop/media key off this owned id.
+		std::string ownLeg = resolveOutboundLeg(respBody, destination);
+		if (!ownLeg.empty())
+		{
+			{
+				std::lock_guard<std::mutex> lock(_mutex);
+				_activeParticipantId = ownLeg;
+			}
+			startRxIfNeeded(ownLeg);   // prime the GET-stream retry loop on OUR leg
+			ESP_LOGI(TAG, "Successfully initiated call to %s (own leg %s)", destination.c_str(), ownLeg.c_str());
+		}
+		else
+		{
+			ESP_LOGW(TAG, "makeCall: initiated %s but could not resolve own leg id — teardown will rely on reconcile", destination.c_str());
+		}
 	}
 	else
 	{
@@ -810,6 +831,75 @@ bool ThreeCxAnchorClient::httpGetBody(const std::string& url, std::string& bodyO
 	return ok;
 }
 
+// POST with a body and return the response body (and HTTP status). Mirrors httpGetBody but for the
+// makecall, whose result.id we need to read. Uses a fresh client (the persistent _ctrlClient that
+// performCtrl drives via esp_http_client_perform does not surface the body). close()+cleanup() on
+// every path; *statusOut carries the HTTP status (or -1).
+bool ThreeCxAnchorClient::httpPostBody(const std::string& url, const char* contentType, const std::string& body, std::string& respBody, int* statusOut)
+{
+	if (statusOut) *statusOut = -1;
+	respBody.clear();
+
+	std::string token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		token = _accessToken;
+	}
+
+	esp_http_client_handle_t client = makeAuthedClient(url, HTTP_METHOD_POST, 1024, token);
+	if (!client)
+	{
+		ESP_LOGE(TAG, "httpPostBody: failed to init HTTP client");
+		return false;
+	}
+	if (contentType)
+	{
+		esp_http_client_set_header(client, "Content-Type", contentType);
+	}
+
+	bool ok = false;
+	esp_err_t err = esp_http_client_open(client, static_cast<int>(body.length()));
+	if (err == ESP_OK)
+	{
+		int wlen = (body.empty()) ? 0 : esp_http_client_write(client, body.c_str(), body.length());
+		if (wlen >= 0)
+		{
+			esp_http_client_fetch_headers(client);
+			int status = esp_http_client_get_status_code(client);
+			if (statusOut) *statusOut = status;
+
+			std::vector<char> buffer;
+			char tempBuf[512];
+			int readBytes = 0;
+			while ((readBytes = esp_http_client_read(client, tempBuf, sizeof(tempBuf))) > 0)
+			{
+				buffer.insert(buffer.end(), tempBuf, tempBuf + readBytes);
+			}
+			if (readBytes < 0)
+			{
+				ESP_LOGE(TAG, "httpPostBody: HTTP read error %d (status=%d)", readBytes, status);
+			}
+			else
+			{
+				respBody.assign(buffer.begin(), buffer.end());
+				ok = (status >= 200 && status < 300);
+			}
+		}
+		else
+		{
+			ESP_LOGE(TAG, "httpPostBody: write failed %d", wlen);
+		}
+		esp_http_client_close(client);
+	}
+	else
+	{
+		ESP_LOGE(TAG, "httpPostBody: open failed: %s", esp_err_to_name(err));
+	}
+
+	esp_http_client_cleanup(client);
+	return ok;
+}
+
 // The first participant id currently on our DN, or "" if none / on any error. Drives the drop
 // fallback when no WS upset ever correlated an id (dropCall) and the wedge watchdog (tick worker).
 std::string ThreeCxAnchorClient::reconcileParticipantId()
@@ -859,6 +949,110 @@ std::string ThreeCxAnchorClient::reconcileParticipantId()
 			char idbuf[24];
 			snprintf(idbuf, sizeof(idbuf), "%d", id->valueint);
 			return std::string(idbuf);
+		}
+	}
+	return "";
+}
+
+// Status of one specific leg, read from the participant LIST (GET /callcontrol/{dn}/participants
+// then find id). This is the controllable-scope read 3CX honours, unlike GET .../participants/{id}
+// which 403s for a leg this DN does not directly control (issue #40). "" if the leg isn't listed.
+std::string ThreeCxAnchorClient::getLegStatus(const std::string& legId)
+{
+	if (legId.empty()) return "";
+	std::string url;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		url = _baseUrl + "/callcontrol/" + _sourceDn + "/participants";
+	}
+	std::string body;
+	int status = 0;
+	if (!httpGetBody(url, body, &status) || status != 200)
+	{
+		ESP_LOGW(TAG, "getLegStatus: GET /participants failed (status=%d)", status);
+		return "";
+	}
+	cJSON* root = cJSON_Parse(body.c_str());
+	if (!root) return "";
+	CJsonDeleter deleter{root};
+	if (!cJSON_IsArray(root)) return "";
+
+	cJSON* elem = nullptr;
+	cJSON_ArrayForEach(elem, root)
+	{
+		if (!cJSON_IsObject(elem)) continue;
+		cJSON* id = cJSON_GetObjectItem(elem, "id");
+		char idbuf[24] = {0};
+		if (cJSON_IsString(id) && id->valuestring) snprintf(idbuf, sizeof(idbuf), "%s", id->valuestring);
+		else if (cJSON_IsNumber(id))               snprintf(idbuf, sizeof(idbuf), "%d", id->valueint);
+		if (legId == idbuf)
+		{
+			cJSON* st = cJSON_GetObjectItem(elem, "status");
+			if (cJSON_IsString(st) && st->valuestring) return std::string(st->valuestring);
+			return "";
+		}
+	}
+	return "";   // leg not on the DN (gone, or an id we don't own)
+}
+
+// Resolve the leg WE control for an outbound makecall (lnp-audit's _makecall id logic): prefer the
+// response result.id (the initiator's own leg on our DN); failing that (legacy path / absent under
+// deregistration), match the just-created leg in the live participant list by destination digit
+// suffix. Returns "" if neither yields an id. This is the only id 3CX lets us stream/drop (issue #40).
+std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallRespBody, const std::string& destination)
+{
+	// 1) result.id from the makecall response.
+	if (!makecallRespBody.empty())
+	{
+		cJSON* root = cJSON_Parse(makecallRespBody.c_str());
+		if (root)
+		{
+			CJsonDeleter deleter{root};
+			cJSON* result = cJSON_GetObjectItem(root, "result");
+			if (result)
+			{
+				cJSON* id = cJSON_GetObjectItem(result, "id");
+				if (cJSON_IsString(id) && id->valuestring && id->valuestring[0]) return std::string(id->valuestring);
+				if (cJSON_IsNumber(id)) { char b[24]; snprintf(b, sizeof(b), "%d", id->valueint); return std::string(b); }
+			}
+		}
+	}
+
+	// 2) Fallback: destination digit-suffix match against the live list.
+	std::string digits;
+	for (char c : destination) if (c >= '0' && c <= '9') digits.push_back(c);
+	if (digits.empty()) return "";
+	const std::string suffix = digits.size() > 7 ? digits.substr(digits.size() - 7) : digits;
+
+	std::string url;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		url = _baseUrl + "/callcontrol/" + _sourceDn + "/participants";
+	}
+	std::string body;
+	int status = 0;
+	if (!httpGetBody(url, body, &status) || status != 200) return "";
+	cJSON* root = cJSON_Parse(body.c_str());
+	if (!root) return "";
+	CJsonDeleter deleter{root};
+	if (!cJSON_IsArray(root)) return "";
+
+	cJSON* elem = nullptr;
+	cJSON_ArrayForEach(elem, root)
+	{
+		if (!cJSON_IsObject(elem)) continue;
+		for (const char* k : { "party_dn", "party_caller_id", "party_did" })
+		{
+			cJSON* f = cJSON_GetObjectItem(elem, k);
+			if (!cJSON_IsString(f) || !f->valuestring) continue;
+			std::string fd;
+			for (const char* p = f->valuestring; *p; ++p) if (*p >= '0' && *p <= '9') fd.push_back(*p);
+			if (fd.size() >= suffix.size() && fd.compare(fd.size() - suffix.size(), suffix.size(), suffix) == 0)
+			{
+				cJSON* id = cJSON_GetObjectItem(elem, "id");
+				if (cJSON_IsString(id) && id->valuestring && id->valuestring[0]) return std::string(id->valuestring);
+				if (cJSON_IsNumber(id)) { char b[24]; snprintf(b, sizeof(b), "%d", id->valueint); return std::string(b); }
+			}
 		}
 	}
 	return "";
@@ -1273,49 +1467,60 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 									// task alone no longer counts as busy — it is primed during
 									// ringing below, and keying the throttle on it would swallow
 									// the Connected Upset that actually answers the call.
-									bool isSameActivePart = false;
+									// The leg WE control: outbound -> the makecall-selected own leg
+									// (_activeParticipantId, set from result.id); inbound -> this partId.
+									// 3CX may surface the FAR leg here, on which a specific-id GET/drop
+									// 403s (issue #40), so for outbound we act on our own leg, not partId.
+									bool outbound = _outboundActive.load(std::memory_order_acquire);
+									std::string controlLeg;
 									{
 										std::lock_guard<std::mutex> lock(_mutex);
-										isSameActivePart = (_activeParticipantId == partId);
+										controlLeg = _activeParticipantId;
 									}
-									if (isSameActivePart && isStreaming())
+									if (outbound)
 									{
-										break;
-									}
-
-									cJSON* attached = cJSON_GetObjectItem(eventObj, "attached_data");
-									std::string statusStr = "";
-									if (attached)
-									{
-										cJSON* statusObj = cJSON_GetObjectItem(attached, "status");
-										if (statusObj && statusObj->valuestring)
+										if (controlLeg.empty())
 										{
-											statusStr = statusObj->valuestring;
-											ESP_LOGI(TAG, "Call control event: Participant Upset %s (parsed status: %s)", partId.c_str(), statusStr.c_str());
+											// makeCall hasn't resolved our own leg yet — ignore this
+											// (likely far-leg) upset; a repeat upset drives us once set.
+											break;
 										}
 									}
-									if (statusStr.empty())
+									else
 									{
-										ESP_LOGI(TAG, "Call control event: Participant Upset %s (querying HTTP fallback)", partId.c_str());
-										statusStr = getParticipantStatus(partId);
-										ESP_LOGI(TAG, "Participant %s status: %s", partId.c_str(), statusStr.c_str());
+										controlLeg = partId;   // inbound: the surfaced leg is ours
 									}
+
+									bool sameLeg = false;
+									{
+										std::lock_guard<std::mutex> lock(_mutex);
+										sameLeg = (controlLeg == _activeParticipantId);
+									}
+									if (sameLeg && isStreaming())
+									{
+										break;   // call already fully up
+									}
+
+									// Authoritative status from the LIST (GET /participants -> find leg),
+									// never getParticipantStatus(id) which 403s for a non-controlled leg.
+									std::string statusStr = getLegStatus(controlLeg);
+									ESP_LOGI(TAG, "Upset %s -> control leg %s status '%s'", partId.c_str(), controlLeg.c_str(), statusStr.c_str());
 
 									if (statusStr == "Connected")
 									{
-										// Set _activeParticipantId BEFORE the callback so any
-										// Upset that races in behind us takes the skip path above.
-										if (startMediaStreams(partId))
+										// Control + media key off OUR leg (controlLeg), not the
+										// surfaced partId — the latter can be the far leg (403).
+										if (startMediaStreams(controlLeg))
 										{
 											if (evCb)
 											{
-												CallEvent ev{CallEvent::Answered, partId, "", ""};
+												CallEvent ev{CallEvent::Answered, controlLeg, "", ""};
 												evCb(ev);
 											}
 										}
 										else
 										{
-											ESP_LOGE(TAG, "Failed to start media streams for participant %s", partId.c_str());
+											ESP_LOGE(TAG, "Failed to start media streams for participant %s", controlLeg.c_str());
 											stopMediaStreams();
 										}
 									}
@@ -1361,12 +1566,9 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 											}
 										}
 
-										// RING-TIME PRIME: the leg exists but isn't connected yet
-										// (Dialing/Ringing). Start the Rx task now — its retry loop
-										// is cheap on the persistent connection — so the GET stream
-										// is already being polled the instant the leg flips to
-										// Connected. Audio then opens ~one RTT after answer.
-										startRxIfNeeded(partId);
+										// RING-TIME PRIME on the leg we control (own leg for outbound,
+										// partId for inbound) so the GET stream is polling before connect.
+										startRxIfNeeded(controlLeg);
 									}
 								}
 								else if (evTypeNum == TCX_EV_REMOVE)
