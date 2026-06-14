@@ -155,6 +155,20 @@ void HttpServer::acceptLoop()
 			continue;
 		}
 
+		// Issue #45: cap concurrent handler threads/sockets. If we are already at the
+		// in-flight limit, reply 503 and close THIS connection immediately rather than
+		// spawning another thread+socket — a browser hammering parallel XHRs (or a soft
+		// DoS) can no longer exhaust the LWIP socket pool out from under SIP/the anchor.
+		// Reserve the slot before spawning; the handler releases it on exit.
+		if (_activeConns.load(std::memory_order_acquire) >= kMaxConcurrentConns)
+		{
+			sendResponse(clientSock, 503, "Service Unavailable", "application/json",
+			             "{\"error\":\"server busy; too many concurrent connections\"}");
+			closeSocket(clientSock);
+			continue;
+		}
+		_activeConns.fetch_add(1, std::memory_order_acq_rel);
+
 		// Dispatch client handling in a detached thread context to prevent DoS connection stalls.
 		// std::thread's constructor THROWS std::system_error if the underlying task can't be
 		// created (transient heap/task-limit pressure — e.g. the dashboard polling every 2s
@@ -165,10 +179,14 @@ void HttpServer::acceptLoop()
 		{
 			std::thread([this, clientSock]() {
 				handleClient(clientSock);
+				// Release the in-flight slot once this handler is fully done.
+				_activeConns.fetch_sub(1, std::memory_order_acq_rel);
 			}).detach();
 		}
 		catch (const std::exception& e)
 		{
+			// Spawn failed: we never entered handleClient, so release the slot here.
+			_activeConns.fetch_sub(1, std::memory_order_acq_rel);
 			std::cerr << "[HttpServer] connection thread spawn failed: " << e.what()
 				<< " — dropping connection\n";
 #if defined _WIN32 || defined _WIN64
