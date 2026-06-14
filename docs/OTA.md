@@ -7,9 +7,11 @@ layout, and the security posture.
 
 > TL;DR: dual-OTA (`ota_0` / `ota_1`) on the 16 MB flash, an admin-gated
 > streaming upload endpoint (`POST /api/ota/upload`), explicit reboot
-> (`POST /api/ota/reboot`), and mark-valid-on-healthy-boot rollback. Images are
-> **not signed yet** — OTA is gated behind the admin PIN and should be
-> restricted to the local link until Secure Boot v2 lands (see
+> (`POST /api/ota/reboot`), and mark-valid-on-healthy-boot rollback. An
+> **application-layer ECDSA-P256 image signature** (the `X-OTA-Signature` header,
+> verified before the slot is made bootable) is wired in — **off by default**,
+> enabled per-build with a provisioned key (§6, issue #47). The **durable** fix
+> against physical reflash remains Secure Boot v2 + flash encryption (see
 > [THREAT_MODEL.md](THREAT_MODEL.md)).
 
 ---
@@ -163,7 +165,7 @@ risk (see §5).
 | `403` | Cross-origin request rejected (CSRF guard). |
 | `411` | Missing or zero `Content-Length` (the stream size is required). |
 | `400` | Upload truncated / socket closed early, or a flash write failed mid-stream. |
-| `422` | `esp_ota_end()` rejected the image (bad magic / corrupt / not a valid app). |
+| `422` | `esp_ota_end()` rejected the image (bad magic / corrupt / not a valid app), **or** the `X-OTA-Signature` failed to verify / was required and missing (issue #47). |
 | `500` | `esp_ota_begin` / `esp_ota_set_boot_partition` failed. |
 | `501` | **Host build only** — OTA is not available off-device. |
 
@@ -278,39 +280,94 @@ everything *after* `nvs` have shifted, **treat the migration as a clean slate**:
 
 ## 6. Security
 
-**Today, OTA images are unsigned and unencrypted.** The only controls on the
-upload path are:
+The controls on the upload path are:
 
-- the **admin PIN / session** gate (once provisioned), and
-- the **same-origin / CSRF** check.
+- the **admin PIN / session** gate (once provisioned),
+- the **same-origin / CSRF** check, and
+- (issue #47) an **application-layer image signature check** — an ECDSA-P256
+  signature over the streamed image's SHA-256, verified against a build-time OTA
+  public key before the new slot is ever made bootable.
 
-That means anyone who (a) is on the local link and (b) holds the admin PIN can
-flash arbitrary firmware. This matches threats **T-5 (firmware/OTA tampering)**
-and **E-1** in [THREAT_MODEL.md](THREAT_MODEL.md), which already anticipated this
-workstream.
+Without the signature check, anyone who (a) is on the local link and (b) holds the
+admin PIN (or hits the first-run, pre-PIN window) could flash arbitrary firmware —
+threats **T-5 (firmware/OTA tampering)** and **E-1** in
+[THREAT_MODEL.md](THREAT_MODEL.md).
 
-**Operational guidance until signing lands:**
+### 6.1 Application-layer signature verification (issue #47)
+
+As the image streams into the inactive slot, `OtaUpdater` folds every byte into a
+SHA-256 (PSA Crypto on-device). After `esp_ota_end()` validates the image format and
+**before** the slot is activated, the upload handler calls
+`OtaUpdater::verifySignature()` with the signature carried in the
+**`X-OTA-Signature`** request header. Policy:
+
+| Situation | Result |
+|-----------|--------|
+| Signature present and **verifies** | image staged (`200`) |
+| Signature present and **fails** | `422`, image written to the slot but **never made bootable** |
+| Signature absent, enforcement **ON** (`PD_OTA_REQUIRE_SIGNATURE`) | `422` — signature is mandatory |
+| Signature absent, enforcement **OFF** (default) | accepted with a loud warning log |
+
+Enforcement is **off by default** so first-run onboarding, the host/CI smoke path,
+and units that have not yet been issued a signing key are not bricked. Turn it on
+(and provision a key) for a production build.
+
+**Key-provisioning hook (the human decision):** the trusted public key is compiled
+in via two build macros on the `main` component (e.g. in `main/CMakeLists.txt`):
+
+```cmake
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    PD_OTA_REQUIRE_SIGNATURE
+    PD_OTA_PUBLIC_KEY_HEX="04ab...ef")   # hex of the 65-byte uncompressed P-256 point
+```
+
+Generate the keypair, derive the raw public point, and sign an image:
+
+```bash
+# 1) Keypair (KEEP ota_signing.pem OFFLINE / in an HSM — it is the master key).
+openssl ecparam -name prime256v1 -genkey -noout -out ota_signing.pem
+# 2) Public point as hex (the "pub:" block, 65 bytes incl. the 0x04 prefix).
+openssl ec -in ota_signing.pem -text -noout
+# 3) Sign the image's SHA-256 (DER), then convert DER -> raw r||s (64 bytes).
+openssl dgst -sha256 -sign ota_signing.pem -out img.der.sig build/SipServer.bin
+#    der2raw: extract r and s (32 bytes each) from the DER ECDSA-Sig-Value and
+#    concatenate; e.g. with a tiny python/openssl asn1parse step. The header value
+#    is base64(raw r||s).
+curl ... -H "X-OTA-Signature: $(base64 -w0 img.raw.sig)" --data-binary @build/SipServer.bin .../api/ota/upload
+```
+
+> **What still needs a human key-management decision** (not code): where the OTA
+> private key lives (HSM/offline), the per-fleet vs per-device key policy, how the
+> public key is provisioned into the firmware at build time, and the key-rotation
+> procedure. The P-256 key chosen here can be **promoted to the Secure Boot v2
+> signing key**, so this app-layer check is a stepping stone, not a detour.
+
+**Operational guidance:**
 
 - **Always set an admin PIN in production.** An open AP with an ungated OTA
-  endpoint is a remote persistent-compromise vector.
-- **Restrict OTA to the local link** (the device is a LAN appliance; do not
-  expose `/api/ota/*` to the internet).
-- Verify the image you push (e.g. compare a hash of `build/SipServer.bin`
-  against your build artifact) before uploading.
+  endpoint is a remote persistent-compromise vector even with signing.
+- **Restrict OTA to the local link** (the device is a LAN appliance; do not expose
+  `/api/ota/*` to the internet).
+- **Enable signature enforcement** (`PD_OTA_REQUIRE_SIGNATURE` + a provisioned key)
+  for any fleet you do not physically control.
 
-**Roadmap (durable fix — see [THREAT_MODEL.md](THREAT_MODEL.md) §roadmap, P2):**
+### 6.2 Roadmap (durable fix — see [THREAT_MODEL.md](THREAT_MODEL.md) §roadmap, P2)
 
-- **Secure Boot v2** — the bootloader verifies an RSA/ECDSA signature on the app,
-  so only images signed with your private key will boot.
-- **Flash encryption** — protects NVS (WiFi password, admin hash) and the app
-  against a physical flash read (threats T-4 / I-3).
-- **Signed OTA images** — `esp_ota_*` verifies the image signature against the
-  Secure Boot key on write, closing the unsigned-OTA gap above.
+The app-layer check above stops an **unsigned/forged image being staged over the
+network**, but it does NOT stop a **physical** attacker reflashing over UART/JTAG,
+because the running app does the checking. The durable fix moves the check into
+hardware (commented hooks are in `sdkconfig.defaults`):
 
-These are intentionally **out of scope** for Phase-1 (they require key
-management, a secured factory-provisioning flow, and burning eFuses — a one-way
-operation), but the partition layout and rollback workflow shipped here are
-forward-compatible with all three.
+- **Secure Boot v2** — the bootloader verifies the app's ECDSA-P256 signature, so
+  only images signed with your private key will **boot** (closes physical reflash).
+- **Flash encryption** — protects NVS (WiFi password, admin hash, HA1) and the app
+  against a physical flash read (threats T-4 / I-3 / I-6, issue #58).
+- **`CONFIG_SECURE_SIGNED_ON_UPDATE`** — makes `esp_ota_*` itself enforce the
+  appended signature on write, a second enforcement layer alongside this one.
+
+These require burning eFuses (a one-way operation) and a secured factory flow, so
+they stay **opt-in**; the partition layout, rollback workflow, and the app-layer
+signature path shipped here are forward-compatible with all three.
 
 ---
 
