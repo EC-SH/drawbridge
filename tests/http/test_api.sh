@@ -234,6 +234,17 @@ else
     ((FAILED_TESTS++))
 fi
 
+# TC-OTA-01b: ota/status route reports the partition labels (running/next/boot),
+#   proving the OtaUpdater static helpers are wired through HTTP route dispatch
+#   (issue #62). On host these are the deterministic placeholder labels.
+if [[ "$BODY_CONTENT" == *'"running"'* && "$BODY_CONTENT" == *'"next"'* ]]; then
+    echo -e "  [${GREEN}PASS${RESET}] TC-OTA-01b: ota/status exposes running+next partition labels."
+    ((PASSED_TESTS++))
+else
+    echo -e "  [${RED}FAIL${RESET}] TC-OTA-01b: ota/status missing running/next partition labels."
+    ((FAILED_TESTS++))
+fi
+
 # TC-OTA-02: Cross-Origin OTA upload -> REJECT 403 (same gate as other mutations).
 echo -e "${YELLOW}  * Generating 32 KB mock firmware body...${RESET}"
 dd if=/dev/zero bs=1024 count=32 2>/dev/null | tr '\0' 'B' > temp_ota_body.txt
