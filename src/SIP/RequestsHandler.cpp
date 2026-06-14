@@ -6280,13 +6280,21 @@ void RequestsHandler::asyncDropCall(const std::string& participantId)
 		RequestsHandler* handler;
 	};
 	auto* arg = new DropCallArg{ _anchorClient, participantId, this };
-	xTaskCreate([](void* p) {
+	// 12288: dropCall is a TLS HTTPS round trip — same overflow as 3cx_start.
+	// #94: CHECK the spawn. Under heap pressure during an active call the 12 KB stack can
+	// fail to allocate; the drop worker then never runs and the PSTN leg never tears down.
+	// This used to be silent — surface it (and free the arg) so the failure is visible in
+	// the serial log instead of a phantom non-drop.
+	if (xTaskCreate([](void* p) {
 		auto* dca = static_cast<DropCallArg*>(p);
 		dca->anchor->dropCall(dca->partId);
 		delete dca;
 		vTaskDelete(NULL);
-		// 12288: dropCall is a TLS HTTPS round trip — same overflow as 3cx_start.
-	}, "3cx_dropcall", 12288, arg, 5, NULL);
+	}, "3cx_dropcall", 12288, arg, 5, NULL) != pdPASS)
+	{
+		queueLog("[3CX] asyncDropCall: drop worker xTaskCreate FAILED (heap exhausted) — leg NOT dropped", true);
+		delete arg;
+	}
 #else
 	spawnAnchorWorker([this, participantId]() {
 		_anchorClient->dropCall(participantId);

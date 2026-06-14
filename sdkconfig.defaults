@@ -129,3 +129,20 @@ CONFIG_ESP_WOLFSSL_NO_STACK_SIZE_BUILD_WARNING=y
 # participant-drop POST can't open, so the PSTN leg lingers. Bump the pool (cheap:
 # a few hundred bytes of internal RAM per slot, and there is ~300 KB free).
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# ── mbedTLS internal-RAM relief (#94) ────────────────────────────────────────
+# The hard wall on hangup was not just sockets: a 4th TLS context (the drop POST)
+# fails with `mbedtls_ssl_setup returned -0x008D` (alloc-fail) and the 12 KB drop
+# worker stack won't allocate — because mbedTLS allocates its per-connection
+# buffers from the ~320 KB INTERNAL DRAM by default, NOT the 8 MB octal PSRAM
+# (which sits idle). During an active call the 3 persistent anchor TLS streams
+# (WS + GET + POST) exhaust internal RAM, so the leg can't be dropped until the
+# far end hangs up. Two levers:
+#   DYNAMIC_BUFFER: size/free each connection's TLS I/O buffers on demand instead
+#                   of pinning the full ~16 KB record each — frees tens of KB.
+#   EXTERNAL_MEM_ALLOC: place mbedTLS allocations in PSRAM (DMA-capable buffers for
+#                   the HW crypto accelerators still go internal automatically), so
+#                   the 4th TLS context allocates from the 8 MB instead of starving
+#                   the internal heap. Requires CONFIG_SPIRAM_USE_MALLOC=y (set above).
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
