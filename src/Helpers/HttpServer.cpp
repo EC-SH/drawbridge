@@ -6,6 +6,7 @@
 #include "OtaUpdater.hpp"
 #include "index_html.h"
 #include "IPHelper.hpp"
+#include "UrlEncode.hpp"
 #include <cstring>
 #include <sstream>
 #include <iostream>
@@ -1080,30 +1081,9 @@ uint64_t HttpServer::currentTimeMs() const
 	);
 }
 
-// Helpers for URL decoding and parsing post/form params
-static std::string urlDecode(const std::string& src)
-{
-	std::string ret;
-	char ch = '\0';
-	unsigned int ii = 0;
-	for (size_t pos = 0; pos < src.length(); ++pos) {
-		if (src[pos] == '+') {
-			ret += ' ';
-		} else if (src[pos] == '%') {
-			if (pos + 2 < src.length() && 
-				sscanf(src.substr(pos + 1, 2).c_str(), "%x", &ii) == 1) {
-				ch = static_cast<char>(ii);
-				ret += ch;
-				pos += 2;
-			} else {
-				ret += src[pos];
-			}
-		} else {
-			ret += src[pos];
-		}
-	}
-	return ret;
-}
+// URL decoding lives in UrlEncode.hpp as the header-only urlDecode() (host-testable,
+// shared with urlEncode, single source of truth for the trailing-%XX bound — audit
+// #73). Call sites below use it unqualified.
 
 static std::string getFormParam(const std::string& body, const std::string& key)
 {
