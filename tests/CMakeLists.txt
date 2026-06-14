@@ -35,6 +35,12 @@ add_executable(sip_parser_tests
     Hold_test.cpp
     RtpReceiver_test.cpp
     Park_test.cpp
+    # Audit security cluster (squad 3): #56 JSON-escape at the anchor boundary,
+    # #57 per-channel admin-PIN lockout (cross-channel DoS), #46 dialog-source
+    # binding that rejects spoofed BYE/CANCEL teardown.
+    JsonEscape_test.cpp
+    AdminAuthLockout_test.cpp
+    Teardown_test.cpp
     # Audit concurrency & memory-safety cluster (#41 message-pool race, #54 pool
     # sizing, #70 virtual-peer pool). Drives RequestsHandler + the static message
     # pool directly; host-compilable like the other RequestsHandler-backed suites.
