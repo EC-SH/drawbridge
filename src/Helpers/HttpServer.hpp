@@ -137,6 +137,19 @@ private:
 	std::atomic<bool> _running;
 	std::thread _acceptThread;
 
+	// Issue #45: bound concurrent connection handlers. Each accepted socket previously
+	// spawned an unconditional detached std::thread (~8 KB pthread stack + the socket).
+	// A handful of browser tabs each firing 3-4 parallel XHRs could spike the LWIP
+	// socket pool + heap exactly when the 3CX anchor needs its three persistent TLS
+	// sockets — a soft-DoS that defeats the socket-budget headroom and silently drops
+	// connections. We now cap in-flight handlers: beyond the cap the accept loop replies
+	// 503 and closes immediately instead of spawning. _activeConns is incremented in
+	// acceptLoop() before spawning and decremented by the handler (RAII) on exit.
+	// kMaxConcurrentConns keeps worst-case handler sockets well under the 16-socket
+	// LWIP pool, leaving headroom for SIP + the anchor's three persistent TLS sockets.
+	static constexpr int kMaxConcurrentConns = 4;
+	std::atomic<int> _activeConns{0};
+
 	// Track server uptime
 	uint64_t _startTime;
 	uint64_t currentTimeMs() const;
