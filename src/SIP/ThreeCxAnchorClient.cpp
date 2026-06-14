@@ -405,6 +405,20 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 		sourceDn = _sourceDn;
 	}
 
+	// #94 — free the call's audio-stream sockets BEFORE we try to open the drop
+	// connection. During an active call the anchor holds 3 persistent TLS sockets (WS +
+	// GET + POST audio) over the W5500-MACRAW LWIP pool; adding SIP + dashboard + SSH
+	// leaves no room (nor TLS-context internal heap) for a 4th connection, so the drop
+	// POST fails with `sock < 0` / `mbedtls_ssl_setup` alloc-fail and SILENTLY never
+	// fires — the PSTN leg then stays fully live (audio still flowing) until the FAR
+	// party hangs up. Closing the GET/POST streams here frees two sockets + their TLS
+	// contexts (and clears the wedged _outboundActive that was busy-looping the reconcile
+	// watchdog), so the drop has room to connect. We captured partId above, so the
+	// _activeParticipantId clear inside stopMediaStreams() is harmless. Runs on the
+	// off-SIP 3cx_dropcall worker (the ≤2 s rx-join is fine here); the _tearingDown gate
+	// makes it idempotent if the WS 'Dropped' event races us.
+	stopMediaStreams();
+
 	// No id from the dialog arg or the WS upset cache (_activeParticipantId) — the
 	// registration-dependent miss where no upset ever correlated. Ask 3CX which participant is
 	// actually live on the DN so the leg still gets torn down. Runs on the 3cx_dropcall worker,
@@ -1162,6 +1176,18 @@ void ThreeCxAnchorClient::tick()
 	// set this long after makecall means the participant never materialized — i.e. a wedge.
 	constexpr int64_t kWedgeGraceUs = 15LL * 1000000;
 	if (esp_timer_get_time() - setUs < kWedgeGraceUs) return;
+
+	// #94: floor the reconcile cadence. While a call holds the anchor TLS sockets every
+	// reconcile GET fails with sock<0, and the 1 Hz tick would otherwise busy-loop those
+	// failed connects — burning CPU/heap and adding to the very socket pressure that wedges
+	// teardown. Re-spawn at most once per kReconcileMinIntervalUs.
+	constexpr int64_t kReconcileMinIntervalUs = 5LL * 1000000; // 5 s
+	const int64_t lastReconcile = _lastReconcileUs.load(std::memory_order_acquire);
+	if (lastReconcile != 0 && esp_timer_get_time() - lastReconcile < kReconcileMinIntervalUs)
+	{
+		return;
+	}
+	_lastReconcileUs.store(esp_timer_get_time(), std::memory_order_release);
 
 	// Claim the one-shot slot BEFORE the spawn so a second tick can't double-spawn the worker.
 	_reconcileInFlight.store(true, std::memory_order_release);

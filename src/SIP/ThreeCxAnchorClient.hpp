@@ -61,6 +61,12 @@ private:
 	int64_t           _outboundActiveSetUs = 0;
 	// One-shot guard: the watchdog spawns at most one reconcile worker at a time.
 	std::atomic<bool> _reconcileInFlight{false};
+	// Monotonic (esp_timer) timestamp of the last reconcile spawn. #94: the reconcile GET
+	// fails with sock<0 while a call holds the TLS sockets, so without a floor the watchdog
+	// re-spawned every 1 Hz tick — busy-looping failed connects and ADDING socket pressure.
+	// tick() enforces a minimum interval between spawns. Atomic: read on the SIP task,
+	// written by the reconcile worker.
+	std::atomic<int64_t> _lastReconcileUs{0};
 	// Resolved device_id for the device-specific makecall transport, guarded by _mutex. Empty
 	// until lazily resolved; cleared on WS disconnect so a device registration flap re-resolves.
 	std::string       _deviceId;
