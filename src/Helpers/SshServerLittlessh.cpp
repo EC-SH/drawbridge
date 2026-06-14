@@ -411,7 +411,8 @@ static void configureTui(Tui& tui, const std::string& peer, uint64_t sessUptime)
 
     // ── [4]/[P] change-PIN apply: verify current (if provisioned) + set new. ──
     tui.setPinChanger([](const std::string& cur, const std::string& neu) -> std::string {
-        if (AdminAuth::isProvisioned() && !AdminAuth::verifyPin(cur))
+        // Issue #57: re-auth on the SSH channel (this runs in the SSH TUI session).
+        if (AdminAuth::isProvisioned() && !AdminAuth::verifyPin(cur, AdminAuth::Channel::Ssh))
             return "Current PIN is wrong.";
         if (!AdminAuth::setPin(neu))
             return "New PIN rejected (too short?).";
@@ -482,7 +483,9 @@ static bool ll_password_auth(void* u, const char* user, const char* pass)
 {
     (void)u; (void)user;
     if (!AdminAuth::isProvisioned()) return true;
-    return AdminAuth::verifyPin(pass);
+    // Issue #57: account SSH brute-force on the SSH channel so spraying here cannot
+    // trip the admin's HTTP-login lockout (and vice-versa).
+    return AdminAuth::verifyPin(pass, AdminAuth::Channel::Ssh);
 }
 
 static void ll_on_pty(void* u, lssh_session_t* s, uint16_t cols, uint16_t rows)

@@ -323,9 +323,12 @@ namespace
 		std::string salt;               // hex
 		std::string hash;               // hex (salted, iterated digest)
 
-		// Brute-force lockout (in-process; see threat model re: per-IP).
-		int      failedAttempts = 0;
-		uint64_t lockoutUntilMs = 0;
+		// Per-channel brute-force lockout (issue #57: decouple HTTP / SSH / DTMF so a
+		// flood on one surface can't throttle the admin on another). In-process; see
+		// threat model re: per-IP within a channel. Indexed by AdminAuth::Channel.
+		static constexpr size_t kChannels = static_cast<size_t>(AdminAuth::Channel::Count);
+		std::array<int, kChannels>      failedAttempts{};   // value-init -> all 0
+		std::array<uint64_t, kChannels> lockoutUntilMs{};   // value-init -> all 0
 
 		std::array<Session, AdminAuth::kMaxSessions> sessions{};
 	};
@@ -453,20 +456,26 @@ namespace AdminAuth
 			return false;
 		}
 
-		// A credential (re)set resets the lockout counter.
-		s.failedAttempts = 0;
-		s.lockoutUntilMs = 0;
+		// A credential (re)set clears EVERY channel's lockout (issue #57): the admin
+		// legitimately re-proved control, so all surfaces get a fresh window.
+		s.failedAttempts.fill(0);
+		s.lockoutUntilMs.fill(0);
 		return true;
 	}
 
-	bool isLockedOut()
+	bool isLockedOut(Channel channel)
 	{
 		AuthState& s = state();
 		std::lock_guard<std::mutex> lock(s.mutex);
-		return s.lockoutUntilMs != 0 && nowMs() < s.lockoutUntilMs;
+		const size_t c = static_cast<size_t>(channel);
+		if (c >= s.lockoutUntilMs.size())
+		{
+			return false;   // defensive: out-of-range channel never locks
+		}
+		return s.lockoutUntilMs[c] != 0 && nowMs() < s.lockoutUntilMs[c];
 	}
 
-	bool verifyPin(const std::string& pin)
+	bool verifyPin(const std::string& pin, Channel channel)
 	{
 		AuthState& s = state();
 		std::lock_guard<std::mutex> lock(s.mutex);
@@ -477,8 +486,15 @@ namespace AdminAuth
 			return false;
 		}
 
-		// Honor the lockout without hashing while it is engaged.
-		if (s.lockoutUntilMs != 0 && nowMs() < s.lockoutUntilMs)
+		const size_t c = static_cast<size_t>(channel);
+		if (c >= s.failedAttempts.size())
+		{
+			return false;   // defensive: reject an unknown channel rather than UB
+		}
+
+		// Honor THIS channel's lockout without hashing while it is engaged. Other
+		// channels are unaffected (issue #57: no cross-channel throttling).
+		if (s.lockoutUntilMs[c] != 0 && nowMs() < s.lockoutUntilMs[c])
 		{
 			return false;
 		}
@@ -488,22 +504,22 @@ namespace AdminAuth
 
 		if (ok)
 		{
-			s.failedAttempts = 0;
-			s.lockoutUntilMs = 0;
+			s.failedAttempts[c] = 0;
+			s.lockoutUntilMs[c] = 0;
 		}
 		else
 		{
-			if (s.failedAttempts < kMaxFailedAttempts)
+			if (s.failedAttempts[c] < kMaxFailedAttempts)
 			{
-				++s.failedAttempts;
+				++s.failedAttempts[c];
 			}
-			if (s.failedAttempts >= kMaxFailedAttempts)
+			if (s.failedAttempts[c] >= kMaxFailedAttempts)
 			{
-				s.lockoutUntilMs = nowMs() + kLockoutMs;
+				s.lockoutUntilMs[c] = nowMs() + kLockoutMs;
 				// Reset the counter so that, after the cooldown, the attacker
 				// gets a fresh window of kMaxFailedAttempts rather than being
 				// locked out permanently after one bad streak.
-				s.failedAttempts = 0;
+				s.failedAttempts[c] = 0;
 			}
 		}
 		return ok;
@@ -616,8 +632,8 @@ namespace AdminAuth
 		s.hash.clear();
 		s.provisioned = false;
 		s.loaded = true;          // we know the (now empty) state; don't reload
-		s.failedAttempts = 0;
-		s.lockoutUntilMs = 0;
+		s.failedAttempts.fill(0);
+		s.lockoutUntilMs.fill(0);
 
 		for (auto& sess : s.sessions)
 		{

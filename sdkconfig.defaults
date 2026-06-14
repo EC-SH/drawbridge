@@ -85,6 +85,40 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
 # (Harmless/ignored for non-display builds that don't link wolfSSL.)
 CONFIG_ESP_WOLFSSL_NO_STACK_SIZE_BUILD_WARNING=y
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets-at-rest hardening (issue #58 / #47, THREAT_MODEL I-3/I-5/I-6, T-4/T-5).
+#
+# The device stores recoverable secrets in NVS: the per-extension SIP digest
+# credential (HA1 — a *bearer* credential, by protocol necessity not a one-way
+# hash), the upstream WiFi station password (cleartext), and any trunk credentials.
+# Until flash is encrypted, a physical attacker who reads the SPI flash recovers
+# all of them. There is NO sound application-layer fix (any key the app could use
+# to encrypt NVS would itself sit in the same readable flash) — the durable control
+# is ESP-IDF **flash encryption** (hardware-key, transparent NVS encryption) plus
+# **Secure Boot v2** (which also closes the unsigned-OTA boot path, #47/T-5).
+#
+# These are LEFT COMMENTED ON PURPOSE: enabling them burns eFuses on first boot and
+# is IRREVERSIBLE — it will brick a dev board for re-flashing and must be a
+# deliberate production/factory decision with a provisioned signing key. To enable
+# for a production build (see docs/THREAT_MODEL.md §7 P2 and docs/OTA.md §6):
+#
+#   # Flash encryption (encrypts app + NVS at rest; protects HA1 / WiFi pass).
+#   CONFIG_SECURE_FLASH_ENC_ENABLED=y
+#   CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y      # release mode: no UART reflash
+#
+#   # Secure Boot v2 (bootloader verifies the app's ECDSA-P256 signature; the same
+#   # key signs OTA images verified by OtaUpdater::verifySignature(), issue #47).
+#   CONFIG_SECURE_BOOT=y
+#   CONFIG_SECURE_BOOT_V2_ENABLED=y
+#   CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
+#
+#   # Make esp_ota_* itself verify the appended signature on every OTA write, even
+#   # without full Secure Boot, as a belt-and-suspenders layer alongside the
+#   # app-layer X-OTA-Signature check:
+#   CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+#   CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+# ─────────────────────────────────────────────────────────────────────────────
+
 # LWIP socket pool — open the W5500 path up. The W5500 runs in MACRAW mode, so the
 # ESP32-S3's LWIP stack (NOT the W5500's 8-socket hardware TCP engine) owns every
 # connection — the real cap is this knob, default 10. That's too tight for the WAN

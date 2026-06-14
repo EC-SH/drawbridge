@@ -114,12 +114,60 @@ public:
 	// Host: no-op, returns true.
 	static bool markValid();
 
+	// --- Image signature verification (issue #47) ----------------------------
+	//
+	// esp_ota_end() only checks the image magic + per-segment checksum — NOT a
+	// cryptographic signature — so on its own OTA accepts any well-formed image an
+	// authenticated (or first-run) caller uploads, which is a remote-persistent-
+	// compromise vector (THREAT_MODEL T-5). The durable fix is ESP-IDF Secure Boot
+	// v2 (eFuse-burned key, bootloader-enforced) — a factory/key-management decision
+	// that burns one-way eFuses and is out of scope for a pure code change.
+	//
+	// This is the application-layer half of that fix: as the image streams, write()
+	// folds every byte into a SHA-256 (PSA Crypto on-device). The HTTP layer carries
+	// a detached signature (the `X-OTA-Signature` request header: base64 of the raw
+	// 64-byte ECDSA-P256 r||s signature over that SHA-256, made with the operator's
+	// OTA private key). After end() and BEFORE activate(), the caller invokes
+	// verifySignature() with the decoded signature; only a signature that verifies
+	// against the embedded OTA PUBLIC key lets the image become the boot choice.
+	//
+	// Key-provisioning hook (documented in docs/OTA.md): the trusted public key is
+	// supplied at build time via the PD_OTA_PUBLIC_KEY_HEX macro (hex of the 65-byte
+	// uncompressed P-256 point). The SAME EC P-256 key can later be promoted to the
+	// Secure Boot v2 signing key, so this path is forward-compatible with the
+	// durable fix.
+
+	// True iff this build enforces OTA image signatures. Controlled by the
+	// PD_OTA_REQUIRE_SIGNATURE build macro. When true, the HTTP upload handler MUST
+	// obtain a signature and call verifySignature() (a missing/failed signature
+	// rejects the image). When false (default — preserves first-run onboarding and
+	// the host CI smoke path, and avoids bricking units with no key provisioned),
+	// the verification path still RUNS if a signature is supplied, but an absent
+	// signature only logs a loud warning. Host: false.
+	static bool signatureRequired();
+
+	// True iff a trusted OTA public key is compiled in (PD_OTA_PUBLIC_KEY_PEM set).
+	// Used to fail closed when enforcement is on but no key was provisioned. Host:
+	// reflects the macro so the enforcement logic is host-testable.
+	static bool publicKeyProvisioned();
+
+	// Finalize the streamed image's SHA-256 and verify `signatureRaw` (the raw
+	// 64-byte ECDSA-P256 r||s signature) against the embedded OTA public key. Returns
+	// true ONLY on a cryptographically valid signature over exactly the bytes that
+	// were write()-streamed in this session. Returns false (and sets lastError) on a
+	// bad signature, a missing/malformed key, a wrong-length signature, or if no
+	// bytes were written. Call after end(), before activate(). Host: returns false
+	// with a clear error (no real crypto wired on host), mirroring device
+	// fail-closed semantics for the enforcement unit tests.
+	bool verifySignature(const std::string& signatureRaw);
+
 private:
 	bool        _inProgress    = false;
 	bool        _updatePending = false;
 	size_t      _expectedSize  = 0;
 	size_t      _bytesWritten  = 0;
 	std::string _lastError;
+	bool        _hashInit      = false;   // image SHA-256 accumulator started?
 
 #if defined(ESP_PLATFORM)
 	// esp_ota_handle_t is a uint64 typedef in ESP-IDF; we store it type-erased to
@@ -128,6 +176,10 @@ private:
 	uint64_t    _otaHandle     = 0;
 	// const esp_partition_t* of the slot we are writing to. Opaque here.
 	const void* _updatePart    = nullptr;
+	// Opaque mbedtls_sha256_context*, heap-allocated in begin() so esp/mbedtls
+	// headers stay out of this header (host TUs never see them). Freed in
+	// abort()/end()/dtor. nullptr when no session-hash is active.
+	void*       _hashCtx       = nullptr;
 #endif
 };
 

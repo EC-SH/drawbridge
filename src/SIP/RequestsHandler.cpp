@@ -474,6 +474,21 @@ void RequestsHandler::onOptions(std::shared_ptr<SipMessage> data)
 void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 {
 	std::string destNumber(data->getToNumber());
+
+	// Issue #46: same off-path teardown guard as onBye(). A CANCEL whose Call-ID
+	// names an established two-leg dialog must come from a leg IP. Early-dialog
+	// CANCELs (dest not yet bound — ring/hunt fork still ringing) fail open via the
+	// helper, which is conservative: only an established call is hard-gated here.
+	if (auto cancelSess = getSession(data->getCallID());
+		cancelSess.has_value() &&
+		!isDialogSourceAuthorized(cancelSess.value(), data->getSource()))
+	{
+		queueLog("CANCEL for Call-ID " + std::string(data->getCallID()) +
+			" rejected: source not a dialog leg (spoofed teardown)", true);
+		sendForbidden(data, "Forbidden");
+		return;
+	}
+
 	if (destNumber == "777")
 	{
 		endCall(data->getCallID(), data->getFromNumber(), "777");
@@ -1253,10 +1268,63 @@ void RequestsHandler::onUnavailable(std::shared_ptr<SipMessage> data)
 static std::string parkTagOf(std::string_view header);
 static std::string stripHeaderName(std::string_view fullLine);
 
+// Dialog-source binding for in-dialog teardown (issue #46). The registrar does not
+// digest-challenge BYE/CANCEL (only REGISTER in secure mode — see admitSecure /
+// THREAT_MODEL §9.1), so without this check any peer that can guess or sniff a live
+// Call-ID on the open SoftAP could forge a BYE and drop an arbitrary call (incl. a
+// PSTN-anchor leg). As a link-independent backstop we require an in-dialog teardown
+// to ORIGINATE from the IP of one of the call's two real phone legs. This is the
+// "source-IP binding" interim fix the threat model names; it is not full per-request
+// digest, but it removes the off-path attacker (different IP) entirely and is free
+// (pure in-memory address compare, no I/O under the lock).
+bool RequestsHandler::isDialogSourceAuthorized(const std::shared_ptr<Session>& session,
+	const sockaddr_in& source) const
+{
+	if (!session)
+	{
+		// No session yet (out-of-dialog / unknown Call-ID). Don't gate here — the
+		// caller's per-extension/virtual handlers decide; a forged BYE for a
+		// non-existent dialog is harmless (nothing to tear down).
+		return true;
+	}
+
+	auto src  = session->getSrc();
+	auto dest = session->getDest();
+
+	// Fail-open for any dialog whose teardown we cannot meaningfully bind to a phone
+	// IP: an anchor/inbound-anchor leg (one side is the upstream trunk, not a LAN
+	// phone), or a half-set-up dialog missing a leg. Those paths have their own
+	// teardown owners (anchor drop, virtual-ext handlers) and must not be broken.
+	if (session->isAnchor() || session->isAnchorInbound() || !src || !dest)
+	{
+		return true;
+	}
+
+	// Compare source IP only (port-agnostic): a phone may send the BYE from the same
+	// contact IP but a different ephemeral UDP port than the original INVITE.
+	const uint32_t fromIp = source.sin_addr.s_addr;
+	return fromIp == src->getAddress().sin_addr.s_addr ||
+	       fromIp == dest->getAddress().sin_addr.s_addr;
+}
+
 void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 {
 	auto session = getSession(data->getCallID());
 	std::string destNumber(data->getToNumber());
+
+	// Issue #46: reject an off-path forged teardown. A BYE for an established
+	// two-phone dialog must originate from one of the call's leg IPs; otherwise a
+	// peer that only guessed/sniffed the Call-ID could drop someone else's call.
+	// Virtual/anchor/half-set-up dialogs fail open (handled by their own teardown
+	// owners — see isDialogSourceAuthorized). 403 + return: leave the dialog up.
+	if (session.has_value() &&
+		!isDialogSourceAuthorized(session.value(), data->getSource()))
+	{
+		queueLog("BYE for Call-ID " + std::string(data->getCallID()) +
+			" rejected: source not a dialog leg (spoofed teardown)", true);
+		sendForbidden(data, "Forbidden");
+		return;
+	}
 
 	// Call parking: a BYE whose To is an orbit ("70x"), or any leg linked to a
 	// bridged peer. Always 200 OK the BYE; if the leg has a retrieved/rung-back
@@ -5002,7 +5070,9 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 				if (!std::isdigit(static_cast<unsigned char>(c))) { allDigits = false; break; }
 			}
 			// Single verify — a wrong PIN is exactly one counted failed attempt.
-			if (!allDigits || !AdminAuth::verifyPin(pinCandidate))
+			// Issue #57: account DTMF brute-force on its own channel so a fat-fingered
+			// (or hostile) in-call PIN entry can't lock the admin out of the dashboard.
+			if (!allDigits || !AdminAuth::verifyPin(pinCandidate, AdminAuth::Channel::Dtmf))
 			{
 				queueLog("[admin] DTMF admin auth failed", true);
 				accum.digits.clear();

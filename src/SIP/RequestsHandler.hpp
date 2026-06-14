@@ -726,6 +726,19 @@ private:
 	void sendChallenge(const std::shared_ptr<SipMessage>& data, bool stale);
 	// Emit a 403 Forbidden with a reason phrase into _outbox. Caller holds _mutex.
 	void sendForbidden(const std::shared_ptr<SipMessage>& data, const std::string& reason);
+	// Dialog-source binding for in-dialog teardown (BYE/CANCEL). Returns true iff the
+	// UDP packet source IP of `source` matches one of the session's real phone legs
+	// (getSrc()/getDest()) — i.e. the request plausibly came from a party in the call.
+	// Used to reject off-path teardown spoofing (issue #46 / THREAT_MODEL S-3/D-2):
+	// a peer that merely sniffed/guessed a Call-ID but sits at a DIFFERENT IP cannot
+	// forge a BYE/CANCEL to drop the call. IP-only (port-agnostic): a phone may emit
+	// the teardown from the same contact IP but a different ephemeral port than the
+	// INVITE. Returns true (fail-open) when a leg is virtual/server-originated or
+	// absent (anchor, 777/999/440, park, half-set-up dialog) — those teardown paths
+	// are owned by the dedicated per-extension handlers and must not be broken here.
+	// Pure in-memory; no I/O. Caller holds _mutex.
+	bool isDialogSourceAuthorized(const std::shared_ptr<Session>& session,
+		const sockaddr_in& source) const;
 	// Mark a device record online/offline in the snapshot after a (de)registration.
 	// Caller holds _mutex.
 	void markDeviceOnline(const std::string& mac, bool online);

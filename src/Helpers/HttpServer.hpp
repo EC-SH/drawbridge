@@ -96,8 +96,12 @@ private:
 	// On host this is a stub that drains the body and replies 501.
 	// `headerBytesRead` is the already-recv'd buffer (request line + headers and
 	// possibly the first body bytes); `contentLength` is the parsed body size.
+	// `otaSignatureDer` is the decoded X-OTA-Signature header (raw 64-byte ECDSA-P256
+	// r||s signature bytes, empty if absent) — verified against the image hash before
+	// the new slot is activated (issue #47).
 	void handleOtaUpload(int sock, const std::string& alreadyRead,
-	                     size_t bodyStart, size_t contentLength);
+	                     size_t bodyStart, size_t contentLength,
+	                     const std::string& otaSignatureDer);
 	// Read-only JSON: running / boot / next partition, pending flag, last error.
 	void sendApiOtaStatus(int sock);
 	// Reboots into a staged image (device) or simulates it (host).

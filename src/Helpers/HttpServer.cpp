@@ -26,6 +26,7 @@
 // are available on EVERY ESP transport (WiFi, Ethernet, display), not just
 // POCKETDIAL_HAS_WIFI, so guard them on the platform rather than the transport.
 #include "esp_system.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
@@ -33,6 +34,9 @@
 // Forward declarations for the file-local form/URL helpers (defined lower down).
 // sendApiDnd() uses getFormParam() but is defined earlier in this TU.
 static std::string getFormParam(const std::string& body, const std::string& key);
+// base64Decode() is used by the OTA interception in handleClient() (near the top of
+// this TU) but defined lower down; forward-declare it (issue #47).
+static std::string base64Decode(const std::string& in);
 
 // Captive-portal decay hold. The display app's decay watchdog reads this; the web
 // "/api/configuring" confirm sets it to pause the auto-switch to Standalone while a user is
@@ -276,7 +280,44 @@ void HttpServer::handleClient(int clientSock)
 					return;
 				}
 
-				handleOtaUpload(clientSock, raw, hdrEnd + 4, otaLen);
+				// Issue #47: pull the detached image signature from the
+				// X-OTA-Signature header (base64 of the raw 64-byte ECDSA-P256 r||s
+				// signature over the image SHA-256), parsed case-insensitively from
+				// the header block only, then base64-decoded. Absent/malformed ->
+				// empty (handleOtaUpload enforces the signatureRequired() policy).
+				std::string otaSigDer;
+				{
+					std::string hdrBlock = raw.substr(0, hdrEnd);
+					std::string lower = hdrBlock;
+					std::transform(lower.begin(), lower.end(), lower.begin(),
+					               [](unsigned char ch){ return static_cast<char>(std::tolower(ch)); });
+					size_t hp = lower.find("\nx-ota-signature:");
+					size_t nameLen = std::strlen("\nx-ota-signature:");
+					if (hp == std::string::npos && lower.compare(0, std::strlen("x-ota-signature:"), "x-ota-signature:") == 0)
+					{
+						hp = 0;                          // header is the very first line
+						nameLen = std::strlen("x-ota-signature:");
+					}
+					else if (hp != std::string::npos)
+					{
+						hp += 1;                         // step over the matched '\n'
+						nameLen -= 1;
+					}
+					if (hp != std::string::npos)
+					{
+						size_t vs = hp + nameLen;
+						size_t ve = hdrBlock.find_first_of("\r\n", vs);
+						if (ve == std::string::npos) ve = hdrBlock.size();
+						std::string b64 = hdrBlock.substr(vs, ve - vs);
+						// Trim surrounding whitespace.
+						size_t a = b64.find_first_not_of(" \t");
+						size_t b = b64.find_last_not_of(" \t");
+						if (a != std::string::npos)
+							otaSigDer = base64Decode(b64.substr(a, b - a + 1));
+					}
+				}
+
+				handleOtaUpload(clientSock, raw, hdrEnd + 4, otaLen, otaSigDer);
 				closeSocket(clientSock);
 				return;
 			}
@@ -685,6 +726,41 @@ void HttpServer::sendHtml(int sock)
 {
 	sendResponse(sock, 200, "OK", "text/html; charset=utf-8",
 	             std::string(CGA_INDEX_HTML));
+}
+
+// Helper: standard base64 decode (RFC 4648). Returns the decoded bytes; on any
+// invalid character (other than '=' padding and ASCII whitespace, which are skipped)
+// returns an EMPTY string so a malformed X-OTA-Signature is treated as "no
+// signature" rather than silently truncated. Pure / host-compilable (used by the
+// OTA signature path, issue #47).
+static std::string base64Decode(const std::string& in)
+{
+	auto val = [](unsigned char c) -> int {
+		if (c >= 'A' && c <= 'Z') return c - 'A';
+		if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+		if (c >= '0' && c <= '9') return c - '0' + 52;
+		if (c == '+') return 62;
+		if (c == '/') return 63;
+		return -1;
+	};
+	std::string out;
+	out.reserve((in.size() / 4) * 3 + 3);
+	int acc = 0, bits = 0;
+	for (unsigned char c : in)
+	{
+		if (c == '=' ) break;                       // padding -> end of data
+		if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+		int v = val(c);
+		if (v < 0) return std::string();            // invalid char -> reject whole input
+		acc = (acc << 6) | v;
+		bits += 6;
+		if (bits >= 8)
+		{
+			bits -= 8;
+			out.push_back(static_cast<char>((acc >> bits) & 0xFF));
+		}
+	}
+	return out;
 }
 
 // Helper: JSON-escape a string
@@ -1180,14 +1256,28 @@ void HttpServer::sendApiWifiConnect(int sock, const std::string& body)
 	}
 
 #if defined(POCKETDIAL_HAS_WIFI)
+	// Issue #58 hardening: check every NVS return (CONTRIBUTING_FIRMWARE.md). A
+	// silently-failed write here used to still report "saved" and reboot, which
+	// could strand the device on a STALE password (old secret left in flash) — both
+	// a correctness and a secret-hygiene problem. On any failure, do NOT reboot and
+	// surface a 500 so the operator retries instead of losing connectivity.
 	nvs_handle_t nvs_handle;
 	esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
-	if (err == ESP_OK) {
-		nvs_set_u8(nvs_handle, "wifi_mode", 1); // 1 = STATION
-		nvs_set_str(nvs_handle, "wifi_ssid", ssid.c_str());
-		nvs_set_str(nvs_handle, "wifi_pass", password.c_str());
-		nvs_commit(nvs_handle);
-		nvs_close(nvs_handle);
+	if (err != ESP_OK) {
+		sendResponse(sock, 500, "Internal Server Error", "application/json",
+		             "{\"error\":\"failed to open credential store\"}");
+		return;
+	}
+	bool nvsOk =
+		nvs_set_u8(nvs_handle, "wifi_mode", 1) == ESP_OK &&   // 1 = STATION
+		nvs_set_str(nvs_handle, "wifi_ssid", ssid.c_str()) == ESP_OK &&
+		nvs_set_str(nvs_handle, "wifi_pass", password.c_str()) == ESP_OK &&
+		nvs_commit(nvs_handle) == ESP_OK;
+	nvs_close(nvs_handle);
+	if (!nvsOk) {
+		sendResponse(sock, 500, "Internal Server Error", "application/json",
+		             "{\"error\":\"failed to persist WiFi credentials\"}");
+		return;
 	}
 
 	sendResponse(sock, 200, "OK", "application/json",
@@ -1324,8 +1414,10 @@ void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
 		return;
 	}
 
-	// Reject while locked out before doing any hashing work.
-	if (AdminAuth::isLockedOut())
+	// Reject while locked out before doing any hashing work. Issue #57: the HTTP
+	// login throttle is now scoped to the Http channel, so SSH/DTMF brute-force no
+	// longer locks the dashboard out (and vice-versa).
+	if (AdminAuth::isLockedOut(AdminAuth::Channel::Http))
 	{
 		sendResponse(sock, 429, "Too Many Requests", "application/json",
 		             "{\"error\":\"too many failed attempts; try again later\"}");
@@ -1333,10 +1425,10 @@ void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
 	}
 
 	std::string pin = getFormParam(req.body, "pin");
-	if (!AdminAuth::verifyPin(pin))
+	if (!AdminAuth::verifyPin(pin, AdminAuth::Channel::Http))
 	{
 		// verifyPin may have just engaged the lockout on this attempt.
-		if (AdminAuth::isLockedOut())
+		if (AdminAuth::isLockedOut(AdminAuth::Channel::Http))
 		{
 			sendResponse(sock, 429, "Too Many Requests", "application/json",
 			             "{\"error\":\"too many failed attempts; try again later\"}");
@@ -1419,7 +1511,8 @@ bool HttpServer::streamBody(int sock, const char* prefix, size_t prefixLen,
 }
 
 void HttpServer::handleOtaUpload(int sock, const std::string& alreadyRead,
-                                 size_t bodyStart, size_t contentLength)
+                                 size_t bodyStart, size_t contentLength,
+                                 const std::string& otaSignatureDer)
 {
 	const char*  prefix    = (bodyStart <= alreadyRead.size())
 	                             ? alreadyRead.data() + bodyStart : nullptr;
@@ -1460,6 +1553,38 @@ void HttpServer::handleOtaUpload(int sock, const std::string& alreadyRead,
 		return;
 	}
 
+	// Issue #47: cryptographic signature gate, BEFORE activate(). esp_ota_end() only
+	// checked image magic/checksum — not authenticity — so without this an admin (or
+	// a first-run, pre-PIN caller) could stage arbitrary firmware. Policy:
+	//   * a signature was supplied         -> it MUST verify, else 422 (never staged);
+	//   * none supplied + enforcement ON   -> 422 (signature is mandatory);
+	//   * none supplied + enforcement OFF  -> loud warning, allow (preserves
+	//                                         onboarding / unprovisioned-key units).
+	// Enforcement + the trusted key are build-time provisioned (OtaUpdater.hpp /
+	// docs/OTA.md). The durable fix remains Secure Boot v2 (eFuse key) — see report.
+	if (!otaSignatureDer.empty())
+	{
+		if (!ota.verifySignature(otaSignatureDer))
+		{
+			sendResponse(sock, 422, "Unprocessable Entity", "application/json",
+			             "{\"error\":\"image signature rejected: "
+			             + jsonEscape(ota.lastError()) + "\"}");
+			return;   // image written to the inactive slot but NEVER made bootable
+		}
+	}
+	else if (OtaUpdater::signatureRequired())
+	{
+		sendResponse(sock, 422, "Unprocessable Entity", "application/json",
+		             "{\"error\":\"OTA image signature required (X-OTA-Signature header missing)\"}");
+		return;
+	}
+	else
+	{
+		ESP_LOGW("HttpServer",
+		         "OTA image accepted WITHOUT a signature (enforcement off) — set "
+		         "PD_OTA_REQUIRE_SIGNATURE + an OTA signing key to require signing");
+	}
+
 	if (!ota.activate())
 	{
 		sendResponse(sock, 500, "Internal Server Error", "application/json",
@@ -1479,6 +1604,7 @@ void HttpServer::handleOtaUpload(int sock, const std::string& alreadyRead,
 	// return 501. We do NOT simulate success — a 200 here could be mistaken for a
 	// real update in tooling/CI.
 	(void)contentLength;
+	(void)otaSignatureDer;   // host has no flash; signature is verified on-device
 	streamBody(sock, prefix, prefixLen, contentLength,
 	           [](const uint8_t*, size_t) { return true; });
 	sendResponse(sock, 501, "Not Implemented", "application/json",
