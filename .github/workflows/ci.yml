@@ -86,67 +86,29 @@ jobs:
           # returns non-zero on any test failure, which FAILS this step (the gate).
           ctest --test-dir build/tests --output-on-failure
 
-      - name: Verify Partition Table (dual-OTA layout guard)
+      - name: Verify Partition Tables (dual-OTA layout guard, both layouts)
         run: |
-          # Lightweight guard: assert partitions.csv keeps the dual-OTA layout
-          # (ota_0 + ota_1 + otadata), has NOT regressed to a single `factory`
-          # app slot, and that every partition fits inside 16 MB flash. Fails CI
-          # if the OTA layout regresses.
-          python3 - <<'PYEOF'
-          import re, sys
-          PATH = "partitions.csv"
-          FLASH = 16 * 1024 * 1024  # ESP32-S3 16 MB
+          # Issue #59 [M-7]: the guard now lives in tests/ci/partition_guard.py and
+          # loops over BOTH shipped layouts (partitions.csv @16MB +
+          # partitions_4mb.csv @4MB) with overlap + 64KB/4KB alignment checks, not
+          # just partitions.csv. It exits non-zero on any dual-OTA regression,
+          # overflow, overlap, misalignment, or unequal OTA slots.
+          python3 tests/ci/partition_guard.py
 
-          def parse_num(s):
-              s = s.strip()
-              m = re.fullmatch(r'(0[xX][0-9a-fA-F]+|\d+)([KkMm]?)', s)
-              if not m:
-                  raise ValueError("cannot parse number %r" % s)
-              base = int(m.group(1), 0)
-              suf = m.group(2).lower()
-              if suf == 'k': base *= 1024
-              elif suf == 'm': base *= 1024 * 1024
-              return base
+      - name: Self-test the Partition Guard (proves it catches bad layouts)
+        run: |
+          # Issue #59: a guard is only a gate if it actually fails on a bad table.
+          # This drives deliberately-broken layouts through partition_guard.py and
+          # asserts each one is rejected (exit non-zero) — and the shipped ones pass.
+          bash tests/ci/test_partition_guard.sh
 
-          rows = []
-          with open(PATH) as f:
-              for line in f:
-                  line = line.strip()
-                  if not line or line.startswith('#'):
-                      continue
-                  parts = [p.strip() for p in line.split(',')]
-                  if len(parts) < 5:
-                      continue
-                  name, ptype, subtype, off, size = parts[:5]
-                  rows.append((name, ptype, subtype, parse_num(off), parse_num(size)))
-
-          names = {r[0] for r in rows}
-          errors = []
-          for required in ("ota_0", "ota_1", "otadata"):
-              if required not in names:
-                  errors.append("missing required partition '%s'" % required)
-          if "factory" in names:
-              errors.append("partition 'factory' present — layout regressed to single-slot (OTA disabled)")
-          for name, ptype, subtype, off, size in rows:
-              if off + size > FLASH:
-                  errors.append("partition '%s' ends at 0x%x, exceeds 16MB (0x%x)" % (name, off + size, FLASH))
-          slots = {r[0]: r for r in rows if r[0] in ("ota_0", "ota_1")}
-          if "ota_0" in slots and "ota_1" in slots:
-              if slots["ota_0"][4] != slots["ota_1"][4]:
-                  errors.append("ota_0 size (0x%x) != ota_1 size (0x%x)" % (slots["ota_0"][4], slots["ota_1"][4]))
-              for s in ("ota_0", "ota_1"):
-                  if slots[s][1] != "app":
-                      errors.append("%s is type '%s', expected 'app'" % (s, slots[s][1]))
-
-          if errors:
-              print("PARTITION GUARD: FAIL")
-              for e in errors:
-                  print("  - " + e)
-              sys.exit(1)
-          print("PARTITION GUARD: PASS (dual-OTA layout intact)")
-          for name, ptype, subtype, off, size in rows:
-              print("  %-10s type=%-5s sub=%-8s off=0x%x size=0x%x end=0x%x" % (name, ptype, subtype, off, size, off + size))
-          PYEOF
+      - name: Self-test the Deployment Audit (proves it blocks violations)
+        run: |
+          # Issue #60 [M-8]: proves the deployment guardrail EXITS NON-ZERO on a
+          # planted gcloud/GCP_SA_KEY reference (the old step never did) and that
+          # the allowlist escape hatch works. Run in the host job so the regression
+          # guard travels with the unit suite.
+          bash tests/ci/test_deployment_audit.sh
 
       - name: Execute HTTP API Smoke Suite (host)
         run: |
@@ -248,26 +210,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Audit for GCP Deployments
+      - name: Audit for GCP Deployments (BLOCKING)
         run: |
-          # Audit the repository to ensure no deployment scripts, gcloud keys, or CD actions are present.
-          # We explicitly block GCP and out-of-local environments unless explicitly requested and double-checked.
-          echo "Running strict deployment audit guardrail..."
-          
-          FORBIDDEN_PATTERNS=("gcloud" "google-cloud-sdk" "firebase" "aws" "heroku" "terraform" "deployment_key" "GCP_SA_KEY")
-          
-          FOUND_VIOLATION=false
-          for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
-            if grep -rnwi . -e "$pattern" --exclude-dir=".git" --exclude="ci.yml"; then
-              echo "WARNING: Detected reference to forbidden deployment environment / key: '$pattern'"
-              FOUND_VIOLATION=true
-            fi
-          done
-          
-          if [ "$FOUND_VIOLATION" = true ]; then
-            echo "Audit Error: Unauthorized deployment references or GCP credentials found."
-            echo "Deployments must NEVER be automated without explicit double-checking and human-in-the-loop approvals."
-            # Do not fail build if these are just explanatory documents, but print heavy warnings.
-          else
-            echo "Deployment audit clean! No automated GCP deployment pathways detected."
-          fi
+          # Issue #60 [M-8]: this guardrail is now ENFORCED. The previous inline
+          # step set FOUND_VIOLATION=true but never exited non-zero ("Do not fail
+          # build"), so a committed gcloud/aws/GCP_SA_KEY reference passed CI
+          # silently. tests/ci/deployment_audit.sh exits 1 on any un-allowlisted
+          # forbidden reference; intentional/documentary mentions go in
+          # tests/ci/deployment_audit_allow.txt (the human-in-the-loop sign-off).
+          bash tests/ci/deployment_audit.sh
