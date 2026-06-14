@@ -77,6 +77,7 @@ void ThreeCxAnchorClient::tick()
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
+#include "ThreeCxAnchorLogic.hpp"   // host-tested entity-path tokenizer + URL builders (issue #49)
 
 static const char* TAG = "ThreeCxAnchor";
 
@@ -1510,20 +1511,14 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 						std::string entityStr = entity->valuestring;
 
 						// Parse entity path to verify DN and participantId:
-						// /callcontrol/{dn}/participants/{id}
-						std::vector<std::string> pathTokens;
-						std::stringstream ss(entityStr);
-						std::string item;
-						while (std::getline(ss, item, '/'))
+						// /callcontrol/{dn}/participants/{id}. The tokenizer +
+						// shape gate live in ThreeCxAnchorLogic.hpp so the parse
+						// is host-unit-tested (issue #49).
+						threecx::ParticipantEntity ent = threecx::parseParticipantEntity(entityStr);
+						if (ent.valid)
 						{
-							if (!item.empty()) pathTokens.push_back(item);
-						}
-
-						// Expect: ["callcontrol", dn, "participants", id] -> size == 4
-						if (pathTokens.size() == 4 && pathTokens[0] == "callcontrol" && pathTokens[2] == "participants")
-						{
-							std::string dn = pathTokens[1];
-							std::string partId = pathTokens[3];
+							std::string dn = ent.dn;
+							std::string partId = ent.participantId;
 
 							if (dn == _sourceDn)
 							{
