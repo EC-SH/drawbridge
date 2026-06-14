@@ -1,0 +1,13 @@
+# deployment_audit_allow.txt — allowlist for deployment_audit.sh (issue #60).
+#
+# Each non-comment line is an extended-regex (grep -E). Any audit hit, formatted
+# as "path:line:matched-text", that matches a line here is EXCUSED from the
+# blocking guardrail. This is the human-in-the-loop sign-off: adding a line is an
+# explicit "this deployment-keyword reference is intentional and reviewed".
+#
+# Keep this list tight and justify every entry inline. An empty allowlist (the
+# current state — the repo carries no forbidden references) is the strict default.
+#
+# Format examples (commented out; uncomment + adapt only with review):
+#   # docs/ARCHITECTURE.md mentions terraform only to say we DON'T use it:
+#   #^docs/ARCHITECTURE\.md:.*terraform

@@ -39,6 +39,17 @@ add_executable(sip_parser_tests
     # sizing, #70 virtual-peer pool). Drives RequestsHandler + the static message
     # pool directly; host-compilable like the other RequestsHandler-backed suites.
     PoolSafety_test.cpp
+    # Audit coverage cluster (#48 #49 #61 #62): direct host tests for the admin
+    # credential/session manager, the 3CX anchor's pure parse/URL logic (extracted
+    # to a host header so the ESP-only impl's contract is testable), the telephony
+    # credential table + provider registry, and the OTA session state machine.
+    AdminAuth_test.cpp
+    ThreeCxAnchorLogic_test.cpp
+    TelephonyApi_test.cpp
+    OtaUpdater_test.cpp
+    # OTA session state machine (host stub mirrors the device esp_ota_* lifecycle).
+    # Linked for OtaUpdater_test.cpp (#62); the real flashing path stays on-device.
+    ../src/Helpers/OtaUpdater.cpp
     Tui_test.cpp
     # The ANSI sysop-terminal renderer is transport-agnostic and host-compilable
     # (no wolfSSH, no ESP — only an esp_timer guard, behind ESP_PLATFORM). It links
