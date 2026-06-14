@@ -121,7 +121,8 @@ private:
 	bool ensureToken();             // refresh iff expiring AND no media streams active
 	bool tokenExpiringSoon() const; // true when within the refresh margin of JWT exp
 	bool connectWs();
-	std::string getParticipantStatus(const std::string& participantId);
+	// getParticipantStatus() removed (chore #75): the specific-id GET 403s for a
+	// non-controlled leg (issue #40). Use getLegStatus() (list-based) instead.
 
 	static void rxTaskTrampoline(void* arg);
 	void runRxLoop();
@@ -148,8 +149,8 @@ private:
 	void closeCtrlClient();      // teardown under _ctrlMutex
 	bool readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out);
 
-	// Live-state GET helpers (reconcile watchdog + drop-fallback + device resolve). Generalize
-	// the getParticipantStatus GET path; snapshot creds under _mutex then do blocking I/O lock-free.
+	// Live-state GET helpers (reconcile watchdog + drop-fallback + device resolve). Snapshot
+	// creds under _mutex then do blocking I/O lock-free.
 	bool httpGetBody(const std::string& url, std::string& bodyOut, int* statusOut = nullptr);
 	// First participant id currently on our DN (single-leg assumption), or "" if none / on error.
 	std::string reconcileParticipantId();
