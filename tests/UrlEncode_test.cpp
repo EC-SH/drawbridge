@@ -52,3 +52,49 @@ TEST(UrlEncodeTest, NonAsciiHighByteEncodesUnsigned)
     // Embedded NUL byte must encode too (string carries its own length).
     EXPECT_EQ(urlEncode(std::string("\x00", 1)), "%00");
 }
+
+// ======================= urlDecode (audit #73) ============================
+
+// ---- Basic decode: %XX -> byte, '+' -> space, plain text verbatim ----
+TEST(UrlDecodeTest, BasicEscapesAndPlus)
+{
+    EXPECT_EQ(urlDecode("name%3Dvalue"), "name=value");
+    EXPECT_EQ(urlDecode("a+b+c"), "a b c");
+    EXPECT_EQ(urlDecode("hello%20world"), "hello world");
+    EXPECT_EQ(urlDecode("plain"), "plain");
+    EXPECT_EQ(urlDecode(""), "");
+    EXPECT_EQ(urlDecode("100%25"), "100%");          // literal percent
+    // Round-trips against urlEncode for a reserved-heavy string.
+    EXPECT_EQ(urlDecode(urlEncode("abc 123/x:y")), "abc 123/x:y");
+}
+
+// ---- A FULL trailing "%XX" must decode (the #73 regression guard) ----
+// This is the case the audit feared was dropped. It is NOT — pos+2 < length()
+// already covers a complete escape that ends the string. Lock it in.
+TEST(UrlDecodeTest, TrailingEscape)
+{
+    EXPECT_EQ(urlDecode("%41"), "A");                // whole string is one escape
+    EXPECT_EQ(urlDecode("x%41"), "xA");
+    EXPECT_EQ(urlDecode("road%2F"), "road/");        // trailing '/'
+    EXPECT_EQ(urlDecode("a=b%26c=d%3D"), "a=b&c=d=");// ends on a full escape
+    EXPECT_EQ(urlDecode("ab%41"), "abA");
+}
+
+// ---- A TRUNCATED or non-hex escape is passed through literally, NOT swallowed ----
+// Guards against the proposed "<=" relaxation, which would decode "%2" as 0x02.
+TEST(UrlDecodeTest, MalformedEscapePassthrough)
+{
+    EXPECT_EQ(urlDecode("%2"), "%2");                // one hex digit at EOS
+    EXPECT_EQ(urlDecode("end%2"), "end%2");
+    EXPECT_EQ(urlDecode("%"), "%");                  // bare trailing percent
+    EXPECT_EQ(urlDecode("a%"), "a%");
+    EXPECT_EQ(urlDecode("%zz"), "%zz");              // non-hex digits
+    EXPECT_EQ(urlDecode("%2z"), "%2z");              // second digit non-hex
+}
+
+// ---- Lowercase hex digits decode (servers may emit either case) ----
+TEST(UrlDecodeTest, LowercaseHex)
+{
+    EXPECT_EQ(urlDecode("%2f"), "/");
+    EXPECT_EQ(urlDecode("%ff"), std::string("\xff"));
+}

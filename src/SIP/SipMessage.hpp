@@ -30,7 +30,8 @@ public:
 	SipMessage(const SipMessage& other);
 	SipMessage& operator=(const SipMessage& other);
 
-	void setType(std::string value);
+	// setType() removed (audit #68): dead, and conflated a header-relative offset
+	// with a replace() length. Use setHeader() to rewrite the full start line.
 	void setHeader(std::string value);
 	void setVia(std::string value);
 	void setFrom(std::string value);

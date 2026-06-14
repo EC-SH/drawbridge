@@ -1254,12 +1254,23 @@ int lssh_server_run(const lssh_config_t *cfg){
     lssh_session_t *s = calloc(1, sizeof *s);
     if (!s){ if (own_lfd) close(lfd); return -4; }
 
+    /* Bound accept()'s blocking so the cfg->stop flag is re-checked roughly every
+     * second even with no client connected (audit #72). SO_RCVTIMEO on a listening
+     * socket makes accept() return EAGAIN/EWOULDBLOCK on timeout; without it, a
+     * disable toggle while idle only takes effect on the next inbound connection.
+     * Best-effort: if the platform ignores the option, behaviour is unchanged. */
+    {
+        struct timeval atv = { 1, 0 };   /* 1 s */
+        setsockopt(lfd, SOL_SOCKET, SO_RCVTIMEO, &atv, sizeof atv);
+    }
+
     LOGI("listening (%s)", LSSH_IDENT);
 
     while (!(cfg->stop && *cfg->stop)){
         int cfd = accept(lfd, NULL, NULL);
         if (cfd < 0){
-            if (errno == EINTR) continue;
+            /* Timed out (re-check stop) or interrupted — loop, don't tear down. */
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
             break;
         }
         int one = 1;

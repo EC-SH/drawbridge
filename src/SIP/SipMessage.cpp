@@ -203,23 +203,13 @@ void SipMessage::parse()
 	}
 }
 
-void SipMessage::setType(std::string value)
-{
-	if (!_header.empty())
-	{
-		// Find header position safely using findHeader instead of pointer arithmetic
-		size_t pos = findHeader(_header);
-		if (pos != std::string::npos)
-		{
-			size_t spacePos = _header.find(' ');
-			if (spacePos != std::string_view::npos)
-			{
-				_messageStr.replace(pos, spacePos, value);
-			}
-		}
-	}
-	reparse();
-}
+// NOTE (audit #68): setType() was removed. It was dead code (zero call sites,
+// grep-confirmed across src/, main/, tests/, sketches/) and its body conflated a
+// _header-relative offset with a replace() length — a latent foot-gun if a future
+// caller ever reused it on a non-start-line header. Rather than leave a method that
+// only happens to work for the start line, the dead helper was deleted. If a
+// method-token rewrite is ever needed, mirror setHeader()'s findHeader()+length
+// pattern (replace(pos, tokenLen, value)).
 
 void SipMessage::setHeader(std::string value)
 {

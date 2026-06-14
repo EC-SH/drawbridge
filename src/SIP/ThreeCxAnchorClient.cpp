@@ -267,9 +267,15 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 {
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		if (!_connected.load(std::memory_order_acquire))
+		// Gate on BOTH _running and _connected (audit #66). _connected alone lets a
+		// makeCall that races stop()/disable proceed and set _outboundActive true
+		// (below) after teardown began — the resurrection-critical WS-DATA path is
+		// already _running-gated, so align origination with it. _running is cleared
+		// first in stop(), so checking it here fails the call closed during shutdown.
+		if (!_running.load(std::memory_order_acquire) ||
+		    !_connected.load(std::memory_order_acquire))
 		{
-			ESP_LOGW(TAG, "Cannot make call: not connected to 3CX");
+			ESP_LOGW(TAG, "Cannot make call: anchor not running/connected to 3CX");
 			return false;
 		}
 	}
@@ -349,10 +355,11 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 
 	if (success)
 	{
-		// Select the leg WE control: makecall result.id, else a destination digit-suffix match in
-		// the live participant list (lnp-audit's _makecall id resolution). We deliberately do NOT
-		// adopt the participant id 3CX later surfaces over the WS — that can be the far leg, on which
-		// a specific-id GET/drop returns 403 (issue #40). Drop/media key off this owned id.
+		// Select the leg WE control: makecall result.id, else the direct_control leg in the live
+		// participant list (audit #76 — NOT a destination digit-suffix match, which selects the
+		// uncontrollable far leg and re-triggers the #40 403). We deliberately do NOT adopt the
+		// participant id 3CX later surfaces over the WS — that can be the far leg, on which a
+		// specific-id GET/drop returns 403 (issue #40). Drop/media key off this owned id.
 		std::string ownLeg = resolveOutboundLeg(respBody, destination);
 		if (!ownLeg.empty())
 		{
@@ -734,50 +741,11 @@ bool ThreeCxAnchorClient::connectWs()
 	return true;
 }
 
-std::string ThreeCxAnchorClient::getParticipantStatus(const std::string& participantId)
-{
-	std::string baseUrl, sourceDn, token;
-	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		baseUrl = _baseUrl;
-		sourceDn = _sourceDn;
-		token = _accessToken;
-	}
-
-	std::string getUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + participantId;
-	esp_http_client_handle_t client = makeAuthedClient(getUrl, HTTP_METHOD_GET, 1024, token);
-	if (!client)
-	{
-		ESP_LOGE(TAG, "Failed to init HTTP client for getParticipantStatus");
-		return "";
-	}
-
-	std::string statusStr = "";
-	esp_err_t err = esp_http_client_open(client, 0);
-	if (err == ESP_OK)
-	{
-		int fetch_res = esp_http_client_fetch_headers(client);
-		int status = esp_http_client_get_status_code(client);
-		ESP_LOGI(TAG, "getParticipantStatus HTTP status: %d, fetch_res: %d, chunked: %d",
-		         status, fetch_res, esp_http_client_is_chunked_response(client));
-		if (status == 200)
-		{
-			readJsonStringField(client, "status", statusStr);
-		}
-		else
-		{
-			ESP_LOGE(TAG, "getParticipantStatus returned HTTP status %d", status);
-		}
-		esp_http_client_close(client);
-	}
-	else
-	{
-		ESP_LOGE(TAG, "getParticipantStatus failed to open connection: %s", esp_err_to_name(err));
-	}
-
-	esp_http_client_cleanup(client);
-	return statusStr;
-}
+// getParticipantStatus() removed (chore #75): it issued the specific-id
+// GET /callcontrol/{dn}/participants/{id} probe that returns HTTP 403 for a leg
+// this route point cannot directly control (issue #40). Its single caller (the WS
+// upset handler) was migrated to the list-based getLegStatus(legId) in PR #39.
+// Deleted so a future caller can't reintroduce the wrong-leg 403.
 
 // Generalized authed GET → full response body. Snapshots the token under _mutex, then does all
 // blocking I/O lock-free. close()+cleanup() on every exit path. Returns true only on a 2xx with a
@@ -1001,11 +969,29 @@ std::string ThreeCxAnchorClient::getLegStatus(const std::string& legId)
 	return "";   // leg not on the DN (gone, or an id we don't own)
 }
 
-// Resolve the leg WE control for an outbound makecall (lnp-audit's _makecall id logic): prefer the
-// response result.id (the initiator's own leg on our DN); failing that (legacy path / absent under
-// deregistration), match the just-created leg in the live participant list by destination digit
-// suffix. Returns "" if neither yields an id. This is the only id 3CX lets us stream/drop (issue #40).
-std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallRespBody, const std::string& destination)
+// Extract a participant "id" (string or number form) from a cJSON object, "" if absent.
+static std::string legIdOf(cJSON* elem)
+{
+	cJSON* id = cJSON_GetObjectItem(elem, "id");
+	if (cJSON_IsString(id) && id->valuestring && id->valuestring[0]) return std::string(id->valuestring);
+	if (cJSON_IsNumber(id)) { char b[24]; snprintf(b, sizeof(b), "%d", id->valueint); return std::string(b); }
+	return "";
+}
+
+// Resolve the leg WE control for an outbound makecall. This is the only id 3CX lets us
+// stream/drop — a specific-id GET/drop on a leg we don't control returns 403 (issue #40).
+//   1) result.id from the device-makecall response (the initiator's OWN leg on our DN). The
+//      production path; present today.
+//   2) Legacy fallback (no result.id — bare /makecall, or a deregistered source DN): pick the
+//      CONTROLLABLE leg from the live participant list, i.e. one with direct_control == true
+//      (3CX only acts on legs we directly control — see HTTP API §7.4). Among controllable
+//      legs, prefer the one whose party_dn matches _sourceDn (our own initiator leg).
+//
+// We deliberately do NOT fall back to a destination digit-suffix match (audit #76): that keys
+// on the callee/FAR leg — exactly the leg class that 403'd in #40 — so a legacy-path guess could
+// re-trigger the wrong-leg 403. If no controllable leg is found we FAIL CLOSED (return "") and
+// let the reconcile/watchdog teardown handle it, rather than drop a guessed id.
+std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallRespBody, const std::string& /*destination*/)
 {
 	// 1) result.id from the makecall response.
 	if (!makecallRespBody.empty())
@@ -1017,24 +1003,23 @@ std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallR
 			cJSON* result = cJSON_GetObjectItem(root, "result");
 			if (result)
 			{
-				cJSON* id = cJSON_GetObjectItem(result, "id");
-				if (cJSON_IsString(id) && id->valuestring && id->valuestring[0]) return std::string(id->valuestring);
-				if (cJSON_IsNumber(id)) { char b[24]; snprintf(b, sizeof(b), "%d", id->valueint); return std::string(b); }
+				std::string rid = legIdOf(result);
+				if (!rid.empty()) return rid;
 			}
 		}
 	}
 
-	// 2) Fallback: destination digit-suffix match against the live list.
-	std::string digits;
-	for (char c : destination) if (c >= '0' && c <= '9') digits.push_back(c);
-	if (digits.empty()) return "";
-	const std::string suffix = digits.size() > 7 ? digits.substr(digits.size() - 7) : digits;
-
-	std::string url;
+	// 2) Fallback: pick the CONTROLLABLE own leg from the live participant list.
+	std::string url, srcDn;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		url = _baseUrl + "/callcontrol/" + _sourceDn + "/participants";
+		srcDn = _sourceDn;
 	}
+	// Digit form of our source DN, to prefer our own initiator leg among controllable ones.
+	std::string srcDigits;
+	for (char c : srcDn) if (c >= '0' && c <= '9') srcDigits.push_back(c);
+
 	std::string body;
 	int status = 0;
 	if (!httpGetBody(url, body, &status) || status != 200) return "";
@@ -1043,25 +1028,38 @@ std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallR
 	CJsonDeleter deleter{root};
 	if (!cJSON_IsArray(root)) return "";
 
+	std::string firstControllable;   // any direct_control:true leg (own-leg fallback)
 	cJSON* elem = nullptr;
 	cJSON_ArrayForEach(elem, root)
 	{
 		if (!cJSON_IsObject(elem)) continue;
-		for (const char* k : { "party_dn", "party_caller_id", "party_did" })
+		cJSON* dc = cJSON_GetObjectItem(elem, "direct_control");
+		// Only consider legs 3CX authorizes us to control. A missing field is treated as
+		// NOT controllable — fail closed rather than guess (audit #76).
+		if (!cJSON_IsBool(dc) || !cJSON_IsTrue(dc)) continue;
+
+		std::string id = legIdOf(elem);
+		if (id.empty()) continue;
+		if (firstControllable.empty()) firstControllable = id;
+
+		// Prefer the controllable leg whose party_dn IS our source DN — the initiator (own) leg.
+		if (!srcDigits.empty())
 		{
-			cJSON* f = cJSON_GetObjectItem(elem, k);
-			if (!cJSON_IsString(f) || !f->valuestring) continue;
-			std::string fd;
-			for (const char* p = f->valuestring; *p; ++p) if (*p >= '0' && *p <= '9') fd.push_back(*p);
-			if (fd.size() >= suffix.size() && fd.compare(fd.size() - suffix.size(), suffix.size(), suffix) == 0)
+			cJSON* pdn = cJSON_GetObjectItem(elem, "party_dn");
+			if (cJSON_IsString(pdn) && pdn->valuestring)
 			{
-				cJSON* id = cJSON_GetObjectItem(elem, "id");
-				if (cJSON_IsString(id) && id->valuestring && id->valuestring[0]) return std::string(id->valuestring);
-				if (cJSON_IsNumber(id)) { char b[24]; snprintf(b, sizeof(b), "%d", id->valueint); return std::string(b); }
+				std::string pd;
+				for (const char* p = pdn->valuestring; *p; ++p) if (*p >= '0' && *p <= '9') pd.push_back(*p);
+				if (pd == srcDigits) return id;   // exact own-leg match
 			}
 		}
 	}
-	return "";
+
+	if (firstControllable.empty())
+	{
+		ESP_LOGW(TAG, "resolveOutboundLeg: no direct_control leg on DN — failing closed (reconcile/watchdog will tear down)");
+	}
+	return firstControllable;   // controllable leg (or "" → fail closed)
 }
 
 // Parse a 3CX /devices array, returning the best device_id: prefer a device that advertises a

@@ -82,5 +82,14 @@ b[0-9]*.log
 verify_*.log
 host_test*.log
 
+# Root scratch dumps & alternate build dirs (added 2026-06-14, audit #50)
+# Serial/boot/SIP-probe dumps land at the repo root as _<name>.txt; flash logs as
+# flash_*.log. build-host/ is a side-by-side host build dir that build_*/ misses
+# (no underscore). drawbridgepatch/ is a superseded local patch tree.
+_*.txt
+flash_*.log
+build-host/
+drawbridgepatch/
+
 # Shareable binary packages (built locally from build_host_ssh; never commit binaries)
 dist/

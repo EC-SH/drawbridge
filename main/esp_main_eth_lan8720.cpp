@@ -58,6 +58,7 @@
 #include "OtaUpdater.hpp"
 #include "AdminAuth.hpp"
 #include "LogQueue.hpp"
+#include "SshServer.hpp"
 
 // ── Tag for ESP_LOG ────────────────────────────────────────────────────────
 static const char* TAG = "SipServerLAN8720";
@@ -203,6 +204,12 @@ static void sip_server_task(void* pvParameters)
     ESP_LOGI(TAG, "Starting SipServer on %s:%d", s_ip_addr.c_str(), SIP_PORT);
 
     g_sipServer = new SipServer(s_ip_addr, SIP_PORT);
+    // Plumb the live registrar into the SSH sysop-terminal TUI (audit #44). The SSH
+    // console is already running (started before the provisioning gate, mirroring eth);
+    // its TUI snapshot getters null-check the handler, so this is the late hand-off. The
+    // dashboard getters snapshot-copy under their own mutex, so the raw pointer is
+    // thread-safe and lives for the process lifetime.
+    SshServer::instance().attachHandler(&g_sipServer->getHandler());
     ESP_LOGI(TAG, "SIP server is RUNNING.  Point softphones at %s:%d",
              s_ip_addr.c_str(), SIP_PORT);
 
@@ -379,6 +386,15 @@ extern "C" void app_main(void)
 
     // ── Launch HTTP dashboard on Core 0 (always — needed to provision) ─────────
     xTaskCreatePinnedToCore(&http_server_task, "http_dashboard", 8192, nullptr, 4, nullptr, 0);
+
+    // ── littlessh SSH console (PSA/mbedTLS) — start BEFORE the provisioning gate ─
+    // Mirrors esp_main_eth.cpp (audit #44): without this a headless LAN8720 unit has
+    // NO SSH console despite littlessh being linked (POCKETDIAL_HAS_LITTLESSH), so it
+    // can't be onboarded over SSH. Auth is "open until an admin PIN is provisioned",
+    // so SSH must be reachable on a fresh device. The TUI reads the live registrar
+    // through a null-guarded handler the SIP task attaches after the gate.
+    SshServer::instance().setNetInfo(s_ip_addr.c_str(), 1 /*station-like*/, "lan8720");
+    SshServer::instance().start();
 
     if (!is_provisioned) {
         ESP_LOGW(TAG, "[boot] device unprovisioned — SIP stack held dark until credential committed");
