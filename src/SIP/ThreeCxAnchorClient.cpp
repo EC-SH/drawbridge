@@ -1123,6 +1123,22 @@ void ThreeCxAnchorClient::tick()
 {
 	// Runs inline on the SIP task at ≤1 Hz — MUST be non-blocking: only atomic reads, one timer
 	// read, and (rarely) a worker spawn. No logging or allocation on the common path.
+
+	// Issue #65 (L-1): too many leaked GET sockets — spawn a one-shot worker to do a full
+	// stop()/start() reclaim OFF this task (stop()/start() block on TLS I/O). _restartInFlight
+	// is a one-shot gate so repeated ticks can't stack restart workers. Checked before the
+	// outboundActive gate because a leak can accumulate independent of an active outbound call.
+	if (_restartRequested.load(std::memory_order_acquire) &&
+	    !_restartInFlight.load(std::memory_order_acquire))
+	{
+		_restartInFlight.store(true, std::memory_order_release);
+		if (xTaskCreate(&ThreeCxAnchorClient::restartTaskTrampoline, "3cx_restart", 6144, this, 5, nullptr) != pdPASS)
+		{
+			ESP_LOGE(TAG, "tick: failed to spawn anchor-restart worker");
+			_restartInFlight.store(false, std::memory_order_release);
+		}
+	}
+
 	if (!_outboundActive.load(std::memory_order_acquire)) return;
 	if (_reconcileInFlight.load(std::memory_order_acquire)) return;
 
@@ -1195,6 +1211,59 @@ void ThreeCxAnchorClient::reconcileTaskTrampoline(void* arg)
 	// does not unwind the C++ stack, so this clear must be explicit here (not an RAII guard) — and
 	// the only cJSON RAII above is confined to an inner scope that has already run.
 	self->_reconcileInFlight.store(false, std::memory_order_release);
+	vTaskDelete(nullptr);
+}
+
+// Issue #65 (L-1): one-shot worker that reclaims leaked GET sockets by cycling the
+// whole anchor. stop() tears down the WS + control + media clients and frees every
+// socket it still OWNS; the leaked _getClient handles cannot be closed (their mutex is
+// poisoned), but a full stop()/start() drops the anchor's live socket footprint to
+// zero and rebuilds it clean, so the pool recovers headroom. Runs off the SIP task
+// because stop()/start() block on TLS teardown/handshake.
+void ThreeCxAnchorClient::restartTaskTrampoline(void* arg)
+{
+	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+
+	ESP_LOGW(TAG, "anchor restart: reclaiming socket pool after %d leaked GET handle(s)",
+	         self->_leakedGetClients.load(std::memory_order_relaxed));
+
+	// Clear the request BEFORE the cycle so a leak that happens during/after the
+	// restart re-arms the watchdog instead of being swallowed.
+	self->_restartRequested.store(false, std::memory_order_release);
+
+	// stop() nulls _eventCb/_audioCb (they are installed once at boot by the engine
+	// wiring and never re-installed by start()). Snapshot them under _mutex and
+	// re-register after stop() so the reconnected anchor still delivers Incoming events
+	// and inbound audio — otherwise the restart would leave the anchor deaf.
+	EventCallback   savedEventCb;
+	AudioRxCallback savedAudioCb;
+	{
+		std::lock_guard<std::mutex> lock(self->_mutex);
+		savedEventCb = self->_eventCb;
+		savedAudioCb = self->_audioCb;
+	}
+
+	self->stop();
+	// Reset the leak tally: stop() has released everything the anchor owned, so the
+	// previously-leaked handles are the OS's problem now and the fresh session starts
+	// from a clean count. (A still-poisoned mutex would re-leak and re-trip the gate.)
+	self->_leakedGetClients.store(0, std::memory_order_release);
+
+	// Re-install the callbacks before start() so the new WS session is wired up.
+	self->setEventCallback(savedEventCb);
+	self->registerAudioRxCallback(savedAudioCb);
+
+	if (!self->start())
+	{
+		ESP_LOGE(TAG, "anchor restart: start() failed — will retry on the next reconnect cycle");
+	}
+	else
+	{
+		ESP_LOGI(TAG, "anchor restart: complete, socket pool reclaimed");
+	}
+
+	// Clear the in-flight gate LAST so tick() can spawn a future restart if needed.
+	self->_restartInFlight.store(false, std::memory_order_release);
 	vTaskDelete(nullptr);
 }
 
@@ -1784,7 +1853,17 @@ void ThreeCxAnchorClient::stopMediaStreams()
 				}
 				else
 				{
-					ESP_LOGE(TAG, "_getMutex poisoned by killed task — leaking _getClient to avoid deadlock");
+					// Issue #65 (L-1): _getClient (and its LWIP socket) is now unrecoverable
+					// in place. Count it; once we have leaked too many, request a full anchor
+					// restart so the next stop()/start() reclaims the whole socket pool. The
+					// restart is performed off the SIP task by tick() (it only spawns a worker).
+					const int leaked = _leakedGetClients.fetch_add(1, std::memory_order_relaxed) + 1;
+					ESP_LOGE(TAG, "_getMutex poisoned by killed task — leaking _getClient to avoid deadlock (%d leaked)", leaked);
+					if (leaked >= kLeakRestartThreshold)
+					{
+						_restartRequested.store(true, std::memory_order_release);
+						ESP_LOGW(TAG, "Leaked GET sockets reached %d — requesting anchor restart to reclaim the pool", leaked);
+					}
 				}
 			}
 		}
