@@ -86,7 +86,7 @@ Code branches on `defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)` v
 - `sketches/` — standalone Arduino IDE ports (the `SipServer_JC3248W535` sketch is **deprecated** in favor of the ESP-IDF display build).
 - `.smoke/` — hardware smoke scripts (serial capture, SIP probe, NVS provisioning generator).
 - `tests/http/test_api.sh` is the single HTTP smoke suite used by both CI and on-hardware runs.
-- `docs/` — deep-dives (ARCHITECTURE, SCALING, THREAT_MODEL, OTA, PROVISIONING, RTP). `ISSUES.md` is the live architectural roadmap/issue tracker.
+- `docs/` — deep-dives (ARCHITECTURE, SCALING, THREAT_MODEL, OTA, PROVISIONING, RTP, SBC_TRUNK). `ISSUES.md` is the live architectural roadmap/issue tracker.
 - Build output dirs (`build*/`) and `*.log` files in the repo root are local scratch — don't commit them.
 
 ## SSH sysop terminal & TUI (the primary config surface)

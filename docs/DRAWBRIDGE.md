@@ -1,8 +1,7 @@
 # DRAWBRIDGE — System Architecture Overview
 **Working codename:** DRAWBRIDGE (provisional — the device answers the door for nobody; the bridge lowers outbound only)  
 **Status:** Draft for review · v0.1  
-**Owner:** Glomar / Engage Communications  
-**Scope:** Full-stack architecture for a LAN-sovereign edge PBX whose only PSTN connectivity is an authenticated, outbound, operator-owned media API. Covers edge device, media anchor, CLEC core integration, and fleet plane.
+**Scope:** Full-stack architecture for a LAN-sovereign edge PBX whose only PSTN connectivity is an authenticated, outbound, operator-owned media API. Covers edge device, media anchor, carrier-core integration, and fleet plane.
 
 ---
 
@@ -12,7 +11,7 @@
   1. **No inbound listener on the WAN interface.** Ever. No SIP trunk registration, no exposed RTP range, no management port. All external connectivity is initiated by the device.
   2. **No shared secrets.** Device identity is an mTLS certificate issued by the operator CA. SIP passwords do not exist anywhere in the system's external surface.
   3. **LAN survivability.** Internal calling, paging, and intercom function with the WAN cable cut.
-  4. **Anchor independence.** The device speaks an abstract anchor contract (§4). 3CX Call Control API is the first binding, not the architecture.
+  4. **Anchor independence.** The device speaks an abstract anchor contract (§4). A commercial softswitch's call-control API is the first binding, not the architecture.
   5. **Auditable opacity.** Outbound-only posture + inspectable firmware = a fleet the operator can provably not reach into uninvited. The security posture is the product.
 
 ---
@@ -20,13 +19,13 @@
 ## 1. System Topology
 
 ```
- CUSTOMER PREMISES                    │            ENGAGE INFRASTRUCTURE (GCP / edge)
+ CUSTOMER PREMISES                    │            OPERATOR INFRASTRUCTURE (cloud / edge)
                                       │
  ┌──────────┐  SIP/RTP (LAN only)     │
  │ Handsets ├──────────────┐          │
  └──────────┘              │          │   mTLS, outbound only
  ┌──────────┐         ┌────┴─────┐    │   ┌──────────────────┐      ┌─────────────────┐
- │ Door/    ├─────────┤DRAWBRIDGE│════╪══▶│  MEDIA ANCHOR     │─SIP──┤ CLEC CORE       │
+ │ Door/    ├─────────┤DRAWBRIDGE│════╪══▶│  MEDIA ANCHOR     │─SIP──┤ CARRIER CORE    │
  │ paging   │  GPIO/  │  (T-ETH  │    │   │  (per-tenant      │ /TDM │ trunks · LCR    │
  └──────────┘  audio  │ Elite S3)│    │   │   route point)    │      │ STIR/SHAKEN     │
                       └────┬─────┘    │   │  PCM ⇄ JSON ctrl  │      │ E911/RAY BAUM   │
@@ -45,9 +44,9 @@ Four roles. Each is independently replaceable; the contracts between them are th
 | Role | Lives | Owns | Replaceable by |
 | :--- | :--- | :--- | :--- |
 | **Edge device** | Customer LAN, PoE | Local dialplan, registrar, media bridge, survivability | Bigger silicon, same firmware contract |
-| **Media anchor** | Engage GCP region nearest footprint | RTP ⇄ PCM termination, per-tenant route points, anchor API | 3CX / Apidaze → Porta / FreeSWITCH / custom (§4) |
-| **CLEC core** | Existing Engage infrastructure | Trunks, attestation, E911, CNAM, fraud, DIDs | Nothing — this is the moat |
-| **Fleet plane** | Engage GCP | CA, provisioning, OTA, telemetry | Grows from scripts to service |
+| **Media anchor** | Operator cloud region nearest footprint | RTP ⇄ PCM termination, per-tenant route points, anchor API | Commercial softswitch / CPaaS API → FreeSWITCH / custom (§4) |
+| **Carrier core** | Existing operator infrastructure | Trunks, attestation, E911, CNAM, fraud, DIDs | Nothing — this is the moat |
+| **Fleet plane** | Operator cloud | CA, provisioning, OTA, telemetry | Grows from scripts to service |
 
 ---
 
@@ -85,7 +84,7 @@ Ethernet is via `esp_eth` W5500 MACRAW → lwIP. The W5500's internal TCP/IP sta
 │  ├────────────────────┤         │  └ Identity: mTLS client │  │
 │  │ Local dialplan     │         ├─────────────────────────┤  │
 │  │  + VSC layer       │         │ Anchor Abstraction (§4)  │  │
-│  ├────────────────────┤         │  binding: 3cx-ccapi      │  │
+│  ├────────────────────┤         │  binding: ccapi          │  │
 │  │ DTMF feature codes │         └─────────────────────────┘  │
 │  │ paging / intercom  │                                      │
 │  └─────────┬──────────┘                                      │
@@ -99,6 +98,7 @@ Ethernet is via `esp_eth` W5500 MACRAW → lwIP. The W5500's internal TCP/IP sta
 │            telemetry agent · watchdog/health · island-mode FSM│
 └─────────────────────────────────────────────────────────────┘
 ```
+<!-- Anchor binding label above (`ccapi`) is the abstract call-control-API contract of §4, not a specific vendor. -->
 
 ### 3.2 LAN plane
 * **SIP registrar/UA:** Handsets register to the device; standards-enough SIP that commodity Yealink/Grandstream/Poly endpoints work without per-model hacks. Ext↔ext calls negotiate direct media — the S3 touches signaling only, so internal calling consumes no media budget.
@@ -108,7 +108,7 @@ Ethernet is via `esp_eth` W5500 MACRAW → lwIP. The W5500's internal TCP/IP sta
 ### 3.3 WAN plane
 * **Control channel:** One persistent WSS connection to the anchor. Carries call state events, DTMF events, and call-control requests (make/answer/divert/transfer/drop), request/response keyed by ID. Reconnect with jittered exponential backoff; channel health is the island-mode trigger.
 * **Media channels:** Per active external call, one full-duplex raw PCM path (16-bit/8 kHz/mono): chunked HTTPS GET for far-end audio, chunked POST for near-end. Connections persistent and pre-warmed where possible — the TLS handshake is the expensive event; steady-state AES-GCM is hardware-accelerated and cheap.
-* **Identity:** mTLS client cert from the Engage CA, device-unique, provisioned at manufacture or first-boot claim (§7). The anchor authenticates the device; per-call authorization is tenant policy at the anchor.
+* **Identity:** mTLS client cert from the operator CA, device-unique, provisioned at manufacture or first-boot claim (§7). The anchor authenticates the device; per-call authorization is tenant policy at the anchor.
 
 ### 3.4 Media bridge — the one hard real-time problem
 Per external call: `handset RTP (G.711, 20 ms) ⇄ bridge ⇄ anchor PCM (TCP)`.
@@ -144,16 +144,16 @@ interface MediaAnchor {
 }
 ```
 
-* **Binding 1 — `3cx-ccapi` (Testing-Working):** WSS event channel + `/callcontrol/{dn}/participants/{id}/stream` GET/POST against a per-tenant route point on Engage's hosted 3CX. (Currently verified and working).
-* **Binding 2 — `apidaze` (Testing-Working):** Direct integration with the VoIP Innovations / Apidaze API. (Currently verified and working).
-* **Binding 3 — `porta-switch` (Roadmap):** Integration with the Porta softswitch API.
-* **Binding 4 — `engage-native` (later):** FreeSWITCH/rtpengine + thin control daemon, or fully custom, speaking the same contract — same wire shape, operator-defined, no per-tenant license drag, deployable to whatever region/edge the latency map says. The contract above is deliberately so small that this is a bounded project.
+* **Binding 1 — `ccapi` (Testing-Working):** WSS event channel + `/callcontrol/{dn}/participants/{id}/stream` GET/POST against a per-tenant route point on a hosted commercial softswitch's call-control API. (Currently verified and working.)
+* **Binding 2 — `cpaas-http` (Testing-Working):** Direct integration with a commercial CPaaS provider's HTTP telephony API. (Currently verified and working.)
+* **Binding 3 — `softswitch-rest` (Roadmap):** Integration with a third-party softswitch's REST API.
+* **Binding 4 — `operator-native` (later):** FreeSWITCH/rtpengine + thin control daemon, or fully custom, speaking the same contract — same wire shape, operator-defined, no per-tenant license drag, deployable to whatever region/edge the latency map says. The contract above is deliberately so small that this is a bounded project.
 * **Rule:** No platform-specific leaks above the binding layer. Code review enforces it; an in-tree mock binding (loopback anchor) keeps everyone honest and enables CI without a PBX.
 
 ---
 
 ## 5. Call Flows
-* **Outbound PSTN:** Handset dials → device dialplan classifies external → `request(makecall)` on control channel → anchor originates via CLEC core (LCR, attestation applied upstream) → `answered` event → device opens PCM rx/tx streams → bridge marries RTP leg to PCM leg. Teardown from either side propagates through events.
+* **Outbound PSTN:** Handset dials → device dialplan classifies external → `request(makecall)` on control channel → anchor originates via carrier core (LCR, attestation applied upstream) → `answered` event → device opens PCM rx/tx streams → bridge marries RTP leg to PCM leg. Teardown from either side propagates through events.
 * **Inbound PSTN:** DID terminates at tenant route point → anchor emits `incoming` event → device applies dialplan (ring group, time-of-day, IVR) → on local answer, bridge as above. The PSTN never learns the customer's IP exists.
 * **Ext ↔ Ext:** Registrar + direct media. Device is signaling-only; WAN irrelevant.
 * **Island mode (WAN/anchor loss):** Control-channel health FSM declares island → LAN calling fully functional → external dials get local intercept tone/announcement → optional analog/cellular failover is explicitly out of scope for v1 (it would reintroduce the attack surface the architecture exists to eliminate; if a customer requires it, it's a separate hardened module and its own ADR). Recovery: reconnect, re-sync call state, re-register presence with anchor.
@@ -162,10 +162,10 @@ interface MediaAnchor {
 ---
 
 ## 6. Identity & Security Model
-* **PKI:** Engage operates a private CA (offline root, online issuing intermediate). Each device: unique keypair generated on-device (key never leaves), CSR at provisioning, short-lived certs (90 d) auto-renewed over the control channel. Revocation = fleet kill switch.
+* **PKI:** The operator runs a private CA (offline root, online issuing intermediate). Each device: unique keypair generated on-device (key never leaves), CSR at provisioning, short-lived certs (90 d) auto-renewed over the control channel. Revocation = fleet kill switch.
 * **No credentials class:** SIP trunk passwords structurally absent → credential-stuffing trunk fraud (the classic small-ITSP bankruptcy event) cannot occur against this product line. LAN handset registration uses per-extension secrets confined to the LAN and never valid upstream.
 * **Surfaces:** WAN — zero listeners, outbound 443 only (a firewall rule a customer's IT department will actually approve). LAN — SIP/RTP to local subnet + SSH (keys only). Physical — flash encryption + secure boot on the S3; SD treated as hostile.
-* **Fraud posture:** All toll decisions execute at the CLEC core where fraud controls already live; the device cannot originate PSTN traffic except through its authenticated tenant route point with tenant policy applied. Per-tenant rate/spend limits are anchor-side config.
+* **Fraud posture:** All toll decisions execute at the carrier core where fraud controls already live; the device cannot originate PSTN traffic except through its authenticated tenant route point with tenant policy applied. Per-tenant rate/spend limits are anchor-side config.
 * **Transparency property:** Outbound-only + signed OTA + reproducible builds (goal) = the operator can demonstrate non-access. Publish the claim; let it be audited. This is a differentiator, market it as one.
 
 ---
@@ -214,25 +214,25 @@ Failure-mode ordering under overload mirrors the relay analysis: jitter tail ─
 ## 10. Open Decisions (ADR queue)
 Each gets a real ADR before the milestone that depends on it. Current leanings noted, not decided.
 * **ADR-001 — SIP stack on device:** Port a proven minimal stack vs. own UA implementation. Forces: commodity-handset interop (the long tail of Yealink quirks) vs. footprint and license. Leaning: smallest battle-tested stack that passes a 3-vendor handset matrix. Blocker for M2.
-* **ADR-002 — PCM transport framing to anchor:** Raw chunked HTTP (3CX-shaped) vs. WS-framed audio in the native binding. Forces: binding symmetry, head-of-line behavior, proxy friendliness. Blocker for M5 only.
+* **ADR-002 — PCM transport framing to anchor:** Raw chunked HTTP (commercial-softswitch-shaped) vs. WS-framed audio in the native binding. Forces: binding symmetry, head-of-line behavior, proxy friendliness. Blocker for M5 only.
 * **ADR-003 — Playout buffer adaptation algorithm:** Fixed+watermark vs. delay-percentile adaptive. Forces: the §3.4 instrumentation decides this empirically — ship simple, adapt on fleet data. Blocker for M3 exit.
 * **ADR-004 — Config model:** Single signed text artifact vs. structured store with deltas. Forces: auditability (favors artifact) vs. fleet-push granularity. Blocker for M4.
-* **ADR-005 — Native anchor technology:** FreeSWITCH vs. rtpengine+daemon vs. ground-up. Forces: time-to-replace-3CX vs. operational fit with Engage GCP. Blocker for M5.
+* **ADR-005 — Native anchor technology:** FreeSWITCH vs. rtpengine+daemon vs. ground-up. Forces: time-to-replace the commercial softswitch vs. operational fit with the operator cloud. Blocker for M5.
 * **ADR-006 — Island-mode external failover:** Confirmed out of scope v1, or hardened optional module. Forces: doctrine invariant #1 vs. market demand. Decide after first 10 tenants ask (or don't).
 
 ---
 
 ## 11. Milestone Roadmap
 Each milestone has a demo and an exit criterion. No milestone depends on an undecided ADR.
-* **M0 — Bench transport proof:** S3 ↔ 3CX CCAPI: control channel up, one PCM stream each way, audio audible both directions on a single call. Exit: loop a test call for 1 hour, zero stream stalls on LAN-local anchor. *(De-risks: the entire premise.)*
+* **M0 — Bench transport proof:** S3 ↔ commercial-softswitch call-control API: control channel up, one PCM stream each way, audio audible both directions on a single call. Exit: loop a test call for 1 hour, zero stream stalls on LAN-local anchor. *(De-risks: the entire premise.)*
 * **M1 — Media bridge:** One handset (RTP) bridged to one PSTN call via anchor. Playout buffer v1 with full instrumentation. Exit: MOS-credible audio over a WAN-realistic path (netem-impaired link), buffer histograms collected.
 * **M2 — LAN PBX:** Registrar + dialplan + ext ↔ ext direct media + DTMF feature codes; 3-vendor handset matrix passes. Exit: an office of 5 handsets lives on it for a week. *(Depends: ADR-001.)*
 * **M3 — Concurrency & admission:** N simultaneous external calls to spec figure; call admission control; overload behaves per §8. Exit: 8 concurrent calls, 24-hour soak, zero underrun-caused artifacts at P95. *(Depends: ADR-003.)*
 * **M4 — Fleet plane v1:** CA, claim flow, ZTP, signed OTA with A/B + rollback, telemetry ingest. Exit: factory-reset device to first call < 5 min, untouched by an engineer. *(Depends: ADR-004.)*
-* **M5 — Native anchor:** `engage-native` binding deployed in GCP; device swaps bindings by config. Exit: same M3 soak passes against the native anchor; 3CX demoted to "supported binding." *(Depends: ADR-002, ADR-005.)*
-* **M6 — Pilot:** 3–5 friendly Engage tenants in production. Exit: 30 days, fleet telemetry clean, one honest postmortem written.
+* **M5 — Native anchor:** `operator-native` binding deployed in the operator cloud; device swaps bindings by config. Exit: same M3 soak passes against the native anchor; the commercial softswitch demoted to "supported binding." *(Depends: ADR-002, ADR-005.)*
+* **M6 — Pilot:** 3–5 friendly tenants in production. Exit: 30 days, fleet telemetry clean, one honest postmortem written.
 
-**Sequencing rationale:** M0 before everything because the PCM-over-CCAPI path is the only premise not already proven in this design; M5 deliberately late because 3CX is a perfectly good crutch while the edge is being hardened.
+**Sequencing rationale:** M0 before everything because the PCM-over-call-control-API path is the only premise not already proven in this design; M5 deliberately late because the commercial softswitch is a perfectly good crutch while the edge is being hardened.
 
 ---
 
@@ -245,7 +245,7 @@ Shared lineage, different products, deliberate component reuse:
 | **SSH-only management posture** | Origin (post-redesign) | Direct reuse |
 | **SIP UA / registrar** | Shared library target | Shared library target |
 | **WAN trunk model** | SIP (open-source, BYO-carrier) | Anchor API (operator-bound) |
-| **Governance** | Open source | Engage product (open-core decision TBD — candidate ADR-007) |
+| **Governance** | Open source | Commercial product (open-core decision TBD — candidate ADR-007) |
 
 **Rule:** Keep the shared pieces in a common library from M2 onward; divergence later is cheap, convergence later is not.
 
