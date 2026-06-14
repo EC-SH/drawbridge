@@ -736,6 +736,15 @@ private:
 	std::vector<std::shared_ptr<SipClient>> _clientPool;
 	std::vector<std::shared_ptr<Session>> _sessionPool;
 	static std::vector<std::shared_ptr<SipMessage>> _messagePool;
+	// Issue #41: dedicated leaf mutex guarding the static _messagePool. The pool is
+	// drawn lock-free from the UDP RX thread (SipMessageFactory::createMessage, before
+	// handle() takes _mutex) AND under _mutex from tick()/handler threads, so _mutex
+	// does NOT serialise the two. getMessageFromPool() does a check-then-act
+	// (use_count()==1 → reset) that is a data race without its own lock. This leaf
+	// mutex is held only for the brief slot scan/reset — never around blocking I/O —
+	// so it cannot deadlock against _mutex (always acquired innermost, never nested
+	// the other way). Ordered AFTER _messagePool so it is constructed/destroyed last.
+	static std::mutex _messagePoolMutex;
 
 	// Issue #38: token bucket keyed by source IPv4 (network-order s_addr).
 	struct RateBucket

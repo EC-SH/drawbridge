@@ -33,6 +33,7 @@
 #endif
 
 std::vector<std::shared_ptr<SipMessage>> RequestsHandler::_messagePool;
+std::mutex RequestsHandler::_messagePoolMutex;
 
 namespace
 {
@@ -138,6 +139,15 @@ RequestsHandler::~RequestsHandler()
 
 std::shared_ptr<SipMessage> RequestsHandler::getMessageFromPool(std::string message, sockaddr_in src)
 {
+	// Issue #41 (C-1): the check-then-act below (use_count()==1 → reset) runs on the
+	// UDP RX thread (via SipMessageFactory::createMessage, BEFORE handle() takes
+	// _mutex) AND from tick()/handlers (under _mutex). _mutex does not serialise the
+	// two callers, so two threads could otherwise both observe the same idle slot,
+	// reset it, and hand out the same buffer (UB: corrupt message, reset mid-parse).
+	// A dedicated leaf mutex makes the scan+reset atomic. It is a LEAF: held only for
+	// the brief scan/reset, never around socket/NVS I/O, and never nested inside
+	// itself, so it cannot deadlock against _mutex.
+	std::lock_guard<std::mutex> poolLock(_messagePoolMutex);
 	for (auto& msg : _messagePool)
 	{
 		if (msg.use_count() == 1)
