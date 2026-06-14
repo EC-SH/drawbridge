@@ -61,6 +61,12 @@ public:
 
 	// Register callback to receive audio chunks from the active call's GET stream
 	virtual void registerAudioRxCallback(AudioRxCallback cb) = 0;
+
+	// Periodic, non-blocking maintenance pump, driven from RequestsHandler::tick()
+	// (≤1 Hz). Implementations must do only constant-time work here — read flags,
+	// spawn a worker for any blocking I/O — never block, log, or allocate. The
+	// ThreeCx anchor uses it to run the _outboundActive reconcile watchdog.
+	virtual void tick() = 0;
 };
 
 #endif // ANCHOR_CLIENT_HPP

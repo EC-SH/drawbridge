@@ -72,6 +72,7 @@ public:
 	void setEventCallback(EventCallback) override {}   // no events will ever fire
 	bool writeAudio(const int16_t*, size_t) override { return false; }
 	void registerAudioRxCallback(AudioRxCallback) override {}
+	void tick() override {}                            // no periodic maintenance
 
 	TelephonyProviderType type() const { return _type; }
 

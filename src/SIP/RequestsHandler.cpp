@@ -3486,6 +3486,11 @@ void RequestsHandler::tick()
 	}
 	_lastTick = now;
 
+	// Periodic non-blocking pump for the WAN anchor (e.g. the 3CX _outboundActive reconcile
+	// watchdog). Called outside the registrar _mutex (invariant #2); it only reads atomics and
+	// may spawn its own worker for any blocking I/O.
+	if (_anchorClient) _anchorClient->tick();
+
 	std::vector<std::pair<sockaddr_in, std::shared_ptr<SipMessage>>> localOutbox;
 	std::vector<std::pair<bool, std::string>> localLogs;
 	{

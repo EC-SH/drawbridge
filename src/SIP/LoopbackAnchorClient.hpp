@@ -28,6 +28,7 @@ public:
 	void setEventCallback(EventCallback cb) override;
 	bool writeAudio(const int16_t* pcmSamples, size_t count) override;
 	void registerAudioRxCallback(AudioRxCallback cb) override;
+	void tick() override {}   // no periodic maintenance for the in-process loopback
 
 	// Test hook: pretend the upstream is delivering a PSTN call to the monitored DN.
 	// Fires a single CallEvent::Incoming (participant id "mock-in-<n>", the given

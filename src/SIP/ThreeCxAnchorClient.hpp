@@ -35,6 +35,7 @@ public:
 	void setEventCallback(EventCallback cb) override;
 	bool writeAudio(const int16_t* pcmSamples, size_t count) override;
 	void registerAudioRxCallback(AudioRxCallback cb) override;
+	void tick() override;   // non-blocking; runs the _outboundActive reconcile watchdog (ESP only)
 
 private:
 	std::string _baseUrl;
@@ -54,6 +55,15 @@ private:
 	// only once. Both guarded by _mutex.
 	std::atomic<bool> _outboundActive{false};
 	std::string       _inboundSignaledPartId;
+	// Monotonic (esp_timer) timestamp of the last _outboundActive=true, guarded by _mutex.
+	// The tick() watchdog uses it to detect an outbound makecall that 3CX accepted but that
+	// never produced a participant — the flag would otherwise wedge inbound ringing forever.
+	int64_t           _outboundActiveSetUs = 0;
+	// One-shot guard: the watchdog spawns at most one reconcile worker at a time.
+	std::atomic<bool> _reconcileInFlight{false};
+	// Resolved device_id for the device-specific makecall transport, guarded by _mutex. Empty
+	// until lazily resolved; cleared on WS disconnect so a device registration flap re-resolves.
+	std::string       _deviceId;
 
 	EventCallback   _eventCb;
 	AudioRxCallback _audioCb;
@@ -83,6 +93,9 @@ private:
 
 	TaskHandle_t      _rxTaskHandle = nullptr;
 	SemaphoreHandle_t _rxDoneSem    = nullptr; // signalled by rx task before it deletes itself
+	// Single-entry gate for stopMediaStreams(): a concurrent caller (WS-disconnect vs stop())
+	// loses the CAS and returns immediately, so only the winner frees _getClient.
+	std::atomic<bool> _tearingDown{false};
 
 	static void wsEventTrampoline(void* handlerArgs, esp_event_base_t base, int32_t eventId, void* eventData);
 	void handleWsEvent(int32_t eventId, void* eventData);
@@ -113,6 +126,26 @@ private:
 	void warmCtrlConnection();   // pre-establish the control TLS session (boot/reconnect)
 	void closeCtrlClient();      // teardown under _ctrlMutex
 	bool readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out);
+
+	// Live-state GET helpers (reconcile watchdog + drop-fallback + device resolve). Generalize
+	// the getParticipantStatus GET path; snapshot creds under _mutex then do blocking I/O lock-free.
+	bool httpGetBody(const std::string& url, std::string& bodyOut, int* statusOut = nullptr);
+	// First participant id currently on our DN (single-leg assumption), or "" if none / on error.
+	std::string reconcileParticipantId();
+	// POST + capture the response body (for makecall result.id). Fresh client (not the persistent
+	// ctrl connection) so the body is readable; creds snapshot under _mutex, blocking I/O lock-free.
+	bool httpPostBody(const std::string& url, const char* contentType, const std::string& body, std::string& respBody, int* statusOut = nullptr);
+	// The leg WE control for an outbound call: makecall result.id, else a destination digit-suffix
+	// match in the live participant list — the id 3CX authorizes us to stream/drop (issue #40).
+	std::string resolveOutboundLeg(const std::string& makecallRespBody, const std::string& destination);
+	// Status of a specific leg read from the LIST (GET /participants -> find id). Replaces
+	// getParticipantStatus(id), which 403s for a leg this DN cannot directly control (issue #40).
+	std::string getLegStatus(const std::string& legId);
+	// Device-specific makecall transport.
+	std::string pickDeviceId(const std::string& body);   // parse a /devices array → a device_id
+	bool resolveDevice();                                 // GET /devices → pickDeviceId → _deviceId
+	// One-shot worker spawned by tick() to clear a wedged _outboundActive (see .cpp).
+	static void reconcileTaskTrampoline(void* arg);
 #endif
 };
 

@@ -43,7 +43,7 @@ SipServer::SipServer(std::string ip, int port, int httpPort) :
 #endif
 
 	// ── Desktop Background Tick Thread ───────────────────────────────
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
 	_tickRunning = true;
 	_tickThread = std::thread(&SipServer::tickLoop, this);
 #endif
@@ -51,7 +51,7 @@ SipServer::SipServer(std::string ip, int port, int httpPort) :
 
 SipServer::~SipServer()
 {
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
 	if (_tickRunning)
 	{
 		_tickRunning = false;
@@ -77,7 +77,7 @@ void SipServer::onHandled(const sockaddr_in& dest, std::shared_ptr<SipMessage> m
 	_socket.send(dest, message->toString());
 }
 
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
 void SipServer::tickLoop()
 {
 	while (_tickRunning)
