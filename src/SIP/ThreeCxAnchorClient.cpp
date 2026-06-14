@@ -162,7 +162,7 @@ ThreeCxAnchorClient::ThreeCxAnchorClient() = default;
 
 ThreeCxAnchorClient::~ThreeCxAnchorClient()
 {
-	stop();
+	shutdownImpl();   // non-virtual: never dispatch a virtual call from a destructor
 	if (_rxDoneSem)
 	{
 		vSemaphoreDelete(_rxDoneSem);
@@ -220,6 +220,11 @@ bool ThreeCxAnchorClient::start()
 }
 
 void ThreeCxAnchorClient::stop()
+{
+	shutdownImpl();
+}
+
+void ThreeCxAnchorClient::shutdownImpl()
 {
 	{
 		std::lock_guard<std::mutex> lock(_mutex);

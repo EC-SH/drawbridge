@@ -128,6 +128,10 @@ private:
 
 	bool startMediaStreams(const std::string& participantId);
 	void stopMediaStreams();
+	// Non-virtual teardown shared by stop() and the destructor so ~ThreeCxAnchorClient()
+	// never makes a virtual call (cppcheck virtualCallInConstructor; dynamic binding is
+	// not used in a destructor anyway).
+	void shutdownImpl();
 	// Spawn the Rx task (GET-stream retry loop) if it isn't running yet. Called
 	// at RINGING so the loop is already polling on a warm TLS connection when
 	// the leg connects — inbound audio then opens ~one RTT after answer.

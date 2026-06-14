@@ -50,6 +50,9 @@ private:
 	mutable std::mutex _mutex;
 
 	void reapSimThreads();
+	// Non-virtual teardown shared by stop() and the destructor so ~LoopbackAnchorClient()
+	// never makes a virtual call (cppcheck virtualCallInConstructor).
+	void shutdownImpl();
 
 	std::vector<std::thread> _simThreads;
 	std::atomic<bool> _stopSimThread{false};
