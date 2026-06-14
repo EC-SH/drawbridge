@@ -92,7 +92,7 @@ See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 - Desktop (Linux/Windows) mode + Arduino IDE sketch templates
 - **End-to-end hardware validation on the JC3248W535** (Issue #44) ✅
 - **Commercial softswitch call-control API trunk anchor**: Terminate the handset's RTP locally and bridge audio to an upstream softswitch over mTLS HTTPS/WSS (PCM16 @ 8kHz)
-- **Inbound PSTN→extension calls (Mode 1)** via the trunk anchor (delayed-offer INVITE toward the extension; *not yet hardware-verified*)
+- **Inbound PSTN→extension calls (Mode 1)** via the trunk anchor (delayed-offer INVITE toward the extension; *hardware-verified pre-alpha — two-way audio, bridging, and DTMF working; soak/stability hardening in progress*)
 - **SIP digest authentication** with per-extension secrets (`SipSecretStore`) and **open / learn / secure registrar modes** (`RegistrarMode`)
 - **Call forwarding**: unconditional (CFU), on-busy (CFB), no-answer (CFNA)
 - **Ring/hunt groups** (`/api/group`)
