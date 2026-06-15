@@ -214,6 +214,10 @@ bool ThreeCxAnchorClient::start()
 		return false;
 	}
 
+	// 2b. Spin up the WS event worker pool (#43) so handleWsEvent can hand off the blocking
+	// status-check / media-start and keep the WS task answering PINGs.
+	startWsWorkers();
+
 	// 3. Pre-establish the control-plane TLS session so the first makecall
 	// doesn't pay the handshake during post-dial delay.
 	warmCtrlConnection();
@@ -238,12 +242,20 @@ void ThreeCxAnchorClient::shutdownImpl()
 		_connected = false;
 	}
 
+	// #43: stop the WS client first so handleWsEvent() enqueues nothing more, then JOIN and
+	// tear down the worker pool BEFORE the streams/clients its work touches (stopMediaStreams,
+	// getLegStatus) — otherwise a worker could run blocking I/O against half-freed state.
+	if (_wsClient)
+	{
+		esp_websocket_client_stop(_wsClient);
+	}
+	stopWsWorkers();
+
 	stopMediaStreams();
 	closeCtrlClient();
 
 	if (_wsClient)
 	{
-		esp_websocket_client_stop(_wsClient);
 		esp_websocket_client_destroy(_wsClient);
 		_wsClient = nullptr;
 	}
@@ -728,7 +740,9 @@ bool ThreeCxAnchorClient::connectWs()
 	wsCfg.uri = wsUrl.c_str();
 	wsCfg.headers = authHeader.c_str();
 	wsCfg.crt_bundle_attach = esp_crt_bundle_attach;
-	wsCfg.task_stack = 16384; // needs headroom for two blocking HTTP sessions fired from event handler
+	wsCfg.task_stack = 6144; // #43: the event handler is now lightweight (parse+enqueue); the
+	                         // blocking HTTP moved to the 3cx_wsw worker pool, so the WS task no
+	                         // longer needs headroom for two in-flight HTTP sessions.
 	wsCfg.buffer_size = 4096;
 	// #93 — keep the control WebSocket warm so it never idles out into a full TLS
 	// reconnect (the S3 has no ECC accelerator, so a cold WSS handshake is software-ECDHE
@@ -1505,6 +1519,180 @@ void ThreeCxAnchorClient::wsEventTrampoline(void* handlerArgs, esp_event_base_t 
 	self->handleWsEvent(eventId, eventData);
 }
 
+// ── #43: WS event worker pool ────────────────────────────────────────────────
+bool ThreeCxAnchorClient::startWsWorkers()
+{
+	if (_wsWorkQueue) return true;   // idempotent (restart path reuses)
+	if (!_wsWorkerDoneSem)
+	{
+		_wsWorkerDoneSem = xSemaphoreCreateCounting(kWsWorkers, 0);
+		if (!_wsWorkerDoneSem) { ESP_LOGE(TAG, "startWsWorkers: sem create failed"); return false; }
+	}
+	_wsWorkQueue = xQueueCreate(kWsQueueDepth, sizeof(WsWorkItem*));
+	if (!_wsWorkQueue)
+	{
+		ESP_LOGE(TAG, "startWsWorkers: xQueueCreate failed");
+		return false;
+	}
+	_wsWorkersRun.store(true, std::memory_order_release);
+	for (int i = 0; i < kWsWorkers; ++i)
+	{
+		// 12288 stack: the worker runs getLegStatus()+startMediaStreams() — the same blocking
+		// TLS HTTP the WS task used to carry (its stack was 16384 for exactly that). Unpinned
+		// so the scheduler keeps it off the SIP core.
+		if (xTaskCreate(&ThreeCxAnchorClient::wsWorkerTrampoline, "3cx_wsw", 12288, this, 4,
+		                &_wsWorkerHandles[i]) != pdPASS)
+		{
+			ESP_LOGE(TAG, "startWsWorkers: xTaskCreate worker %d failed (heap?)", i);
+			_wsWorkerHandles[i] = nullptr;
+			// Worker won't run -> never gives the done-sem; pre-give so stopWsWorkers()'s
+			// per-worker join doesn't block on a worker that never started.
+			xSemaphoreGive(_wsWorkerDoneSem);
+		}
+	}
+	return true;
+}
+
+void ThreeCxAnchorClient::stopWsWorkers()
+{
+	if (!_wsWorkQueue) return;
+	_wsWorkersRun.store(false, std::memory_order_release);
+	// Wake each worker with a nullptr sentinel so it leaves xQueueReceive and self-deletes.
+	for (int i = 0; i < kWsWorkers; ++i)
+	{
+		WsWorkItem* sentinel = nullptr;
+		xQueueSend(_wsWorkQueue, &sentinel, 0);
+	}
+	// Wait for EVERY worker to signal done (it gives the sem only after it has left
+	// runWsWorker()/xQueueReceive), so vQueueDelete() below can't race a blocked receive.
+	// 8 s/worker is generous — a worker's longest unit is getLegStatus()/startMediaStreams()
+	// (bounded HTTP timeouts). On the failure-to-spawn path the sem was pre-given.
+	for (int i = 0; i < kWsWorkers; ++i)
+	{
+		if (_wsWorkerDoneSem) xSemaphoreTake(_wsWorkerDoneSem, pdMS_TO_TICKS(8000));
+	}
+	// Drain leftover queued items so they don't leak.
+	WsWorkItem* leftover = nullptr;
+	while (xQueueReceive(_wsWorkQueue, &leftover, 0) == pdTRUE) delete leftover;
+	vQueueDelete(_wsWorkQueue);
+	_wsWorkQueue = nullptr;
+	for (int i = 0; i < kWsWorkers; ++i) _wsWorkerHandles[i] = nullptr;
+}
+
+void ThreeCxAnchorClient::enqueueWsWork(WsWorkItem* item)
+{
+	if (!item) return;
+	if (!_wsWorkQueue || xQueueSend(_wsWorkQueue, &item, 0) != pdTRUE)
+	{
+		// Queue not ready or full — drop it (3CX repeats the upset every ~750 ms). No leak.
+		delete item;
+	}
+}
+
+void ThreeCxAnchorClient::wsWorkerTrampoline(void* arg)
+{
+	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	self->runWsWorker();
+	if (self->_wsWorkerDoneSem) xSemaphoreGive(self->_wsWorkerDoneSem);   // released BEFORE delete
+	vTaskDelete(nullptr);
+}
+
+void ThreeCxAnchorClient::runWsWorker()
+{
+	// Capture the queue locally: stopWsWorkers() nulls the _wsWorkQueue member, but only
+	// AFTER it has joined us via the done-sem, so the handle stays valid for our lifetime.
+	QueueHandle_t q = _wsWorkQueue;
+	if (!q) return;
+	for (;;)
+	{
+		WsWorkItem* item = nullptr;
+		if (xQueueReceive(q, &item, portMAX_DELAY) != pdTRUE) continue;
+		if (!item)   // nullptr sentinel from stopWsWorkers()
+		{
+			if (!_wsWorkersRun.load(std::memory_order_acquire)) return;
+			continue;
+		}
+		if (_wsWorkersRun.load(std::memory_order_acquire)) processWsWork(*item);
+		delete item;
+	}
+}
+
+// The blocking body, lifted verbatim from the old inline handler so behaviour is unchanged —
+// only the EXECUTION CONTEXT moved off the WS event task (#43).
+void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
+{
+	if (!_running.load(std::memory_order_acquire)) return;   // bail during teardown
+
+	EventCallback evCb;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		evCb = _eventCb;
+	}
+
+	if (w.kind == WsWork::Remove)
+	{
+		bool isSameActivePart = false;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			isSameActivePart = (_activeParticipantId == w.partId);
+		}
+		if (isSameActivePart) stopMediaStreams();
+		if (evCb)
+		{
+			CallEvent ev{CallEvent::Dropped, w.partId, "", ""};
+			evCb(ev);
+		}
+		return;
+	}
+
+	// Upset: authoritative status from the LIST (GET /participants -> find leg), never
+	// getParticipantStatus(id) which 403s for a non-controlled leg (issue #40).
+	std::string statusStr = getLegStatus(w.controlLeg);
+	ESP_LOGI(TAG, "Upset %s -> control leg %s status '%s'", w.partId.c_str(), w.controlLeg.c_str(), statusStr.c_str());
+
+	if (statusStr == "Connected")
+	{
+		// Control + media key off OUR leg (controlLeg), not the surfaced partId.
+		if (startMediaStreams(w.controlLeg))
+		{
+			if (evCb)
+			{
+				CallEvent ev{CallEvent::Answered, w.controlLeg, "", ""};
+				evCb(ev);
+			}
+		}
+		else
+		{
+			ESP_LOGE(TAG, "Failed to start media streams for participant %s", w.controlLeg.c_str());
+			stopMediaStreams();
+		}
+	}
+	else
+	{
+		// Not-yet-connected: our own outbound leg ringing, OR the upstream delivering a PSTN
+		// call to the monitored DN. Disambiguate on _outboundActive; announce inbound once.
+		bool isInbound = false;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			isInbound = !_outboundActive.load(std::memory_order_acquire) &&
+			            _inboundSignaledPartId != w.partId;
+			if (isInbound) _inboundSignaledPartId = w.partId;
+		}
+		if (isInbound)
+		{
+			ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
+			         _sourceDn.c_str(), w.partId.c_str(), w.callerId.c_str());
+			if (evCb)
+			{
+				CallEvent ev{CallEvent::Incoming, w.partId, "", w.callerId};
+				evCb(ev);
+			}
+		}
+		// Ring-time prime on the leg we control so the GET stream is polling before connect.
+		startRxIfNeeded(w.controlLeg);
+	}
+}
+
 void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 {
 	auto* data = static_cast<esp_websocket_event_data_t*>(eventData);
@@ -1622,93 +1810,40 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										break;   // call already fully up
 									}
 
-									// Authoritative status from the LIST (GET /participants -> find leg),
-									// never getParticipantStatus(id) which 403s for a non-controlled leg.
-									std::string statusStr = getLegStatus(controlLeg);
-									ESP_LOGI(TAG, "Upset %s -> control leg %s status '%s'", partId.c_str(), controlLeg.c_str(), statusStr.c_str());
-
-									if (statusStr == "Connected")
+									// #43: the status check + media start are blocking TLS HTTP — hand
+									// them to the worker pool so the WS event task stays free to answer
+									// PINGs. Pull the best-effort caller id here (cheap, JSON-only) so
+									// the worker has it for an inbound ring's From display.
+									std::string callerId;
+									cJSON* attached = cJSON_GetObjectItem(eventObj, "attached_data");
+									if (attached)
 									{
-										// Control + media key off OUR leg (controlLeg), not the
-										// surfaced partId — the latter can be the far leg (403).
-										if (startMediaStreams(controlLeg))
+										for (const char* k : { "caller_id", "party_caller_id", "callerid", "caller_number" })
 										{
-											if (evCb)
-											{
-												CallEvent ev{CallEvent::Answered, controlLeg, "", ""};
-												evCb(ev);
-											}
-										}
-										else
-										{
-											ESP_LOGE(TAG, "Failed to start media streams for participant %s", controlLeg.c_str());
-											stopMediaStreams();
+											cJSON* c = cJSON_GetObjectItem(attached, k);
+											if (c && c->valuestring && c->valuestring[0]) { callerId = c->valuestring; break; }
 										}
 									}
-									else
+									auto* item = new (std::nothrow) WsWorkItem{};
+									if (item)
 									{
-										// A not-yet-connected participant on our DN is either our own
-										// outbound leg ringing, OR the upstream delivering a PSTN call
-										// to the monitored DN. Disambiguate on _outboundActive.
-										bool isInbound = false;
-										{
-											std::lock_guard<std::mutex> lock(_mutex);
-											isInbound = !_outboundActive.load(std::memory_order_acquire) &&
-											            _inboundSignaledPartId != partId;
-											if (isInbound) _inboundSignaledPartId = partId;
-										}
-
-										if (isInbound)
-										{
-											// INBOUND: announce it once so the engine rings the local
-											// extension. It calls answerCall(partId) on local answer,
-											// which flips the leg to Connected (handled above). Pull a
-											// best-effort caller id from attached_data for the From line.
-											std::string callerId;
-											cJSON* attached = cJSON_GetObjectItem(eventObj, "attached_data");
-											if (attached)
-											{
-												for (const char* k : { "caller_id", "party_caller_id", "callerid", "caller_number" })
-												{
-													cJSON* c = cJSON_GetObjectItem(attached, k);
-													if (c && c->valuestring && c->valuestring[0])
-													{
-														callerId = c->valuestring;
-														break;
-													}
-												}
-											}
-											ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
-											         _sourceDn.c_str(), partId.c_str(), callerId.c_str());
-											if (evCb)
-											{
-												CallEvent ev{CallEvent::Incoming, partId, "", callerId};
-												evCb(ev);
-											}
-										}
-
-										// RING-TIME PRIME on the leg we control (own leg for outbound,
-										// partId for inbound) so the GET stream is polling before connect.
-										startRxIfNeeded(controlLeg);
+										item->kind       = WsWork::Upset;
+										item->controlLeg = controlLeg;
+										item->partId     = partId;
+										item->callerId   = std::move(callerId);
+										enqueueWsWork(item);
 									}
 								}
 								else if (evTypeNum == TCX_EV_REMOVE)
 								{
 									ESP_LOGI(TAG, "Call control event: Participant Remove %s", partId.c_str());
-									bool isSameActivePart = false;
+									// #43: stopMediaStreams() has a <=2 s rx-join — off the WS task.
+									auto* item = new (std::nothrow) WsWorkItem{};
+									if (item)
 									{
-										std::lock_guard<std::mutex> lock(_mutex);
-										isSameActivePart = (_activeParticipantId == partId);
-									}
-									if (isSameActivePart)
-									{
-										stopMediaStreams();
-									}
-
-									if (evCb)
-									{
-										CallEvent ev{CallEvent::Dropped, partId, "", ""};
-										evCb(ev);
+										item->kind   = WsWork::Remove;
+										item->partId = partId;
+										enqueueWsWork(item);
 									}
 								}
 								else if (evTypeNum == TCX_EV_DTMF)
