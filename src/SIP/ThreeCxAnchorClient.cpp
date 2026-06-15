@@ -1918,7 +1918,12 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										std::lock_guard<std::mutex> lock(_mutex);
 										sameLeg = (controlLeg == _activeParticipantId);
 									}
-									if (sameLeg && isStreaming())
+									// Don't enqueue work for an upset that's a no-op (call fully up). With media
+									// now pre-warmed during dialing, isStreaming() goes true BEFORE the leg
+									// connects — so for OUTBOUND we must keep letting upserts through until
+									// Answered has fired, or the Connected upset gets dropped here and the
+									// handset stays ringing forever. Inbound is "fully up" once streaming.
+									if (sameLeg && isStreaming() && (!outbound || _outboundAnswered.load(std::memory_order_acquire)))
 									{
 										break;   // call already fully up
 									}
