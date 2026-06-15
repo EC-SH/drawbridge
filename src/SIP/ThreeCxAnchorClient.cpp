@@ -730,6 +730,16 @@ bool ThreeCxAnchorClient::connectWs()
 	wsCfg.crt_bundle_attach = esp_crt_bundle_attach;
 	wsCfg.task_stack = 16384; // needs headroom for two blocking HTTP sessions fired from event handler
 	wsCfg.buffer_size = 4096;
+	// #93 — keep the control WebSocket warm so it never idles out into a full TLS
+	// reconnect (the S3 has no ECC accelerator, so a cold WSS handshake is software-ECDHE
+	// bound, ~0.5-1 s). PINGs hold the channel open; pingpong_timeout declares it dead and
+	// triggers an auto-reconnect if PONGs stop; the explicit reconnect/network timeouts
+	// replace the 10 s defaults the client warned about at boot.
+	wsCfg.ping_interval_sec    = 20;
+	wsCfg.pingpong_timeout_sec = 20;
+	wsCfg.keep_alive_enable    = true;
+	wsCfg.reconnect_timeout_ms = 5000;
+	wsCfg.network_timeout_ms   = 10000;
 
 	esp_websocket_client_handle_t wsClient = esp_websocket_client_init(&wsCfg);
 	if (!wsClient)
@@ -1313,6 +1323,17 @@ esp_http_client_handle_t ThreeCxAnchorClient::makeAuthedClient(const std::string
 	config.buffer_size = 4096;
 	config.buffer_size_tx = txBufSize;
 	config.timeout_ms = 2000; // 2 seconds timeout to bound blocking calls
+	// #93 — TLS session resumption + warm connection reuse. The ESP32-S3 has NO ECC
+	// accelerator (SOC_ECC_SUPPORTED is unset), so the ECDHE in every full TLS handshake
+	// is software-bound (~0.5-1 s) and cannot be sped up in hardware. The only lever is to
+	// AVOID the full handshake: keep_alive_enable holds the TCP+TLS connection open for
+	// reuse, and save_client_session caches the TLS session ticket so a reconnect resumes
+	// (abbreviated handshake, ~1 RTT) instead of re-doing the ECDHE. Paired with
+	// warmCtrlConnection() (which establishes the persistent _ctrlClient at init), the
+	// first dial reuses/resumes the already-warmed control session rather than cold-handshaking.
+	// Requires CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS + CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS.
+	config.keep_alive_enable  = true;
+	config.save_client_session = true;
 
 	esp_http_client_handle_t client = esp_http_client_init(&config);
 	if (!client)
