@@ -596,6 +596,14 @@ void RequestsHandler::onReqTerminated(std::shared_ptr<SipMessage> data)
 	{
 		return;
 	}
+	// Inbound ring-all: a 487 is a forked loser's reply to the CANCEL we sent when another
+	// leg won (or on teardown). Complete the cancelled INVITE transaction with an ACK; there
+	// is no caller to relay it to.
+	if (session.has_value() && session.value()->isAnchorInbound())
+	{
+		ackInboundFinal(session.value(), data);
+		return;
+	}
 	endHandle(data->getFromNumber(), data);
 }
 
@@ -1227,6 +1235,26 @@ void RequestsHandler::onBusy(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	// Inbound ring-all: one forked extension is busy. ACK its 486 and drop it from the ring
+	// set (NOT a per-extension call-forward — the PSTN call rings the others). Fail the whole
+	// inbound call only if this was the last ringing leg and none answered.
+	if (session.has_value() && session.value()->isAnchorInbound())
+	{
+		auto s = session.value();
+		ackInboundFinal(s, data);
+		if (s->getState() != Session::State::Connected)
+		{
+			s->removePendingTarget(std::string(data->getToNumber()));
+			if (s->getPendingTargets().empty())
+			{
+				asyncDropCall(s->getAnchorParticipantId());
+				endCall(std::string(data->getCallID()), s->getAnchorParticipantId(), "",
+					"inbound all busy/declined");
+			}
+		}
+		return;
+	}
+
 	// Call Forward Busy (CFB): if the busy callee has an on-busy forward target,
 	// swallow the 486 and redirect the call there instead of failing the caller.
 	if (session.has_value())
@@ -1280,6 +1308,25 @@ void RequestsHandler::onUnavailable(std::shared_ptr<SipMessage> data)
 			const std::string& gext = session.value()->getGroupExt();
 			endCall(data->getCallID(), session.value()->getSrc()->getNumber(),
 				gext.empty() ? "999" : gext, "all targets unavailable");
+		}
+		return;
+	}
+	// Inbound ring-all: one forked extension is unavailable (DND / out of range). ACK its 480
+	// and drop it from the ring set; fail the whole inbound call only if it was the last
+	// ringing leg and none answered.
+	if (session.has_value() && session.value()->isAnchorInbound())
+	{
+		auto s = session.value();
+		ackInboundFinal(s, data);
+		if (s->getState() != Session::State::Connected)
+		{
+			s->removePendingTarget(std::string(data->getToNumber()));
+			if (s->getPendingTargets().empty())
+			{
+				asyncDropCall(s->getAnchorParticipantId());
+				endCall(std::string(data->getCallID()), s->getAnchorParticipantId(), "",
+					"inbound all unavailable");
+			}
 		}
 		return;
 	}
@@ -3642,15 +3689,18 @@ void RequestsHandler::tick()
 
 			if (session->isAnchorInbound())
 			{
-				// Inbound PSTN call the local extension never picked up: CANCEL our
-				// INVITE (server is UAC), drop the upstream leg, and end the session.
-				auto cancel = buildInboundCancel(session);
-				if (cancel) _outbox.emplace_back(session->getDest()->getAddress(), std::move(cancel));
+				// Inbound PSTN call no extension picked up: CANCEL every still-ringing forked
+				// INVITE (server is UAC), drop the upstream leg, and end the session. No leg
+				// answered (state is Invited), so pendingTargets still holds them all.
+				for (const auto& target : session->getPendingTargets())
+				{
+					auto cancel = buildInboundCancelTo(session, target);
+					if (cancel) _outbox.emplace_back(target->getAddress(), std::move(cancel));
+				}
 				asyncDropCall(session->getAnchorParticipantId());
-				queueLog("[3CX] Inbound: no answer from extension " +
-				         (session->getDest() ? session->getDest()->getNumber() : std::string("?")) + " — cancelled");
-				endCall(callID, session->getAnchorParticipantId(),
-				        session->getDest() ? session->getDest()->getNumber() : "", "inbound no answer");
+				queueLog("[3CX] Inbound: no answer from " +
+				         std::to_string(session->getPendingTargets().size()) + " extension(s) — cancelled");
+				endCall(callID, session->getAnchorParticipantId(), "", "inbound no answer");
 				continue;
 			}
 
@@ -5799,10 +5849,14 @@ void RequestsHandler::loadThreeCxConfig()
 						                          fromHeader, toHeader);
 						if (bye) _asyncOutbox.emplace_back(handset->getAddress(), std::move(bye));
 					}
-					else if (handset)
+					else
 					{
-						auto cancel = buildInboundCancel(session);
-						if (cancel) _asyncOutbox.emplace_back(handset->getAddress(), std::move(cancel));
+						// Still ringing — no winner yet. CANCEL every outstanding forked leg.
+						for (const auto& target : session->getPendingTargets())
+						{
+							auto cancel = buildInboundCancelTo(session, target);
+							if (cancel) _asyncOutbox.emplace_back(target->getAddress(), std::move(cancel));
+						}
 					}
 					std::string localCallId = callId;
 					endCall(localCallId, ev.participantId, handset ? handset->getNumber() : "", "3CX hangup (inbound)");
@@ -5981,10 +6035,10 @@ void RequestsHandler::routeAnchorCall(const std::shared_ptr<SipMessage>& data,
 
 void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, const std::string& callerId)
 {
-	// Runs under _mutex (the anchor event callback holds it). Mode 1: the DN the key is
-	// bound to (sourceDn) IS the local extension we ring. Reuses the UAC-toward-handset
-	// machinery proven by the register-beep path (sendRegisterBeep), but with a real
-	// (delayed) media offer instead of a=inactive, and it rings rather than auto-answers.
+	// Runs under _mutex (the anchor event callback holds it). The monitored DN (sourceDn) is
+	// a 3CX route point, not a phone, so we RING-ALL: fork an offerless INVITE to every
+	// registered extension (server-as-UAC, the register-beep machinery), first answer wins.
+	// sourceDn is only the gate that says this anchor is configured to take inbound at all.
 	const std::string dn = _trunkCfg.sourceDn;
 	if (dn.empty())
 	{
@@ -6012,10 +6066,21 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 		}
 	}
 
-	auto handset = findClient(dn);
-	if (!handset.has_value())
+	// RING-ALL: the monitored DN (sourceDn) is a 3CX route point, not a registered phone,
+	// so fork the inbound call to EVERY registered extension. First to answer wins
+	// (onInboundAnchorOk); the rest are CANCELled. Gather the live registrar set — we hold
+	// _mutex, so reading _clientPool directly is safe (an empty number ⇒ free pool slot).
+	std::vector<std::shared_ptr<SipClient>> targets;
+	for (const auto& client : _clientPool)
 	{
-		queueLog("[3CX] Inbound: extension " + dn + " not registered — dropping", true);
+		if (!client->getNumber().empty())
+		{
+			targets.push_back(client);
+		}
+	}
+	if (targets.empty())
+	{
+		queueLog("[3CX] Inbound: no extensions registered — dropping participant " + participantId, true);
 		asyncDropCall(participantId);
 		return;
 	}
@@ -6027,20 +6092,21 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 	if (callerDisplay.empty()) callerDisplay = "PSTN";
 
 	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-
-	const sockaddr_in& addr = handset.value()->getAddress();
-	char ipBuf[INET_ADDRSTRLEN]{};
-	inet_ntop(AF_INET, &addr.sin_addr, ipBuf, sizeof(ipBuf));
-	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(addr.sin_port));
-
-	std::string callId  = IDGen::GenerateID(16) + "@" + activeIp;
+	// Key the session by the FULL header-line form ("Call-ID: <id>") so the handsets' 200 OK /
+	// 486 / 487 responses — which getSession() looks up via SipMessage::getCallID() (which
+	// returns the whole line, name included) — match. The forked INVITEs carry the bare <id>
+	// as the header value (stripHeaderName on the getter), which the phones echo back verbatim.
+	std::string callId  = std::string("Call-ID: ") + IDGen::GenerateID(16) + "@" + activeIp;
 	std::string branch  = "z9hG4bK" + IDGen::GenerateID(12);
 	std::string fromTag = IDGen::GenerateID(9);
 
-	// src = synthetic PSTN party (keeps getSrc() valid for snapshots/CDR); the display
-	// name doubles as the dialog's local From display, reconstructed verbatim on ACK/BYE.
-	auto pstn = allocateVirtualPeer(callerDisplay, addr);
+	// One session backs the whole fork: a synthetic PSTN src (zeroed address — only its label
+	// feeds getSrc() snapshots/CDR, never routed/looked-up), with all forked legs sharing the
+	// Call-ID / Via branch / From-tag so each is a single cancellable transaction toward its
+	// phone. dest stays unset until a winner answers; pendingTargets holds the ringing legs.
+	sockaddr_in pstnAddr{};
+	pstnAddr.sin_family = AF_INET;
+	auto pstn = allocateVirtualPeer(callerDisplay, pstnAddr);
 	auto session = allocateSession(callId, pstn);
 	if (!session)
 	{
@@ -6048,25 +6114,49 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 		asyncDropCall(participantId);
 		return;
 	}
-	session->setDest(handset.value());
 	session->setAnchor(true);
 	session->setAnchorInbound(true);
 	session->setState(Session::State::Invited);
 	session->setLocalTag(fromTag);
 	session->setUacBranch(branch);
 	session->setAnchorParticipantId(participantId);
+	session->setPendingTargets(targets);
 	session->armRingTimer(std::chrono::steady_clock::now() + NO_ANSWER_TIMEOUT);
 	_sessions.emplace(callId, session);
 
-	// Delayed-offer INVITE (no SDP): the single-start MediaBridge can't advertise a port
-	// before it binds, and the handset's 200 OK will carry its offer — our ACK answers
-	// it (onInboundAnchorOk). No auto-answer headers: the extension should RING.
+	// Delayed-offer INVITE per target (no SDP): the single-start MediaBridge can't advertise
+	// a port before it binds, and the winning handset's 200 OK carries its offer — our ACK
+	// answers it (onInboundAnchorOk). No auto-answer headers: the extensions should RING.
+	for (const auto& target : targets)
+	{
+		buildInboundInviteFork(session, target, callerDisplay);
+	}
+	queueLog("[3CX] Inbound: ringing " + std::to_string(targets.size()) +
+	         " extension(s) for participant " + participantId);
+}
+
+void RequestsHandler::buildInboundInviteFork(const std::shared_ptr<Session>& session,
+	const std::shared_ptr<SipClient>& target,
+	const std::string& callerDisplay)
+{
+	// One delayed-offer INVITE toward `target`, reusing the session's shared Call-ID / Via
+	// branch / From-tag. The dialog's From/To/Contact user is the target's own DN (matched
+	// verbatim when it answers/cancels); the display name presents the PSTN caller.
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+	const std::string dn = target->getNumber();
+
+	const sockaddr_in& addr = target->getAddress();
+	char ipBuf[INET_ADDRSTRLEN]{};
+	inet_ntop(AF_INET, &addr.sin_addr, ipBuf, sizeof(ipBuf));
+	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(addr.sin_port));
+
 	std::ostringstream ss;
 	ss << "INVITE sip:" << dn << "@" << destIpPort << " SIP/2.0\r\n"
-	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << branch << "\r\n"
-	   << "From: \"" << callerDisplay << "\" <sip:" << dn << "@" << srcIpPort << ">;tag=" << fromTag << "\r\n"
+	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << session->getUacBranch() << "\r\n"
+	   << "From: \"" << callerDisplay << "\" <sip:" << dn << "@" << srcIpPort << ">;tag=" << session->getLocalTag() << "\r\n"
 	   << "To: <sip:" << dn << "@" << activeIp << ">\r\n"
-	   << "Call-ID: " << callId << "\r\n"
+	   << "Call-ID: " << stripHeaderName(session->getCallID()) << "\r\n"   // getCallID() returns the full line
 	   << "CSeq: 1 INVITE\r\n"
 	   << "Max-Forwards: 70\r\n"
 	   << "Contact: <sip:" << dn << "@" << srcIpPort << ";transport=UDP>\r\n"
@@ -6078,34 +6168,69 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 	// The event callback runs OFF the SIP receive thread — _asyncOutbox survives the
 	// per-pass _outbox.clear() in handle()/tick() (same rule as the WS 200 OK/BYE).
 	_asyncOutbox.emplace_back(addr, std::move(invite));
-	queueLog("[3CX] Inbound: ringing extension " + dn + " (participant " + participantId + ")");
 }
 
-std::shared_ptr<SipMessage> RequestsHandler::buildInboundCancel(const std::shared_ptr<Session>& session)
+std::shared_ptr<SipMessage> RequestsHandler::buildInboundCancelTo(const std::shared_ptr<Session>& session,
+	const std::shared_ptr<SipClient>& target)
 {
-	auto handset = session->getDest();
-	if (!handset) return nullptr;
+	if (!target) return nullptr;
 
 	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-	std::string dn = handset->getNumber();
+	std::string dn = target->getNumber();
 	char ipBuf[INET_ADDRSTRLEN]{};
-	inet_ntop(AF_INET, &handset->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
-	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(handset->getAddress().sin_port));
+	inet_ntop(AF_INET, &target->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
+	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(target->getAddress().sin_port));
+	// The fork INVITE's From display is the PSTN caller label, which is exactly the virtual
+	// src peer's number — so getSrc()->getNumber() reproduces it byte-for-byte for the match.
 	std::string srcNum = session->getSrc() ? session->getSrc()->getNumber() : std::string("PSTN");
 
-	// CANCEL matches the INVITE transaction: same top Via branch, From (+tag), To (no
-	// tag — no final response was accepted), Call-ID, and CSeq number with method CANCEL.
+	// CANCEL matches the forked INVITE transaction at `target`: identical Request-URI, top
+	// Via branch (shared by the whole fork), From (+tag), To (no tag — no final response was
+	// accepted), Call-ID, and CSeq number with method CANCEL.
 	std::ostringstream cs;
 	cs << "CANCEL sip:" << dn << "@" << destIpPort << " SIP/2.0\r\n"
 	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << session->getUacBranch() << "\r\n"
 	   << "From: \"" << srcNum << "\" <sip:" << dn << "@" << srcIpPort << ">;tag=" << session->getLocalTag() << "\r\n"
 	   << "To: <sip:" << dn << "@" << activeIp << ">\r\n"
-	   << "Call-ID: " << stripHeaderName(session->getCallID()) << "\r\n"   // getCallID() includes the name
+	   << "Call-ID: " << stripHeaderName(session->getCallID()) << "\r\n"   // getCallID() returns the full line
 	   << "CSeq: 1 CANCEL\r\n"
 	   << "Max-Forwards: 70\r\n"
 	   << "Content-Length: 0\r\n\r\n";
-	return getMessageFromPool(cs.str(), handset->getAddress());
+	return getMessageFromPool(cs.str(), target->getAddress());
+}
+
+std::shared_ptr<SipMessage> RequestsHandler::buildInboundCancel(const std::shared_ptr<Session>& session)
+{
+	// Back-compat single-leg wrapper: CANCEL the session's current dest (the answered/answering
+	// handset). Ring-all loser teardown uses buildInboundCancelTo() directly per target.
+	return buildInboundCancelTo(session, session->getDest());
+}
+
+void RequestsHandler::ackInboundFinal(const std::shared_ptr<Session>& session, const std::shared_ptr<SipMessage>& data)
+{
+	// RFC 3261 §17.1.1.3: ACK a non-2xx final within the INVITE transaction. Same top Via
+	// branch as the forked INVITE (the shared fork branch), To from the response (carries the
+	// leg's tag), CSeq 1 ACK. The responding phone is the packet source.
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+	std::string dn(data->getToNumber());
+	const sockaddr_in& addr = data->getSource();
+	char ipBuf[INET_ADDRSTRLEN]{};
+	inet_ntop(AF_INET, &addr.sin_addr, ipBuf, sizeof(ipBuf));
+	std::string destIpPort = std::string(ipBuf) + ":" + std::to_string(ntohs(addr.sin_port));
+	std::string srcNum = session->getSrc() ? session->getSrc()->getNumber() : std::string("PSTN");
+
+	std::ostringstream ack;
+	ack << "ACK sip:" << dn << "@" << destIpPort << " SIP/2.0\r\n"
+	    << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << session->getUacBranch() << "\r\n"
+	    << "From: \"" << srcNum << "\" <sip:" << dn << "@" << srcIpPort << ">;tag=" << session->getLocalTag() << "\r\n"
+	    << "To: " << stripHeaderName(data->getTo()) << "\r\n"
+	    << "Call-ID: " << stripHeaderName(session->getCallID()) << "\r\n"   // getCallID() returns the full line
+	    << "CSeq: 1 ACK\r\n"
+	    << "Max-Forwards: 70\r\n"
+	    << "Content-Length: 0\r\n\r\n";
+	_outbox.emplace_back(addr, getMessageFromPool(ack.str(), addr));
 }
 
 void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, const std::shared_ptr<Session>& session)
@@ -6115,15 +6240,55 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 	// Runs on the SIP receive thread under _mutex.
 	session->clearRingTimer();
 
-	auto handset = session->getDest();
-	if (!handset)
-	{
-		return;   // defensive: inbound session always has the handset as dest
-	}
-
 	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 	std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-	std::string callId(session->getCallID());
+	std::string callId(session->getCallID());          // full line — the _sessions key (endCall/buildServerBye take it)
+	std::string callIdHdr = stripHeaderName(callId);   // bare value for the Call-ID headers we emit on the wire
+
+	// RING-ALL: dest is unset until a forked leg answers. The answering phone IS the OK's
+	// source address, so resolve it (mirrors the broadcast winner lookup); fall back to a
+	// previously-bound dest for the winner's 200 OK retransmits.
+	auto answering = findClientByAddress(ok->getSource());
+	std::shared_ptr<SipClient> handset = answering.has_value() ? answering.value() : session->getDest();
+	if (!handset)
+	{
+		return;   // can't identify the answering extension — ignore
+	}
+
+	// Loser-race: a DIFFERENT extension answered after another leg already won and bridged
+	// (its 200 OK crossed our CANCEL). RFC 3261 §9 — we must ACK then BYE that orphan 2xx,
+	// but must NOT disturb the live bridge or the upstream leg. Reject it and return.
+	if (session->getState() == Session::State::Connected &&
+	    session->getDest() && handset->getNumber() != session->getDest()->getNumber())
+	{
+		char obuf[INET_ADDRSTRLEN]{};
+		inet_ntop(AF_INET, &handset->getAddress().sin_addr, obuf, sizeof(obuf));
+		std::string orphanIpPort = std::string(obuf) + ":" + std::to_string(ntohs(handset->getAddress().sin_port));
+		std::string orphanFrom = "\"" + (session->getSrc() ? session->getSrc()->getNumber() : std::string("PSTN")) +
+		                         "\" <sip:" + handset->getNumber() + "@" + srcIpPort + ">;tag=" + session->getLocalTag();
+		std::string orphanAckBranch = "z9hG4bK" + IDGen::GenerateID(12);
+		std::ostringstream oack;
+		oack << "ACK sip:" << handset->getNumber() << "@" << orphanIpPort << " SIP/2.0\r\n"
+		     << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << orphanAckBranch << "\r\n"
+		     << "From: " << orphanFrom << "\r\n"
+		     << "To: " << ok->getTo() << "\r\n"
+		     << "Call-ID: " << callIdHdr << "\r\n"
+		     << "CSeq: 1 ACK\r\n"
+		     << "Max-Forwards: 70\r\n"
+		     << "Content-Length: 0\r\n\r\n";
+		_outbox.emplace_back(handset->getAddress(), getMessageFromPool(oack.str(), handset->getAddress()));
+		auto obye = buildServerBye(handset->getNumber(), handset->getAddress(), callId, orphanFrom,
+		                           std::string(ok->getTo()));
+		if (obye) _outbox.emplace_back(handset->getAddress(), std::move(obye));
+		queueLog("[3CX] Inbound: extra answer from " + handset->getNumber() + " — rejected (call already up)");
+		return;
+	}
+
+	// First answer wins: bind this phone as the dialog's dest for the rest of the call.
+	if (!session->getDest())
+	{
+		session->setDest(handset);
+	}
 
 	// Handset's To-tag — needed on every in-dialog request we now send (ACK, BYE).
 	std::string toHdr(ok->getTo());
@@ -6185,7 +6350,7 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 	    << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << ackBranch << "\r\n"
 	    << "From: " << fromHeader << "\r\n"
 	    << "To: " << ok->getTo() << "\r\n"
-	    << "Call-ID: " << callId << "\r\n"
+	    << "Call-ID: " << callIdHdr << "\r\n"
 	    << "CSeq: 1 ACK\r\n"
 	    << "Max-Forwards: 70\r\n";
 	if (bridged && !sdpAnswer.empty())
@@ -6222,6 +6387,19 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 	// Tell the upstream to connect the PSTN leg; its Connected upsert opens the PCM
 	// streams (startMediaStreams) so audio flows handset RTP ⇄ bridge ⇄ PCM ⇄ PSTN.
 	asyncAnswerCall(session->getAnchorParticipantId());
+
+	// RING-ALL: this leg won — CANCEL every other still-ringing fork so the other phones
+	// stop. The winner is now dest; the rest live in pendingTargets. Clear it afterward so
+	// the no-answer / PSTN-abandon teardown paths don't re-CANCEL an already-answered call.
+	for (const auto& target : session->getPendingTargets())
+	{
+		if (target->getNumber() != handset->getNumber())
+		{
+			auto cancel = buildInboundCancelTo(session, target);
+			if (cancel) _outbox.emplace_back(target->getAddress(), std::move(cancel));
+		}
+	}
+	session->setPendingTargets({});
 }
 
 void RequestsHandler::asyncMakeCall(const std::string& destination, const std::string& callId, const std::string& callerNumber)

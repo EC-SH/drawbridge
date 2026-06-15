@@ -565,20 +565,38 @@ private:
 	// registered as that DN. Unlike the outbound (server-as-UAS) leg these dialogs are
 	// keyed by a server-minted Call-ID and carry their UAC state on the Session
 	// (isAnchorInbound/UacBranch/RemoteTag/AnchorParticipantId).
-	//   routeInboundAnchorCall : ring the local DN handset (offerless INVITE), arm a
-	//                            no-answer timer; if the DN is unregistered or the one
-	//                            media bridge is busy, drop the upstream leg.
-	//   onInboundAnchorOk      : the handset's 200 OK — start the media bridge to the
-	//                            handset's RTP, ACK with our SDP answer, then async
-	//                            answerCall() the upstream leg.
+	//   routeInboundAnchorCall : RING-ALL — fork a delayed-offer INVITE to every
+	//                            registered extension (the monitored DN is a 3CX route
+	//                            point, not a phone), arm a no-answer timer. First answer
+	//                            wins; the rest are CANCELled. Drops the upstream leg if no
+	//                            extension is registered or the one media bridge is busy.
+	//   onInboundAnchorOk      : a handset's 200 OK — the FIRST resolves the winner (by
+	//                            source address), starts the media bridge to its RTP, ACKs
+	//                            with our SDP answer, async answerCall()s the upstream leg,
+	//                            and CANCELs the other ringing legs. A later answer from a
+	//                            losing leg (crossed our CANCEL) is ACKed then BYEd.
 	// Both run under _mutex (the event callback / SIP handler already hold it).
 	void routeInboundAnchorCall(const std::string& participantId, const std::string& callerId);
 	void onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, const std::shared_ptr<Session>& session);
-	// CANCEL our outstanding INVITE toward the handset on an inbound leg that has NOT
-	// been answered yet (no remote tag): the local extension is still ringing and we
-	// need to stop it (no-answer timeout, or the PSTN caller abandoned). Built from the
-	// Session's stored UAC dialog state. Caller holds _mutex.
+	// One delayed-offer INVITE toward `target`, reusing the session's shared Call-ID / Via
+	// branch / From-tag so every forked leg is one cancellable transaction set. Emits on
+	// _asyncOutbox (the anchor event callback runs off the SIP thread). Caller holds _mutex.
+	void buildInboundInviteFork(const std::shared_ptr<Session>& session,
+	                            const std::shared_ptr<SipClient>& target,
+	                            const std::string& callerDisplay);
+	// CANCEL our outstanding INVITE toward a still-ringing forked leg (`target`), built from
+	// the Session's shared UAC dialog state. Used to stop the losers when one extension
+	// answers, and to abort all legs on no-answer timeout / PSTN-caller abandon. Caller
+	// holds _mutex.
+	std::shared_ptr<SipMessage> buildInboundCancelTo(const std::shared_ptr<Session>& session,
+	                                                 const std::shared_ptr<SipClient>& target);
+	// Back-compat single-leg wrapper: CANCEL the session's current dest. Caller holds _mutex.
 	std::shared_ptr<SipMessage> buildInboundCancel(const std::shared_ptr<Session>& session);
+	// ACK a non-2xx final (480/486/487/…) from one forked inbound leg. RFC 3261 §17.1.1.3:
+	// the server is the UAC, so it MUST ACK the failure within the INVITE transaction — the
+	// ACK reuses the shared fork Via branch + the response's To (carries the leg's tag). No
+	// other party relays it (there is no caller phone). Caller holds _mutex; emits on _outbox.
+	void ackInboundFinal(const std::shared_ptr<Session>& session, const std::shared_ptr<SipMessage>& data);
 
 
 	// Server-side RTP media source (the 440 tone stream). One concurrent stream; the
