@@ -919,6 +919,8 @@ void HttpServer::sendApiStatus(int sock)
 	json << "\"anchorConnected\":" << (telem.anchorConnected ? "true" : "false") << ",";
 	json << "\"mediaActive\":"     << (telem.mediaActive ? "true" : "false") << ",";
 	json << "\"tlsSocketsEst\":"   << telem.tlsSocketsEst << ",";
+	json << "\"tlsFullHandshakes\":"    << telem.tlsFullHandshakes << ",";
+	json << "\"tlsResumedHandshakes\":" << telem.tlsResumedHandshakes << ",";
 	json << "\"playoutUnderruns\":" << telem.playoutUnderruns << ",";
 	json << "\"playoutOverruns\":"  << telem.playoutOverruns << ",";
 	json << "\"clientPool\":{\"used\":" << telem.clientsUsed << ",\"cap\":" << telem.clientsCap << "},";

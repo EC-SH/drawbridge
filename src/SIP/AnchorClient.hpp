@@ -67,6 +67,16 @@ public:
 	// spawn a worker for any blocking I/O — never block, log, or allocate. The
 	// ThreeCx anchor uses it to run the _outboundActive reconcile watchdog.
 	virtual void tick() = 0;
+
+	// TLS handshake telemetry: how many media-stream opens did a FULL handshake (cold ECDHE)
+	// vs RESUMED a cached session (the fast path). Lets /api/status show whether resumption is
+	// holding and empirically reveals the session-ticket lifetime (full count climbs after an
+	// idle gap when the ticket expired). Default 0/0 for anchors that don't track it (loopback).
+	virtual void getTlsHandshakeStats(uint32_t& fullOut, uint32_t& resumedOut) const
+	{
+		fullOut = 0;
+		resumedOut = 0;
+	}
 };
 
 #endif // ANCHOR_CLIENT_HPP
