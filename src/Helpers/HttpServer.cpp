@@ -942,6 +942,12 @@ void HttpServer::sendApiStatus(int sock)
 		case ESP_RST_BROWNOUT:  resetReason = "brownout";  break;
 		case ESP_RST_DEEPSLEEP: resetReason = "deepsleep"; break;
 		case ESP_RST_EXT:       resetReason = "ext";       break;
+		case ESP_RST_CPU_LOCKUP: resetReason = "cpu_lockup"; break;  // crash-relevant for soak
+		case ESP_RST_PWR_GLITCH: resetReason = "pwr_glitch"; break;
+		case ESP_RST_USB:       resetReason = "usb";       break;   // flash/serial-tool reset
+		case ESP_RST_JTAG:      resetReason = "jtag";      break;
+		case ESP_RST_SDIO:      resetReason = "sdio";      break;
+		case ESP_RST_EFUSE:     resetReason = "efuse";     break;
 		default:                resetReason = "unknown";   break;
 	}
 #endif
