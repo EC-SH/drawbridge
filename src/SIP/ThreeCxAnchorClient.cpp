@@ -335,6 +335,7 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 		std::lock_guard<std::mutex> lock(_mutex);
 		_outboundActiveSetUs = esp_timer_get_time();
 		_outboundActive.store(true, std::memory_order_release);
+		_outboundAnswered.store(false, std::memory_order_release);   // new call: Answered not yet fired
 	}
 
 	// Capture the makecall RESPONSE BODY (not just the status) so we can read result.id — the
@@ -514,11 +515,12 @@ bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
 		ESP_LOGW(TAG, "answerCall: /answer POST status=%d for %s (continuing to media)", status, partId.c_str());
 	}
 
-	// Open OUR media streams now that a local handset answered. answerCall() is the SOLE
-	// inbound media starter — the WS upset path only rings + primes the GET stream (no
-	// startMediaStreams there for inbound), so there is no race. Runs on the 3cx_answer
-	// worker (12 KB stack, TLS-capable); the Rx task is already primed from ring time.
-	if (!startMediaStreams(partId))
+	// Media is normally already up: the inbound classifier pre-warms BOTH streams during the
+	// local ring so audio cuts through at pickup. This is the FALLBACK — open them now only if
+	// that pre-open hasn't taken (e.g. 3CX rejected a pre-answer stream and only accepts it now,
+	// post-/answer). The startMediaStreams re-check makes a concurrent pre-warm safe. Runs on
+	// the 3cx_answer worker (12 KB stack, TLS-capable).
+	if (!isStreaming() && !startMediaStreams(partId))
 	{
 		ESP_LOGE(TAG, "answerCall: startMediaStreams failed for participant %s", partId.c_str());
 		return false;
@@ -1732,7 +1734,15 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 				evCb(ev);
 			}
 		}
-		startRxIfNeeded(w.partId);   // warm the GET stream; answerCall() bridges on handset answer
+		// Pre-warm BOTH media streams (GET + POST) NOW, during ringing, so audio cuts through
+		// the instant the handset answers. The device->3CX POST stream's TLS open is the slow
+		// part on the S3 (software ECDHE) and used to land AFTER pickup as a silent "autodialer"
+		// beat; opening it here masks it behind the ring the caller is already hearing. No audio
+		// is written until a handset bridges (MediaBridge.startBridge), so 3CX just sees an idle
+		// stream meanwhile — symmetric with the GET, which we already open pre-answer. Idempotent
+		// and self-retrying across the ~750 ms ring upserts; if 3CX rejects a pre-answer POST the
+		// open simply fails and answerCall() opens it post-/answer (graceful fallback, no regress).
+		startMediaStreams(w.partId);
 		return;
 	}
 
@@ -1749,7 +1759,10 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 			std::lock_guard<std::mutex> lock(_mutex);
 			sameLeg = (w.controlLeg == _activeParticipantId);
 		}
-		if (sameLeg && isStreaming()) return;
+		// Only skip once the call is fully up AND we've already signalled Answered. Media is
+		// now pre-warmed during dialing, so isStreaming() alone is true BEFORE connect — using
+		// it as the sole skip condition would swallow the Connected->Answered transition.
+		if (sameLeg && isStreaming() && _outboundAnswered.load(std::memory_order_acquire)) return;
 	}
 
 	// Upset: authoritative status from the LIST (GET /participants -> find leg), never
@@ -1759,10 +1772,17 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 
 	if (statusStr == "Connected")
 	{
-		// Control + media key off OUR leg (controlLeg), not the surfaced partId.
-		if (startMediaStreams(w.controlLeg))
+		// The PSTN leg answered. Media is usually already up from the dialing pre-warm below;
+		// open it now as a fallback if a pre-answer stream open was rejected. Then fire Answered
+		// EXACTLY ONCE (the one-shot decouples the answer signal from "media is streaming",
+		// which pre-warm makes true early). Control + media key off OUR leg (controlLeg).
+		if (!isStreaming())
 		{
-			if (evCb)
+			startMediaStreams(w.controlLeg);
+		}
+		if (isStreaming())
+		{
+			if (!_outboundAnswered.exchange(true, std::memory_order_acq_rel) && evCb)
 			{
 				CallEvent ev{CallEvent::Answered, w.controlLeg, "", ""};
 				evCb(ev);
@@ -1776,10 +1796,13 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	}
 	else
 	{
-		// Our own OUTBOUND leg, not yet Connected (ringing): prime the GET stream so it is
-		// polling on a warm TLS connection before the leg answers. Inbound calls return early
-		// above (they never reach this outbound media path), so this is outbound-only now.
-		startRxIfNeeded(w.controlLeg);
+		// Our own OUTBOUND leg, not yet Connected (dialing/ringing): pre-warm BOTH streams
+		// (GET + POST) so audio cuts through the instant the PSTN answers — same masking-the-
+		// TLS-open-behind-the-ring trick as the inbound path. Idempotent + self-retrying across
+		// the upserts; if 3CX rejects a pre-connect stream open it simply fails and the Connected
+		// branch above opens it then (graceful fallback, no regression). Inbound calls return
+		// early at the gate above — this is outbound-only.
+		startMediaStreams(w.controlLeg);
 	}
 }
 
@@ -2034,6 +2057,14 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 	esp_http_client_handle_t postClient = nullptr;
 	{
 		std::lock_guard<std::mutex> postLock(_postMutex);
+		// Re-check under the lock: the guard above and this open scope release _postMutex in
+		// between (makeAuthedClient is blocking), so a concurrent caller — the dialing/ring
+		// pre-warm racing the answer-time fallback — could otherwise both pass the guard and
+		// leak one client. If someone won while we were opening, bail (their stream is live).
+		if (_postClient != nullptr)
+		{
+			return false;
+		}
 		_postClient = makeAuthedClient(postUrl, HTTP_METHOD_POST, 4096, token);
 		if (!_postClient)
 		{
@@ -2089,6 +2120,7 @@ void ThreeCxAnchorClient::stopMediaStreams()
 		// upsert is classified fresh (a stale _outboundActive would mask a real inbound
 		// call; a stale _inboundSignaledPartId would swallow its Incoming event).
 		_outboundActive.store(false, std::memory_order_release);
+		_outboundAnswered.store(false, std::memory_order_release);   // reset the one-shot for the next call
 		_inboundSignaledPartId.clear();
 		taskToKill = _rxTaskHandle;
 		// Capture the semaphore under the SAME lock: startRxIfNeeded deletes+recreates _rxDoneSem,

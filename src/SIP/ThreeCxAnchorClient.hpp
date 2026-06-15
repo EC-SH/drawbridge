@@ -56,6 +56,12 @@ private:
 	// already announced via CallEvent::Incoming so the ~750 ms upsert repeats fire it
 	// only once. Both guarded by _mutex.
 	std::atomic<bool> _outboundActive{false};
+	// One-shot: has CallEvent::Answered already fired for the current outbound leg? Media is
+	// now pre-warmed during dialing (so audio cuts through at connect), which makes the leg
+	// "streaming" BEFORE it is Connected — so isStreaming() can no longer stand in for
+	// "answered." This flag fires Answered exactly once when the leg first reaches Connected.
+	// Reset by makeCall (new call) and stopMediaStreams (teardown); unused on the inbound path.
+	std::atomic<bool> _outboundAnswered{false};
 	std::string       _inboundSignaledPartId;
 	// Monotonic (esp_timer) timestamp of the last _outboundActive=true, guarded by _mutex.
 	// The tick() watchdog uses it to detect an outbound makecall that 3CX accepted but that
