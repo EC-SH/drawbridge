@@ -95,7 +95,13 @@ private:
 
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
 	esp_websocket_client_handle_t _wsClient   = nullptr;
+	// PERSISTENT POST audio handle. Kept alive across calls so its saved TLS session RESUMES
+	// on the next open (abbreviated handshake, ~1 RTT) instead of re-paying the ~1s software
+	// ECDHE the S3 has no hardware for — that cold handshake at connect was the outbound
+	// "dead air before two-way audio." So handle!=null no longer means "a call is streaming";
+	// _postLive does. Freed only in full teardown (closePostClient), not per call.
 	esp_http_client_handle_t      _postClient = nullptr;
+	std::atomic<bool>             _postLive{false};   // a call's POST stream is actively open (guarded by _postMutex)
 	esp_http_client_handle_t      _getClient  = nullptr;
 
 	// Persistent control-plane HTTPS connection (makecall / participant drop).
@@ -194,6 +200,7 @@ private:
 	bool performCtrl(const std::string& url, const char* contentType, const std::string& body, int* statusCodeOut = nullptr);
 	void warmCtrlConnection();   // pre-establish the control TLS session (boot/reconnect)
 	void closeCtrlClient();      // teardown under _ctrlMutex
+	void closePostClient();      // free the persistent warm _postClient (full teardown only), under _postMutex
 	bool readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out);
 
 	// Live-state GET helpers (reconcile watchdog + drop-fallback + device resolve). Snapshot

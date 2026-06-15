@@ -252,6 +252,7 @@ void ThreeCxAnchorClient::shutdownImpl()
 	stopWsWorkers();
 
 	stopMediaStreams();
+	closePostClient();   // free the persistent warm POST handle (stopMediaStreams keeps it)
 	closeCtrlClient();
 
 	if (_wsClient)
@@ -272,8 +273,10 @@ bool ThreeCxAnchorClient::isConnected() const
 
 bool ThreeCxAnchorClient::isStreaming() const
 {
-	std::lock_guard<std::mutex> lock(_postMutex);
-	return _postClient != nullptr;
+	// "Streaming" = a call's POST stream is live, NOT merely that the persistent warm handle
+	// exists (it is kept alive between calls for TLS-session resumption). _postLive is atomic,
+	// no lock needed.
+	return _postLive.load(std::memory_order_acquire);
 }
 
 bool ThreeCxAnchorClient::makeCall(const std::string& destination)
@@ -542,7 +545,9 @@ bool ThreeCxAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
 	}
 
 	std::lock_guard<std::mutex> lock(_postMutex);
-	if (!_postClient)
+	// Only write while a call's stream is LIVE. The handle persists between calls (warm for
+	// resumption) but has no open request then, so guard on _postLive, not just the handle.
+	if (!_postLive.load(std::memory_order_acquire) || !_postClient)
 	{
 		return false;
 	}
@@ -698,11 +703,10 @@ bool ThreeCxAnchorClient::ensureToken()
 	// Each handle is read under the mutex that actually guards its lifecycle
 	// (_postMutex / _getMutex) — reading them under _mutex synchronized nothing
 	// (Issue #14). Taken sequentially, never nested, so no ordering hazard.
-	bool streamsActive = false;
-	{
-		std::lock_guard<std::mutex> lock(_postMutex);
-		streamsActive = (_postClient != nullptr);
-	}
+	// "Active" must mean a CALL is up (don't refresh the token mid-call and invalidate the
+	// streams). The persistent warm _postClient handle is NOT a live call, so test _postLive,
+	// not handle!=null — otherwise the warm handle would wedge token refresh forever.
+	bool streamsActive = _postLive.load(std::memory_order_acquire);
 	if (!streamsActive)
 	{
 		std::lock_guard<std::mutex> lock(_getMutex);
@@ -1527,6 +1531,23 @@ void ThreeCxAnchorClient::closeCtrlClient()
 	}
 }
 
+void ThreeCxAnchorClient::closePostClient()
+{
+	// Free the PERSISTENT warm POST handle. stopMediaStreams() deliberately keeps it alive
+	// between calls (for TLS-session resumption); only a full anchor teardown frees it.
+	std::lock_guard<std::mutex> postLock(_postMutex);
+	if (_postClient)
+	{
+		if (_postLive.load(std::memory_order_acquire))
+		{
+			esp_http_client_close(_postClient);
+		}
+		esp_http_client_cleanup(_postClient);
+		_postClient = nullptr;
+		_postLive.store(false, std::memory_order_release);
+	}
+}
+
 bool ThreeCxAnchorClient::readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out)
 {
 	std::vector<char> buffer;
@@ -2024,12 +2045,12 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 {
 	ESP_LOGI(TAG, "Starting media streams for participant %s", participantId.c_str());
 
-	// Single-call guard: a live POST stream means a call is already fully up.
-	// (The Rx task alone is NOT a busy signal anymore — it gets primed during
+	// Single-call guard: a LIVE POST stream (not merely the persistent warm handle) means a
+	// call is already fully up. (The Rx task alone is NOT a busy signal — it is primed during
 	// ringing by startRxIfNeeded.)
 	{
 		std::lock_guard<std::mutex> postLock(_postMutex);
-		if (_postClient != nullptr)
+		if (_postLive.load(std::memory_order_acquire))
 		{
 			ESP_LOGW(TAG, "startMediaStreams: Media streams already active");
 			return false;
@@ -2064,19 +2085,35 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 	esp_http_client_handle_t postClient = nullptr;
 	{
 		std::lock_guard<std::mutex> postLock(_postMutex);
-		// Re-check under the lock: the guard above and this open scope release _postMutex in
-		// between (makeAuthedClient is blocking), so a concurrent caller — the dialing/ring
-		// pre-warm racing the answer-time fallback — could otherwise both pass the guard and
-		// leak one client. If someone won while we were opening, bail (their stream is live).
-		if (_postClient != nullptr)
+		// Re-check under the lock: a concurrent caller (dialing/ring pre-warm vs answer-time
+		// fallback) could otherwise both pass the early guard. If a stream went live while we
+		// were here, bail.
+		if (_postLive.load(std::memory_order_acquire))
 		{
 			return false;
 		}
-		_postClient = makeAuthedClient(postUrl, HTTP_METHOD_POST, 4096, token);
-		if (!_postClient)
+		if (_postClient == nullptr)
 		{
-			ESP_LOGE(TAG, "Failed to init POST HTTP client");
-			return false;
+			// First open (boot, or after a full teardown): a cold handshake. The handle is then
+			// KEPT WARM across calls so subsequent opens RESUME its TLS session (skip the ECDHE).
+			_postClient = makeAuthedClient(postUrl, HTTP_METHOD_POST, 4096, token);
+			if (!_postClient)
+			{
+				ESP_LOGE(TAG, "Failed to init POST HTTP client");
+				return false;
+			}
+		}
+		else
+		{
+			// Reuse the warm handle: re-point it at THIS call's participant and refresh the
+			// bearer (the token may have rotated between calls). esp_http_client_open() below
+			// then resumes the saved TLS session instead of a full ECDHE handshake.
+			esp_http_client_set_url(_postClient, postUrl.c_str());
+			if (!token.empty())
+			{
+				std::string authHeader = "Bearer " + token;
+				esp_http_client_set_header(_postClient, "Authorization", authHeader.c_str());
+			}
 		}
 		postClient = _postClient;
 
@@ -2090,11 +2127,28 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 		esp_err_t err = esp_http_client_open(postClient, -1); // -1 => chunked
 		if (err != ESP_OK)
 		{
-			ESP_LOGE(TAG, "Failed to open chunked HTTP POST stream: %s", esp_err_to_name(err));
+			// A REUSED warm handle can be stale (server reaped the connection / dirty state).
+			// Rebuild fresh and retry ONCE so a stale handle degrades to a cold handshake
+			// (slow but working) rather than a failed call. This bounds the worst case to the
+			// old behaviour; the common case still resumes.
+			ESP_LOGW(TAG, "POST open failed (%s) — rebuilding handle and retrying", esp_err_to_name(err));
 			esp_http_client_cleanup(postClient);
-			_postClient = nullptr;
-			return false;
+			_postClient = makeAuthedClient(postUrl, HTTP_METHOD_POST, 4096, token);
+			err = ESP_FAIL;
+			if (_postClient)
+			{
+				esp_http_client_set_header(_postClient, "Content-Type", "application/octet-stream");
+				err = esp_http_client_open(_postClient, -1);
+			}
+			if (!_postClient || err != ESP_OK)
+			{
+				ESP_LOGE(TAG, "Failed to open chunked HTTP POST stream: %s", esp_err_to_name(err));
+				if (_postClient) { esp_http_client_cleanup(_postClient); _postClient = nullptr; }
+				return false;
+			}
+			postClient = _postClient;
 		}
+		_postLive.store(true, std::memory_order_release);
 	}
 	ESP_LOGI(TAG, "POST (device->3CX) audio stream OPEN: %s", postUrl.c_str());
 
@@ -2202,14 +2256,17 @@ void ThreeCxAnchorClient::stopMediaStreams()
 
 	{
 		std::lock_guard<std::mutex> lock(_postMutex);
-		if (_postClient)
+		if (_postLive.load(std::memory_order_acquire) && _postClient)
 		{
 			// RFC 9112 §7.1 last-chunk: terminate the chunked body cleanly so 3CX
 			// sees end-of-stream rather than an aborted socket.
 			esp_http_client_write(_postClient, "0\r\n\r\n", 5);
+			// Close the REQUEST but KEEP the handle: keep_alive holds the TCP+TLS connection
+			// (or, if 3CX reaps it, save_client_session caches the ticket), so the next call's
+			// open RESUMES — no ~1s ECDHE, hence no cut-through dead air. The handle is freed
+			// only on full teardown (closePostClient from shutdownImpl).
 			esp_http_client_close(_postClient);
-			esp_http_client_cleanup(_postClient);
-			_postClient = nullptr;
+			_postLive.store(false, std::memory_order_release);
 		}
 	}
 	ESP_LOGI(TAG, "Media streams stopped");
