@@ -29,7 +29,7 @@ For the comprehensive architecture details, see the **[DRAWBRIDGE System Archite
 
 ## Install
 
-There are three ways to run pocket-dial. **Most people want Option 1.**
+There are two ways to run pocket-dial. **Most people want Option 1.**
 
 ### 🔌 Option 1 — Flash prebuilt firmware to an ESP32-S3 (easiest, no toolchain)
 
@@ -55,21 +55,6 @@ esptool --chip esp32s3 -p COM3 -b 460800 write_flash \
 ### 🛠 Option 2 — Build the firmware from source
 
 For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building](#building)** — e.g. `idf.py -D SIP_TRANSPORT=display flash monitor`.
-
-### 💻 Option 3 — Run on a computer or Raspberry Pi (no ESP32 needed)
-
-The same SIP engine runs as a desktop/server binary on Linux/macOS/Windows. Needs CMake + a C++17 compiler:
-
-```bash
-# One-liner: download the latest release source, build, and run
-curl -fsSL https://raw.githubusercontent.com/EC-SH/drawbridge/main/install.sh | sh
-
-# …or from a clone:
-./quickstart.sh                 # Windows: quickstart.bat
-./quickstart.sh --service       # install as a systemd service (Linux)
-```
-
-See [Desktop Mode](#desktop-mode) for manual CMake steps and CLI flags.
 
 ---
 
@@ -418,36 +403,6 @@ If compiling within an Arduino framework:
 3. Set your target board to **ESP32S3 Dev Module** (or specific board model).
 4. Configure **Flash Mode = QIO 80MHz** and **PSRAM = OPI PSRAM** (mandatory for display sketches).
 5. Click **Upload**.
-
----
-
-### Desktop Mode
-
-#### 1. Linux
-Useful for debugging SIP transactions or testing softphone connections lock-free without flash waiting periods:
-```bash
-mkdir build && cd build
-cmake ..
-make
-```
-
-#### 2. Windows
-Open a Visual Studio Developer Command Prompt:
-```powershell
-mkdir build && cd build
-& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" ..
-& "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build . --config Release
-```
-
-#### Running the Desktop Binary:
-The compiled executable requires the binding IP interface as an argument:
-```bash
-# Bind the SIP server to your local network interface IP
-./build_desktop/Release/SipServer.exe --ip=192.168.12.225
-
-# Optional: Override the default port (5060)
-./build_desktop/Release/SipServer.exe --ip=192.168.12.225 --port=5080
-```
 
 ---
 

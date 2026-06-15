@@ -32,8 +32,7 @@ else()
         target_link_libraries(SipServer wsock32 ws2_32)
     elseif (UNIX)
         # 64-bit std::atomic counters (RequestsHandler packet stats) lower to libatomic
-        # calls on ARMv7 (no native 8-byte atomic instruction) — link it. Harmless on
-        # x86-64 where the atomics are inlined. Required for the Orbic cross-build (#82).
+        # calls on some 32-bit targets — link it. Harmless on x86-64 where they inline.
         target_link_libraries(SipServer -pthread atomic)
     else()
         message(FATAL_ERROR "Unsupported platform.")
@@ -115,9 +114,11 @@ else()
         target_link_libraries(SipServer wolfssh_host)
     endif()
 
-    # Tests pull googletest in via FetchContent — skip for cross-compiles (the ARMv7
-    # musl Orbic build, issue #82) where we only want the SipServer binary:
-    #   cmake ... -DCMAKE_TOOLCHAIN_FILE=cmake/armv7-linux-musleabihf.cmake -DBUILD_TESTING=OFF
+    # Tests pull googletest in via FetchContent — skip with -DBUILD_TESTING=OFF.
+    # NOTE: the project is going ESP32-only (see #96). The host build now exists ONLY as
+    # the unit-test / cppcheck gate (pending the on-target QEMU port); the shipped desktop
+    # binary and the ARMv7/Orbic Linux cross-compile (#82) were removed — the Orbic port
+    # is archived at GlomarGadaffi/drawbridge-orbic.
     option(BUILD_TESTING "Build the host unit tests" ON)
     if(BUILD_TESTING)
         add_subdirectory(tests)
