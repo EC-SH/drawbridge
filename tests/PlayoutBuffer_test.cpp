@@ -78,6 +78,55 @@ TEST(PlayoutBufferTest, OverrunOldestFrameDrop)
 	}
 }
 
+TEST(PlayoutBufferTest, AdaptiveLatencyDrainCapsStandingDepth)
+{
+	// Regression for the latency fix: under BALANCED producer/consumer rates a pure FIFO
+	// holds whatever backlog it started with forever (latency locked high). The adaptive
+	// drain must walk the standing depth back down toward the target instead.
+	PlayoutBuffer buffer(2000);
+	buffer.setTargetDepth(100);
+
+	// Producer burst parks a big backlog (600 = 6x target).
+	std::vector<int16_t> burst(600, 7);
+	buffer.write(burst.data(), 600);
+	EXPECT_EQ(buffer.getLength(), 600u);
+
+	// Now run balanced 50-sample ticks: +50 written, 50 read each iteration. Net rate is
+	// zero, so a FIFO would keep the 600 backlog; the drain must converge toward target.
+	int16_t frame[50];
+	for (int i = 0; i < 50; ++i) frame[i] = 1;
+	int16_t out[50] = { 0 };
+	for (int i = 0; i < 30; ++i)
+	{
+		buffer.write(frame, 50);
+		buffer.read(out, 50);
+	}
+
+	EXPECT_LE(buffer.getLength(), 200u);   // converged near target (not the 600 backlog)
+	EXPECT_GE(buffer.getLength(), 1u);     // and did NOT starve to empty
+}
+
+TEST(PlayoutBufferTest, DrainCappedToOneFrameNoBigGap)
+{
+	// The per-read drop is capped at one read so convergence is smooth (≤ one frame skipped
+	// per read), never one large audible gap.
+	PlayoutBuffer buffer(2000);
+	buffer.setTargetDepth(100);
+
+	std::vector<int16_t> in(500);
+	for (int i = 0; i < 500; ++i) in[i] = static_cast<int16_t>(i + 1);  // 1..500
+	buffer.write(in.data(), 500);
+
+	int16_t out[50] = { 0 };
+	bool ok = buffer.read(out, 50);
+	EXPECT_TRUE(ok);
+	// 500 deep, target 100, read 50: drop is capped to one frame (50) → oldest 1..50 skipped,
+	// then 51..100 played. Exactly one frame skipped, not the whole 350-sample excess.
+	EXPECT_EQ(out[0], 51);
+	EXPECT_EQ(out[49], 100);
+	EXPECT_EQ(buffer.getLength(), 400u);   // 500 - 50 dropped - 50 read
+}
+
 TEST(LoopbackAnchorClientTest, SimEventsAndAudioLoop)
 {
 	LoopbackAnchorClient client;

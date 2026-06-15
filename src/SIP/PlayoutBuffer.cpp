@@ -56,6 +56,22 @@ bool PlayoutBuffer::read(int16_t* out, size_t count)
 
 	std::lock_guard<std::mutex> lock(_mutex);
 
+	// Adaptive latency drain. The buffer used to be a pure FIFO: standing latency floated to
+	// wherever producer/consumer rates settled and then only ever GREW toward the ceiling —
+	// locking in 200-400 ms of mouth-to-ear delay for the whole call. Instead, keep the
+	// depth near _targetDepth: if it has drifted more than one read above target, drop the
+	// oldest excess so the delay walks back down. The drop is capped at one read (`count`) so
+	// it converges as ≤20 ms micro-skips (mostly in inter-word gaps) rather than one audible
+	// gap. This actively MINIMISES latency instead of letting it accumulate.
+	const size_t target = _targetDepth.load(std::memory_order_relaxed);
+	if (_count > target + 2 * count)
+	{
+		size_t excess = _count - (target + count);          // amount above the high-water mark
+		size_t drop   = (excess < count) ? excess : count;  // at most one frame per read
+		_readPtr = (_readPtr + drop) % _maxSamples;
+		_count  -= drop;
+	}
+
 	bool success = true;
 	size_t readCount = count;
 
