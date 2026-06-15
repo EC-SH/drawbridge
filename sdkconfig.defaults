@@ -146,3 +146,9 @@ CONFIG_LWIP_MAX_SOCKETS=16
 #                   the internal heap. Requires CONFIG_SPIRAM_USE_MALLOC=y (set above).
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# ── LWIP IRAM optimization (jitter) ──────────────────────────────────────────
+# Pull the LWIP hot path into IRAM so the core network/UDP processing is never
+# stalled by a flash-cache miss — lowers and de-jitters RTP/SIP latency. Costs
+# some IRAM (tight budget), so the build must be checked for an IRAM overflow.
+CONFIG_LWIP_IRAM_OPTIMIZATION=y
