@@ -12,6 +12,8 @@
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"   // #43: WS event work queue
+#include "freertos/semphr.h"  // #43: worker-pool done semaphore (+ existing _rxDoneSem)
 #endif
 
 class ThreeCxAnchorClient : public AnchorClient
@@ -122,6 +124,39 @@ private:
 
 	static void wsEventTrampoline(void* handlerArgs, esp_event_base_t base, int32_t eventId, void* eventData);
 	void handleWsEvent(int32_t eventId, void* eventData);
+
+	// ── #43: WS event queue + worker pool ────────────────────────────────────────
+	// The esp_websocket_client event task MUST stay responsive to keep answering PINGs
+	// (a frozen WS task → missed PONGs → server declares the link dead → full reconnect).
+	// So handleWsEvent() does only fast JSON-parse + gating, heap-allocs a WsWorkItem and
+	// queues a POINTER (a FreeRTOS queue memcpy's its items — a std::string by value would
+	// corrupt the heap), then returns. A worker POOL drains the queue and runs the blocking
+	// getLegStatus()/startMediaStreams()/stopMediaStreams() off the WS task. kWsWorkers=1
+	// today; >1 parallelises concurrent call setups for the multi-call future (issue #100) —
+	// pool-ready by construction.
+	enum class WsWork : uint8_t { Upset, Remove };
+	struct WsWorkItem
+	{
+		WsWork      kind = WsWork::Upset;
+		std::string controlLeg;   // the leg WE control (own outbound leg, or inbound partId)
+		std::string partId;       // the participant 3CX surfaced in the event entity path
+		std::string callerId;     // inbound From display name (best-effort)
+	};
+	static constexpr int kWsWorkers    = 1;    // bump for multi-call setup concurrency (#100)
+	static constexpr int kWsQueueDepth = 16;
+	QueueHandle_t     _wsWorkQueue = nullptr;
+	TaskHandle_t      _wsWorkerHandles[kWsWorkers] = {};
+	std::atomic<bool> _wsWorkersRun{false};
+	// Counting sem each worker gives right before it self-deletes, so stopWsWorkers() can
+	// wait for ALL workers to have left xQueueReceive() before it vQueueDelete()s the queue
+	// (deleting a queue with a task blocked on it is UB). Created once, reused across restart.
+	SemaphoreHandle_t _wsWorkerDoneSem = nullptr;
+	bool startWsWorkers();
+	void stopWsWorkers();
+	void enqueueWsWork(WsWorkItem* item);          // takes ownership; deletes on enqueue failure
+	static void wsWorkerTrampoline(void* arg);
+	void runWsWorker();
+	void processWsWork(const WsWorkItem& w);       // the blocking body, off the WS task
 
 	bool fetchToken();
 	bool ensureToken();             // refresh iff expiring AND no media streams active
