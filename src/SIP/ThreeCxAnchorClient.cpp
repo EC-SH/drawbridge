@@ -1796,13 +1796,15 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	}
 	else
 	{
-		// Our own OUTBOUND leg, not yet Connected (dialing/ringing): pre-warm BOTH streams
-		// (GET + POST) so audio cuts through the instant the PSTN answers — same masking-the-
-		// TLS-open-behind-the-ring trick as the inbound path. Idempotent + self-retrying across
-		// the upserts; if 3CX rejects a pre-connect stream open it simply fails and the Connected
-		// branch above opens it then (graceful fallback, no regression). Inbound calls return
-		// early at the gate above — this is outbound-only.
-		startMediaStreams(w.controlLeg);
+		// Our own OUTBOUND leg, not yet Connected (dialing/ringing): pre-warm the GET stream
+		// ONLY. 3CX streams ringback/early-media on the GET during dialing, so it works pre-
+		// connect and the 3CX->handset direction cuts through at answer. But 3CX does NOT route
+		// a POST (device->3CX) stream opened before the leg is Connected — it accepts the writes
+		// then silently drops them (hardware-confirmed: cell heard nothing, then rc=-1). So the
+		// POST is opened in the Connected branch above, to the now-Connected leg. (Inbound is
+		// different: its route-point leg is already Connected during the local ring, so the
+		// inbound gate pre-warms BOTH streams there.)
+		startRxIfNeeded(w.controlLeg);
 	}
 }
 
