@@ -10,8 +10,11 @@
 class PlayoutBuffer
 {
 public:
-	// Default max samples is 8000 (1 second @ 8 kHz)
-	explicit PlayoutBuffer(size_t maxSamples = 8000);
+	// Default max samples 1600 (200 ms @ 8 kHz) — the HARD latency ceiling: a producer
+	// burst can never park more than 200 ms of audio here (overrun drops oldest). The old
+	// 8000 (1 s) let mouth-to-ear delay balloon. Steady-state is held far lower by the
+	// target-depth drain in read() (see _targetDepth).
+	explicit PlayoutBuffer(size_t maxSamples = 1600);
 	~PlayoutBuffer() = default;
 
 	// Write linear PCM16 samples to the buffer (called by the HTTP RX thread).
@@ -49,8 +52,11 @@ private:
 
 	mutable std::mutex _mutex;
 
-	// Target depth for playout (e.g. 80ms = 640 samples @ 8 kHz)
-	std::atomic<size_t> _targetDepth{640};
+	// Target playout depth = the standing jitter cushion read() drains toward (60 ms = 480
+	// samples @ 8 kHz). read() drops the oldest excess whenever the buffer drifts above
+	// target, so latency walks back DOWN instead of accumulating. Lower = less delay but
+	// more underrun risk on a bursty/lossy (TCP) trunk; tune against getUnderruns().
+	std::atomic<size_t> _targetDepth{480};
 
 	// Statistics
 	std::atomic<uint64_t> _underruns{0};
