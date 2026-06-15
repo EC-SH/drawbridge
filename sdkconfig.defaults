@@ -152,3 +152,12 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # stalled by a flash-cache miss — lowers and de-jitters RTP/SIP latency. Costs
 # some IRAM (tight budget), so the build must be checked for an IRAM overflow.
 CONFIG_LWIP_IRAM_OPTIMIZATION=y
+
+# ── TLS session resumption (#93) ─────────────────────────────────────────────
+# Cache TLS session tickets so a reconnect resumes (abbreviated handshake, ~1 RTT)
+# instead of re-running the full ECDHE — which is software-bound on the S3 (no ECC
+# accelerator). Prerequisite for esp_http_client's save_client_session flag, which
+# the anchor sets in makeAuthedClient(); paired with the control-plane pre-warm so the
+# first dial resumes the already-warmed session.
+CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
+CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS=y
