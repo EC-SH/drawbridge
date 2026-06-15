@@ -93,3 +93,7 @@ drawbridgepatch/
 
 # Shareable binary packages (built locally from build_host_ssh; never commit binaries)
 dist/
+
+# Hyphenated local build dirs (build-verify, build-host, ...) — the build_*/ glob
+# above misses these; without this, a stray `git add -A` swept the whole tree in.
+build-*/
