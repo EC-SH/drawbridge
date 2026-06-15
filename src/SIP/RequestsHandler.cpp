@@ -3656,6 +3656,9 @@ RequestsHandler::Telemetry RequestsHandler::getTelemetry()
 	// Estimated anchor TLS socket draw: 3 persistent (control WS + GET + POST audio) while the
 	// link is up, plus 2 per active bridged call (the per-call media GET/POST streams).
 	t.tlsSocketsEst    = t.anchorConnected ? (3 + (t.mediaActive ? 2 : 0)) : 0;
+	// TLS handshake split (full ECDHE vs resumed) on the POST media stream — shows resumption
+	// holding and reveals 3CX's session-ticket lifetime over idle gaps.
+	if (_anchorClient) _anchorClient->getTlsHandshakeStats(t.tlsFullHandshakes, t.tlsResumedHandshakes);
 	return t;
 }
 

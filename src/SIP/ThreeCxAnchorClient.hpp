@@ -39,6 +39,14 @@ public:
 	void registerAudioRxCallback(AudioRxCallback cb) override;
 	void tick() override;   // non-blocking; runs the _outboundActive reconcile watchdog (ESP only)
 
+	// Counts of POST media-stream opens by handshake type (set in startMediaStreams from the
+	// open's wall time — a full S3 ECDHE is always >~400ms, a resumed session well under).
+	void getTlsHandshakeStats(uint32_t& fullOut, uint32_t& resumedOut) const override
+	{
+		fullOut    = _postFullHandshakes.load(std::memory_order_relaxed);
+		resumedOut = _postResumedHandshakes.load(std::memory_order_relaxed);
+	}
+
 private:
 	std::string _baseUrl;
 	std::string _clientId;
@@ -62,6 +70,10 @@ private:
 	// "answered." This flag fires Answered exactly once when the leg first reaches Connected.
 	// Reset by makeCall (new call) and stopMediaStreams (teardown); unused on the inbound path.
 	std::atomic<bool> _outboundAnswered{false};
+	// Lifetime counts of POST media-stream opens by TLS handshake type (full ECDHE vs resumed).
+	// Surfaced in /api/status telemetry; cross-platform so the host build links the getter.
+	std::atomic<uint32_t> _postFullHandshakes{0};
+	std::atomic<uint32_t> _postResumedHandshakes{0};
 	std::string       _inboundSignaledPartId;
 	// Monotonic (esp_timer) timestamp of the last _outboundActive=true, guarded by _mutex.
 	// The tick() watchdog uses it to detect an outbound makecall that 3CX accepted but that

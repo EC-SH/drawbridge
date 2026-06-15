@@ -2124,6 +2124,7 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 		// chunk). Passing 0 here was the outbound-audio bug: it sent Content-Length: 0,
 		// so 3CX saw an empty body and closed the stream and every writeAudio() wrote
 		// into a dead socket. Do NOT set Transfer-Encoding manually — IDF owns it now.
+		const int64_t openT0 = esp_timer_get_time();
 		esp_err_t err = esp_http_client_open(postClient, -1); // -1 => chunked
 		if (err != ESP_OK)
 		{
@@ -2148,6 +2149,15 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 			}
 			postClient = _postClient;
 		}
+		// Classify by open wall-time: a full handshake pays the S3's software ECDHE (~0.5-1s,
+		// always >400ms — and a rebuild+retry above is by definition a fresh full one); a resumed
+		// session skips the ECDHE/cert-chain (~1-2 RTT, well under). Telemetry surfaces the ratio
+		// so we can SEE resumption holding and read off 3CX's ticket lifetime (full climbs after a
+		// long idle gap). Heuristic, but the two clusters are ~6x apart so the split is clean.
+		const int64_t openMs = (esp_timer_get_time() - openT0) / 1000;
+		const bool fullHandshake = (openMs > 400);
+		(fullHandshake ? _postFullHandshakes : _postResumedHandshakes).fetch_add(1, std::memory_order_relaxed);
+		ESP_LOGI(TAG, "POST open %lld ms -> %s handshake", openMs, fullHandshake ? "FULL" : "resumed");
 		_postLive.store(true, std::memory_order_release);
 	}
 	ESP_LOGI(TAG, "POST (device->3CX) audio stream OPEN: %s", postUrl.c_str());

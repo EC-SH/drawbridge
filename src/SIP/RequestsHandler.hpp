@@ -108,6 +108,8 @@ public:
 		size_t   clientsCap       = 0;       // POCKETDIAL_MAX_CLIENTS
 		size_t   sessionsUsed     = 0;       // active dialogs
 		size_t   sessionsCap      = 0;       // POCKETDIAL_MAX_SESSIONS
+		uint32_t tlsFullHandshakes    = 0;   // media-stream opens that paid a full TLS handshake
+		uint32_t tlsResumedHandshakes = 0;   // ...that resumed a cached session (the fast path)
 	};
 	Telemetry getTelemetry();
 
