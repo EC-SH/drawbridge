@@ -1026,6 +1026,43 @@ std::string ThreeCxAnchorClient::getLegStatus(const std::string& legId)
 	return "";   // leg not on the DN (gone, or an id we don't own)
 }
 
+std::string ThreeCxAnchorClient::getParticipantCaller(const std::string& legId)
+{
+	// Best-effort caller display for an inbound leg, from the live participant list: the
+	// number (party_caller_id) first — that is literally the caller ID — then a CNAM
+	// (party_caller_name) as a fallback. "" if unavailable. Blocking GET — call off the WS task.
+	if (legId.empty()) return "";
+	std::string url;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		url = _baseUrl + "/callcontrol/" + _sourceDn + "/participants";
+	}
+	std::string body;
+	int status = 0;
+	if (!httpGetBody(url, body, &status) || status != 200) return "";
+	cJSON* root = cJSON_Parse(body.c_str());
+	if (!root) return "";
+	CJsonDeleter deleter{root};
+	if (!cJSON_IsArray(root)) return "";
+
+	cJSON* elem = nullptr;
+	cJSON_ArrayForEach(elem, root)
+	{
+		if (!cJSON_IsObject(elem)) continue;
+		cJSON* id = cJSON_GetObjectItem(elem, "id");
+		char idbuf[24] = {0};
+		if (cJSON_IsString(id) && id->valuestring) snprintf(idbuf, sizeof(idbuf), "%s", id->valuestring);
+		else if (cJSON_IsNumber(id))               snprintf(idbuf, sizeof(idbuf), "%d", id->valueint);
+		if (legId != idbuf) continue;
+		cJSON* cid = cJSON_GetObjectItem(elem, "party_caller_id");
+		if (cJSON_IsString(cid) && cid->valuestring && cid->valuestring[0]) return std::string(cid->valuestring);
+		cJSON* nm = cJSON_GetObjectItem(elem, "party_caller_name");
+		if (cJSON_IsString(nm) && nm->valuestring && nm->valuestring[0]) return std::string(nm->valuestring);
+		return "";
+	}
+	return "";
+}
+
 // Extract a participant "id" (string or number form) from a cJSON object, "" if absent.
 static std::string legIdOf(cJSON* elem)
 {
@@ -1682,11 +1719,16 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		}
 		if (announce)
 		{
+			// Caller ID: the WS event's attached_data is often null on a route point, so fall
+			// back to the participant resource (party_caller_id/name) for a real number/name
+			// instead of the generic "PSTN" label. Blocking GET — fine on this worker task.
+			std::string caller = w.callerId;
+			if (caller.empty()) caller = getParticipantCaller(w.partId);
 			ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
-			         _sourceDn.c_str(), w.partId.c_str(), w.callerId.c_str());
+			         _sourceDn.c_str(), w.partId.c_str(), caller.c_str());
 			if (evCb)
 			{
-				CallEvent ev{CallEvent::Incoming, w.partId, "", w.callerId};
+				CallEvent ev{CallEvent::Incoming, w.partId, "", caller};
 				evCb(ev);
 			}
 		}

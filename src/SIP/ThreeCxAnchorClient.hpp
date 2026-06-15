@@ -204,6 +204,10 @@ private:
 	// Status of a specific leg read from the LIST (GET /participants -> find id). Replaces
 	// getParticipantStatus(id), which 403s for a leg this DN cannot directly control (issue #40).
 	std::string getLegStatus(const std::string& legId);
+	// Best-effort caller display (party_caller_id, else party_caller_name) for an inbound leg
+	// from the live participant list — the WS event's attached_data is often null on a route
+	// point. "" if unavailable. Blocking GET; call off the WS event task.
+	std::string getParticipantCaller(const std::string& legId);
 	// Device-specific makecall transport.
 	std::string pickDeviceId(const std::string& body);   // parse a /devices array → a device_id
 	bool resolveDevice();                                 // GET /devices → pickDeviceId → _deviceId
