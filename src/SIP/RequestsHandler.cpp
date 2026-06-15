@@ -3639,6 +3639,26 @@ size_t RequestsHandler::getSessionCount()
 	return _snapshot.sessions.size();
 }
 
+RequestsHandler::Telemetry RequestsHandler::getTelemetry()
+{
+	Telemetry t;
+	// Anchor + media are atomic reads (no registrar lock): isConnected() reads an atomic in
+	// the anchor; MediaBridge.isActive() and the PlayoutBuffer counters are atomics too.
+	t.anchorConnected  = (_anchorClient != nullptr && _anchorClient->isConnected());
+	t.mediaActive      = _mediaBridge.isActive();
+	t.playoutUnderruns = _mediaBridge.getPlayoutBuffer().getUnderruns();
+	t.playoutOverruns  = _mediaBridge.getPlayoutBuffer().getOverruns();
+	// Pool usage from the existing thread-safe snapshot getters (_snapshotMutex, not _mutex).
+	t.clientsUsed      = getClientCount();
+	t.clientsCap       = POCKETDIAL_MAX_CLIENTS;
+	t.sessionsUsed     = getSessionCount();
+	t.sessionsCap      = POCKETDIAL_MAX_SESSIONS;
+	// Estimated anchor TLS socket draw: 3 persistent (control WS + GET + POST audio) while the
+	// link is up, plus 2 per active bridged call (the per-call media GET/POST streams).
+	t.tlsSocketsEst    = t.anchorConnected ? (3 + (t.mediaActive ? 2 : 0)) : 0;
+	return t;
+}
+
 void RequestsHandler::tick()
 {
 	auto now = std::chrono::steady_clock::now();

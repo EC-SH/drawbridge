@@ -27,6 +27,7 @@
 // POCKETDIAL_HAS_WIFI, so guard them on the platform rather than the transport.
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"   // heap_caps_get_*_size for PSRAM telemetry (#82)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #endif
@@ -813,6 +814,7 @@ void HttpServer::sendApiStatus(int sock)
 	std::vector<std::tuple<std::string, std::string, std::string>> ringGroups;
 	uint64_t packets = 0;
 	uint64_t dropped = 0;
+	RequestsHandler::Telemetry telem;   // soak telemetry (#81/#83): anchor/media/pool health
 
 	RequestsHandler* handler = _handler.load(std::memory_order_acquire);
 	if (handler != nullptr)
@@ -824,6 +826,7 @@ void HttpServer::sendApiStatus(int sock)
 		ringGroups = handler->getRingGroups();
 		packets = handler->getPacketsProcessed();
 		dropped = handler->getPacketsDropped();   // Issue #38
+		telem = handler->getTelemetry();
 	}
 
 	std::string displayIp = _ip;
@@ -908,6 +911,52 @@ void HttpServer::sendApiStatus(int sock)
 		     << "\",\"members\":\""  << jsonEscape(std::get<2>(ringGroups[i])) << "\"}";
 	}
 	json << "]";
+
+	// ── Soak telemetry (issues #81-84) ───────────────────────────────────────────
+	// anchor/media/pool from the handler (lock-free), heap/PSRAM/reset-reason from the
+	// system (ESP only — host build emits 0 / "host" so the schema is stable everywhere).
+	json << ",\"telemetry\":{";
+	json << "\"anchorConnected\":" << (telem.anchorConnected ? "true" : "false") << ",";
+	json << "\"mediaActive\":"     << (telem.mediaActive ? "true" : "false") << ",";
+	json << "\"tlsSocketsEst\":"   << telem.tlsSocketsEst << ",";
+	json << "\"playoutUnderruns\":" << telem.playoutUnderruns << ",";
+	json << "\"playoutOverruns\":"  << telem.playoutOverruns << ",";
+	json << "\"clientPool\":{\"used\":" << telem.clientsUsed << ",\"cap\":" << telem.clientsCap << "},";
+	json << "\"sessionPool\":{\"used\":" << telem.sessionsUsed << ",\"cap\":" << telem.sessionsCap << "},";
+
+	uint64_t freeHeap = 0, minFreeHeap = 0, psramFree = 0, psramTotal = 0;
+	const char* resetReason = "host";
+#if defined(ESP_PLATFORM)
+	freeHeap    = esp_get_free_heap_size();
+	minFreeHeap = esp_get_minimum_free_heap_size();   // low-water since boot
+	psramFree   = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+	psramTotal  = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+	switch (esp_reset_reason())
+	{
+		case ESP_RST_POWERON:   resetReason = "poweron";   break;
+		case ESP_RST_SW:        resetReason = "sw";        break;
+		case ESP_RST_PANIC:     resetReason = "panic";     break;
+		case ESP_RST_INT_WDT:   resetReason = "int_wdt";   break;
+		case ESP_RST_TASK_WDT:  resetReason = "task_wdt";  break;
+		case ESP_RST_WDT:       resetReason = "wdt";       break;
+		case ESP_RST_BROWNOUT:  resetReason = "brownout";  break;
+		case ESP_RST_DEEPSLEEP: resetReason = "deepsleep"; break;
+		case ESP_RST_EXT:       resetReason = "ext";       break;
+		case ESP_RST_CPU_LOCKUP: resetReason = "cpu_lockup"; break;  // crash-relevant for soak
+		case ESP_RST_PWR_GLITCH: resetReason = "pwr_glitch"; break;
+		case ESP_RST_USB:       resetReason = "usb";       break;   // flash/serial-tool reset
+		case ESP_RST_JTAG:      resetReason = "jtag";      break;
+		case ESP_RST_SDIO:      resetReason = "sdio";      break;
+		case ESP_RST_EFUSE:     resetReason = "efuse";     break;
+		default:                resetReason = "unknown";   break;
+	}
+#endif
+	json << "\"freeHeap\":" << freeHeap << ",";
+	json << "\"minFreeHeap\":" << minFreeHeap << ",";
+	json << "\"psramFree\":" << psramFree << ",";
+	json << "\"psramTotal\":" << psramTotal << ",";
+	json << "\"resetReason\":\"" << jsonEscape(resetReason) << "\"";
+	json << "}";
 
 	json << "}";
 

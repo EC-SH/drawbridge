@@ -92,6 +92,25 @@ public:
 	size_t getClientCount();
 	size_t getSessionCount();
 
+	// Soak telemetry (issues #81/#83): one thread-safe snapshot of anchor/media/pool health
+	// for /api/status. Reads are lock-free — atomics (anchor/media/playout) plus the existing
+	// _snapshotMutex getters — so it never contends with the SIP thread under the registrar
+	// lock. Heap/PSRAM (#82) and the last-boot reset reason (#84) are system-global and read
+	// directly by the HTTP layer.
+	struct Telemetry
+	{
+		bool     anchorConnected  = false;   // upstream control link (WS) up
+		bool     mediaActive      = false;   // a trunk call is bridged right now
+		int      tlsSocketsEst    = 0;       // est. anchor TLS sockets (3 persistent + 2/call)
+		uint64_t playoutUnderruns = 0;       // current MediaBridge PlayoutBuffer (#81)
+		uint64_t playoutOverruns  = 0;
+		size_t   clientsUsed      = 0;       // registered extensions
+		size_t   clientsCap       = 0;       // POCKETDIAL_MAX_CLIENTS
+		size_t   sessionsUsed     = 0;       // active dialogs
+		size_t   sessionsCap      = 0;       // POCKETDIAL_MAX_SESSIONS
+	};
+	Telemetry getTelemetry();
+
 	// Call Detail Records (CDR): a thread-safe snapshot of the recent-call ring,
 	// newest first. Copied out under _snapshotMutex like the client/session views.
 	std::vector<CallDetailRecord> getCallDetailRecords();
