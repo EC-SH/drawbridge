@@ -502,16 +502,28 @@ bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
 	int status = 0;
 	// Same as drop: the participant-action endpoint wants an application/json "{}"
 	// body (call-control-examples controlParticipant()), not an empty body.
-	bool success = performCtrl(answerUrl, "application/json", "{}", &status);
-	if (success)
+	bool answered = performCtrl(answerUrl, "application/json", "{}", &status);
+	if (answered)
 	{
 		ESP_LOGI(TAG, "Answered inbound participant %s", partId.c_str());
 	}
 	else
 	{
-		ESP_LOGE(TAG, "answerCall request failed for participant %s (status=%d)", partId.c_str(), status);
+		// A route point that auto-connects the PSTN leg can reject /answer on an
+		// already-Connected participant — not fatal. The media streams below carry the audio.
+		ESP_LOGW(TAG, "answerCall: /answer POST status=%d for %s (continuing to media)", status, partId.c_str());
 	}
-	return success;
+
+	// Open OUR media streams now that a local handset answered. answerCall() is the SOLE
+	// inbound media starter — the WS upset path only rings + primes the GET stream (no
+	// startMediaStreams there for inbound), so there is no race. Runs on the 3cx_answer
+	// worker (12 KB stack, TLS-capable); the Rx task is already primed from ring time.
+	if (!startMediaStreams(partId))
+	{
+		ESP_LOGE(TAG, "answerCall: startMediaStreams failed for participant %s", partId.c_str());
+		return false;
+	}
+	return true;
 }
 
 void ThreeCxAnchorClient::setEventCallback(EventCallback cb)
@@ -1637,11 +1649,48 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 			isSameActivePart = (_activeParticipantId == w.partId);
 		}
 		if (isSameActivePart) stopMediaStreams();
+		{
+			// Allow the next call on this DN to re-announce even if 3CX recycles the partId.
+			std::lock_guard<std::mutex> lock(_mutex);
+			if (_inboundSignaledPartId == w.partId) _inboundSignaledPartId.clear();
+		}
 		if (evCb)
 		{
 			CallEvent ev{CallEvent::Dropped, w.partId, "", ""};
 			evCb(ev);
 		}
+		return;
+	}
+
+	// (Upset) INBOUND classification FIRST. The #43 worker-pool split only disambiguated
+	// inbound vs outbound on the not-Connected branch — but a 3CX ROUTE POINT connects the
+	// PSTN leg immediately, so the very first upset is already 'Connected' and used to fall
+	// into the outbound "startMediaStreams + Answered" path (bridging dead air to a phone that
+	// never rang). An Upset on the monitored DN while NO outbound call is in flight
+	// (_outboundActive false, set only by makeCall) is an INBOUND PSTN call the route point is
+	// offering: announce it ONCE so the engine rings the local extensions, and prime the GET
+	// stream so inbound audio opens fast. We deliberately do NOT bridge media here —
+	// answerCall() opens the PCM streams when a local handset answers, so there is exactly one
+	// inbound media starter and no startMediaStreams() race against this task.
+	if (!_outboundActive.load(std::memory_order_acquire))
+	{
+		bool announce = false;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			announce = (_inboundSignaledPartId != w.partId);
+			if (announce) _inboundSignaledPartId = w.partId;
+		}
+		if (announce)
+		{
+			ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
+			         _sourceDn.c_str(), w.partId.c_str(), w.callerId.c_str());
+			if (evCb)
+			{
+				CallEvent ev{CallEvent::Incoming, w.partId, "", w.callerId};
+				evCb(ev);
+			}
+		}
+		startRxIfNeeded(w.partId);   // warm the GET stream; answerCall() bridges on handset answer
 		return;
 	}
 
@@ -1685,26 +1734,9 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	}
 	else
 	{
-		// Not-yet-connected: our own outbound leg ringing, OR the upstream delivering a PSTN
-		// call to the monitored DN. Disambiguate on _outboundActive; announce inbound once.
-		bool isInbound = false;
-		{
-			std::lock_guard<std::mutex> lock(_mutex);
-			isInbound = !_outboundActive.load(std::memory_order_acquire) &&
-			            _inboundSignaledPartId != w.partId;
-			if (isInbound) _inboundSignaledPartId = w.partId;
-		}
-		if (isInbound)
-		{
-			ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
-			         _sourceDn.c_str(), w.partId.c_str(), w.callerId.c_str());
-			if (evCb)
-			{
-				CallEvent ev{CallEvent::Incoming, w.partId, "", w.callerId};
-				evCb(ev);
-			}
-		}
-		// Ring-time prime on the leg we control so the GET stream is polling before connect.
+		// Our own OUTBOUND leg, not yet Connected (ringing): prime the GET stream so it is
+		// polling on a warm TLS connection before the leg answers. Inbound calls return early
+		// above (they never reach this outbound media path), so this is outbound-only now.
 		startRxIfNeeded(w.controlLeg);
 	}
 }
