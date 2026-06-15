@@ -1645,6 +1645,22 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		return;
 	}
 
+	// (Upset) Re-apply the throttle the original code ran SYNCHRONOUSLY right before this
+	// work. 3CX repeats the upset every ~750 ms; with the work now deferred, several can
+	// queue before our first startMediaStreams() completes (the handler's isStreaming() was
+	// still false then). A duplicate would hit startMediaStreams()'s "already active" -> false,
+	// and the else branch below would call stopMediaStreams() and TEAR DOWN the live call —
+	// the two-way -> one-way -> dead-media regression. If our leg is already bridging, this
+	// upset is a no-op.
+	{
+		bool sameLeg = false;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			sameLeg = (w.controlLeg == _activeParticipantId);
+		}
+		if (sameLeg && isStreaming()) return;
+	}
+
 	// Upset: authoritative status from the LIST (GET /participants -> find leg), never
 	// getParticipantStatus(id) which 403s for a non-controlled leg (issue #40).
 	std::string statusStr = getLegStatus(w.controlLeg);
@@ -1824,6 +1840,8 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 											if (c && c->valuestring && c->valuestring[0]) { callerId = c->valuestring; break; }
 										}
 									}
+									// placement new(nothrow) returns an initialized pointer; cppcheck misparses it.
+									// cppcheck-suppress legacyUninitvar
 									auto* item = new (std::nothrow) WsWorkItem{};
 									if (item)
 									{
@@ -1838,6 +1856,8 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 								{
 									ESP_LOGI(TAG, "Call control event: Participant Remove %s", partId.c_str());
 									// #43: stopMediaStreams() has a <=2 s rx-join — off the WS task.
+									// placement new(nothrow) returns an initialized pointer; cppcheck misparses it.
+									// cppcheck-suppress legacyUninitvar
 									auto* item = new (std::nothrow) WsWorkItem{};
 									if (item)
 									{
