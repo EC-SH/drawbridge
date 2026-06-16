@@ -79,6 +79,7 @@ endif()
 
 idf_component_register(SRCS ${MAIN_SRC}
                             ${ADDITIONAL_SRCS}
+                            "ntp_time.c"
                             "../src/Helpers/UdpServer.cpp"
                             "../src/Helpers/HttpServer.cpp"
                             "../src/Helpers/AdminAuth.cpp"
