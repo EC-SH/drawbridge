@@ -2042,14 +2042,20 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		return;
 	}
 
-	// (Upset) Classify by the slot for the control leg handleWsEvent resolved. A slot that is
-	// outboundActive is one of OUR outbound calls; anything else (no slot yet, or a non-outbound
-	// slot) is an INBOUND PSTN call the route point is offering. The far-leg/own-leg disambiguation
-	// (issue #40) already happened in handleWsEvent, which set w.controlLeg to the leg WE control.
+	// (Upset) #100: RE-RESOLVE the control leg at PROCESS time. handleWsEvent resolves controlLeg at
+	// ENQUEUE time, but under a concurrent burst an early upset for a leg can be queued BEFORE
+	// makecall finishes creating that leg's slot — the enqueue-time heuristic then maps it to a
+	// DIFFERENT in-flight leg, and once the real leg goes Connected 3CX stops repeating the upset so
+	// the stale mapping never self-corrects and that call never bridges (the N>=4 mis-map). By
+	// process time the slots are stable: if the surfaced partId now owns a slot, IT is the control
+	// leg; otherwise keep handleWsEvent's far-leg/inbound mapping (issue #40). A slot that is
+	// outboundActive is one of OUR outbound calls; anything else is an INBOUND PSTN call.
+	std::string controlLeg = w.controlLeg;
 	bool outbound = false;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		CallSlot* s = slotForLocked(w.controlLeg);
+		if (slotForLocked(w.partId)) controlLeg = w.partId;
+		CallSlot* s = slotForLocked(controlLeg);
 		outbound = s && s->outboundActive.load(std::memory_order_acquire);
 	}
 
@@ -2067,11 +2073,11 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 			std::lock_guard<std::mutex> lock(_mutex);
 			// Find-or-claim the inbound slot so the announce-once flag lives on it (keyed by the
 			// surfaced leg). All slots busy => no slot => no announce (graceful at capacity).
-			CallSlot* s = allocSlotLocked(w.controlLeg);
+			CallSlot* s = allocSlotLocked(controlLeg);
 			if (s)
 			{
-				announce = (s->inboundSignaledPartId != w.controlLeg);
-				if (announce) s->inboundSignaledPartId = w.controlLeg;
+				announce = (s->inboundSignaledPartId != controlLeg);
+				if (announce) s->inboundSignaledPartId = controlLeg;
 			}
 		}
 		if (announce)
@@ -2080,16 +2086,16 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 			// back to the participant resource (party_caller_id/name) for a real number/name
 			// instead of the generic "PSTN" label. Blocking GET — fine on this worker task.
 			std::string caller = w.callerId;
-			if (caller.empty()) caller = getParticipantCaller(w.controlLeg);
+			if (caller.empty()) caller = getParticipantCaller(controlLeg);
 			ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
-			         _sourceDn.c_str(), w.controlLeg.c_str(), caller.c_str());
+			         _sourceDn.c_str(), controlLeg.c_str(), caller.c_str());
 			if (evCb)
 			{
-				CallEvent ev{CallEvent::Incoming, w.controlLeg, "", caller};
+				CallEvent ev{CallEvent::Incoming, controlLeg, "", caller};
 				evCb(ev);
 			}
 		}
-		startMediaStreams(w.controlLeg);
+		startMediaStreams(controlLeg);
 		return;
 	}
 
@@ -2100,7 +2106,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	// and using it as the sole skip would swallow the Connected->Answered transition.
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
-		CallSlot* s = slotForLocked(w.controlLeg);
+		CallSlot* s = slotForLocked(controlLeg);
 		if (s && s->postLive.load(std::memory_order_acquire) &&
 		    s->outboundAnswered.load(std::memory_order_acquire))
 		{
@@ -2110,8 +2116,8 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 
 	// Authoritative status from the LIST (GET /participants -> find leg), never getParticipantStatus(id)
 	// which 403s for a non-controlled leg (issue #40).
-	std::string statusStr = getLegStatus(w.controlLeg);
-	ESP_LOGI(TAG, "Upset %s -> control leg %s status '%s'", w.partId.c_str(), w.controlLeg.c_str(), statusStr.c_str());
+	std::string statusStr = getLegStatus(controlLeg);
+	ESP_LOGI(TAG, "Upset %s -> control leg %s status '%s'", w.partId.c_str(), controlLeg.c_str(), statusStr.c_str());
 
 	// Helper to read THIS slot's postLive (slot pointer stays valid — fixed array — but re-fetch the
 	// flag rather than caching across the blocking calls below).
@@ -2127,30 +2133,30 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		// as a fallback if a pre-answer stream open was rejected. Then fire Answered EXACTLY ONCE
 		// (the per-slot one-shot decouples the answer signal from "media is streaming", which
 		// pre-warm makes true early). Control + media key off OUR leg (controlLeg).
-		bool live = slotPostLive(w.controlLeg);
+		bool live = slotPostLive(controlLeg);
 		if (!live)
 		{
-			startMediaStreams(w.controlLeg);
-			live = slotPostLive(w.controlLeg);
+			startMediaStreams(controlLeg);
+			live = slotPostLive(controlLeg);
 		}
 		if (live)
 		{
 			bool fire = false;
 			{
 				std::lock_guard<std::mutex> lock(_mutex);
-				CallSlot* s = slotForLocked(w.controlLeg);
+				CallSlot* s = slotForLocked(controlLeg);
 				if (s) fire = !s->outboundAnswered.exchange(true, std::memory_order_acq_rel);
 			}
 			if (fire && evCb)
 			{
-				CallEvent ev{CallEvent::Answered, w.controlLeg, "", ""};
+				CallEvent ev{CallEvent::Answered, controlLeg, "", ""};
 				evCb(ev);
 			}
 		}
 		else
 		{
-			ESP_LOGE(TAG, "Failed to start media streams for participant %s", w.controlLeg.c_str());
-			stopMediaStreams(w.controlLeg);
+			ESP_LOGE(TAG, "Failed to start media streams for participant %s", controlLeg.c_str());
+			stopMediaStreams(controlLeg);
 		}
 	}
 	else
@@ -2162,7 +2168,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		// silently drops them (hardware-confirmed). So the POST is opened in the Connected branch
 		// above, to the now-Connected leg. (Inbound differs: its route-point leg is already
 		// Connected during the local ring, so the inbound gate pre-warms BOTH streams there.)
-		startRxIfNeeded(w.controlLeg);
+		startRxIfNeeded(controlLeg);
 	}
 }
 
