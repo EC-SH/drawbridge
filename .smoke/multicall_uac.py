@@ -43,6 +43,24 @@ class Call:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((self.local_ip, 0)); s.settimeout(5.0)
         return s, s.getsockname()[1]
 
+    def _beep_ok(self, sip, invite):
+        # Reply 486 Busy Here to the board's register-beep INVITE so it stops retransmitting and
+        # doesn't pollute this socket while we wait for the REGISTER 200. Echo the request's routing
+        # headers (Via/From/To/Call-ID/CSeq) back verbatim per RFC 3261.
+        try:
+            lines = invite.decode(errors="replace").split("\r\n")
+            keep = []
+            for h in lines:
+                lk = h.lower()
+                if lk.startswith(("via:", "from:", "call-id:", "cseq:")):
+                    keep.append(h)
+                elif lk.startswith("to:"):
+                    keep.append(h if "tag=" in h else h + ";tag=uacbeep%d" % random.randint(1000, 9999))
+            resp = ("SIP/2.0 486 Busy Here\r\n" + "\r\n".join(keep) + "\r\nContent-Length: 0\r\n\r\n").encode()
+            sip.sendto(resp, (self.board_ip, 5060))
+        except Exception:
+            pass
+
     def run(self):
         try:
             self._run()
@@ -57,18 +75,35 @@ class Call:
         callid = "mc-%d-%d@%s" % (self.ext, now_ms(), self.local_ip)
         contact = "<sip:%d@%s:%d>" % (self.ext, self.local_ip, sip_port)
 
-        # 1. REGISTER (Open/Learn registrar -> 200, no digest)
-        reg = ("REGISTER sip:%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:%d;branch=z9hG4bK%d\r\n"
-               "Max-Forwards: 70\r\nFrom: <sip:%d@%s>;tag=%s\r\nTo: <sip:%d@%s>\r\n"
-               "Call-ID: reg-%s\r\nCSeq: 1 REGISTER\r\nContact: %s\r\nExpires: 120\r\nContent-Length: 0\r\n\r\n"
-               % (self.board_ip, self.local_ip, sip_port, random.randint(1, 1 << 30),
-                  self.ext, self.board_ip, tag, self.ext, self.board_ip, callid, contact)).encode()
-        sip.sendto(reg, (self.board_ip, 5060))
-        try:
-            data, _ = sip.recvfrom(4096)
-            if b"200" not in data.split(b"\r\n", 1)[0]:
-                self.result = "REG-FAIL:" + data.split(b"\r\n", 1)[0].decode(errors="replace"); return
-        except socket.timeout:
+        # 1. REGISTER (Open/Learn registrar -> 200, no digest). The board sends a "register beep"
+        # INVITE back to a freshly-registered contact, which can arrive before (or instead of) the
+        # REGISTER 200 on this socket; and under a concurrent ramp a single REGISTER/200 can be
+        # dropped. So: loop recvfrom looking specifically for the REGISTER 200 (ignore the beep
+        # INVITE — answer it 200 so it doesn't retransmit), and retry the whole REGISTER a few times.
+        registered = False
+        for attempt in range(4):
+            reg = ("REGISTER sip:%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:%d;branch=z9hG4bK%d\r\n"
+                   "Max-Forwards: 70\r\nFrom: <sip:%d@%s>;tag=%s\r\nTo: <sip:%d@%s>\r\n"
+                   "Call-ID: reg-%s\r\nCSeq: %d REGISTER\r\nContact: %s\r\nExpires: 120\r\nContent-Length: 0\r\n\r\n"
+                   % (self.board_ip, self.local_ip, sip_port, random.randint(1, 1 << 30),
+                      self.ext, self.board_ip, tag, self.ext, self.board_ip, callid, attempt + 1, contact)).encode()
+            sip.sendto(reg, (self.board_ip, 5060))
+            deadline = time.time() + 2.5
+            while time.time() < deadline:
+                try:
+                    data, _ = sip.recvfrom(4096)
+                except socket.timeout:
+                    break
+                first = data.split(b"\r\n", 1)[0]
+                if b"REGISTER" in data and b" 200 " in first:
+                    registered = True
+                    break
+                if data.startswith(b"INVITE"):
+                    # register-beep: ACK-less 200 so the board stops retransmitting, then keep waiting
+                    self._beep_ok(sip, data)
+            if registered:
+                break
+        if not registered:
             self.result = "REG-TIMEOUT"; return
 
         # 2. INVITE dest with SDP offer (our RTP port)
