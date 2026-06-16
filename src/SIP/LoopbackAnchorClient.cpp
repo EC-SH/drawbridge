@@ -72,12 +72,16 @@ bool LoopbackAnchorClient::isConnected() const
 	return _connected;
 }
 
-bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
+bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/, std::string* ownLegOut)
 {
 	if (!_connected)
 	{
 		return false;
 	}
+
+	// The loopback resolves its own leg synchronously (fixed mock id), so the engine can bind the
+	// session immediately — mirrors the real anchor handing back makecall result.id (#100).
+	if (ownLegOut) *ownLegOut = "mock-part-123";
 
 	_stopSimThread = true;
 	uint64_t myCallId = ++g_activeCallId;

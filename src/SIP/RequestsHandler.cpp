@@ -557,7 +557,7 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		auto session = getSession(data->getCallID());
 		if (session.has_value() && session.value()->isAnchor())
 		{
-			_mediaBridge.stopBridge();
+			if (MediaBridge* b = bridgeForParticipant(session.value()->getAnchorParticipantId())) b->stopBridge();   // #100: only this call's bridge
 			asyncDropCall(session.value()->getAnchorParticipantId());   // drop the PSTN leg by id
 			auto response = getMessageFromPool(data->toString(), data->getSource());
 			response->setHeader(SipMessageTypes::OK);
@@ -1520,7 +1520,7 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 
 	if (session.has_value() && session.value()->isAnchor())
 	{
-		_mediaBridge.stopBridge();
+		if (MediaBridge* b = bridgeForParticipant(session.value()->getAnchorParticipantId())) b->stopBridge();   // #100: only this call's bridge
 		asyncDropCall(session.value()->getAnchorParticipantId());   // drop the PSTN leg by id (REST)
 		auto response = getMessageFromPool(data->toString(), data->getSource());
 		response->setHeader(SipMessageTypes::OK);
@@ -3679,17 +3679,28 @@ RequestsHandler::Telemetry RequestsHandler::getTelemetry()
 	// Anchor + media are atomic reads (no registrar lock): isConnected() reads an atomic in
 	// the anchor; MediaBridge.isActive() and the PlayoutBuffer counters are atomics too.
 	t.anchorConnected  = (_anchorClient != nullptr && _anchorClient->isConnected());
-	t.mediaActive      = _mediaBridge.isActive();
-	t.playoutUnderruns = _mediaBridge.getPlayoutBuffer().getUnderruns();
-	t.playoutOverruns  = _mediaBridge.getPlayoutBuffer().getOverruns();
+	// #100: aggregate across the N media bridges — mediaActive if ANY call is bridged; playout
+	// under/overruns summed so the dashboard shows total media-plane glitches across all calls.
+	int activeBridges = 0;
+	uint64_t under = 0, over = 0;
+	for (auto& b : _mediaBridges)
+	{
+		if (b.isActive()) ++activeBridges;
+		under += b.getPlayoutBuffer().getUnderruns();
+		over  += b.getPlayoutBuffer().getOverruns();
+	}
+	t.mediaActive      = (activeBridges > 0);
+	t.playoutUnderruns = under;
+	t.playoutOverruns  = over;
 	// Pool usage from the existing thread-safe snapshot getters (_snapshotMutex, not _mutex).
 	t.clientsUsed      = getClientCount();
 	t.clientsCap       = POCKETDIAL_MAX_CLIENTS;
 	t.sessionsUsed     = getSessionCount();
 	t.sessionsCap      = POCKETDIAL_MAX_SESSIONS;
-	// Estimated anchor TLS socket draw: 3 persistent (control WS + GET + POST audio) while the
-	// link is up, plus 2 per active bridged call (the per-call media GET/POST streams).
-	t.tlsSocketsEst    = t.anchorConnected ? (3 + (t.mediaActive ? 2 : 0)) : 0;
+	// Estimated anchor TLS socket draw: ~3 persistent (control WS + ctrl + warm POST) while the
+	// link is up, plus 2 per ACTIVE bridged call (its GET + POST media streams). #100: scales with
+	// the concurrent-call count, so this is the number to watch against LWIP_MAX_SOCKETS at the edge.
+	t.tlsSocketsEst    = t.anchorConnected ? (3 + 2 * activeBridges) : 0;
 	// TLS handshake split (full ECDHE vs resumed) on the POST media stream — shows resumption
 	// holding and reveals 3CX's session-ticket lifetime over idle gaps.
 	if (_anchorClient) _anchorClient->getTlsHandshakeStats(t.tlsFullHandshakes, t.tlsResumedHandshakes);
@@ -5799,7 +5810,20 @@ void RequestsHandler::loadThreeCxConfig()
 	_anchorClient->setRewarmIntervalSec(
 		static_cast<uint32_t>(_rewarmMinutes.load(std::memory_order_relaxed)) * 60u);
 
-	_mediaBridge.init(&_rtpReceiver, &_rtpSender, _anchorClient);
+	// #100: wire each media bridge to its own RTP receiver/sender pair, then install ONE anchor rx
+	// callback that fans each call's inbound (GET stream) audio out to the bridge owning that
+	// participant. One callback for all bridges (the anchor only holds one); the bridge no longer
+	// registers it. Runs on the anchor rx task(s) — feedRx is a quick locked playout-buffer write.
+	for (size_t i = 0; i < POCKETDIAL_MAX_ANCHOR_CALLS; ++i)
+	{
+		_mediaBridges[i].init(&_rtpReceivers[i], &_rtpSenders[i], _anchorClient);
+	}
+	_anchorClient->registerAudioRxCallback([this](const std::string& participantId, const int16_t* samples, size_t count) {
+		for (auto& b : _mediaBridges)
+		{
+			if (b.feedRx(participantId, samples, count)) break;
+		}
+	});
 
 	// Start the anchor client asynchronously to avoid blocking the constructor with TLS fetchToken
 #if defined(ESP_PLATFORM) || defined(ESP32)
@@ -5848,59 +5872,70 @@ void RequestsHandler::loadThreeCxConfig()
 		if (ev.type == AnchorClient::CallEvent::Answered)
 		{
 			queueLog("[3CX] Event: Answered, participantId=" + ev.participantId);
-			// Find the active ringing session.
-			for (auto& [callId, session] : _sessions)
+			// #100: bind THIS answered participant to ITS session. asyncMakeCall stamped the own
+			// leg onto the session at origination, so match by participant id; fall back to a still-
+			// unbound Invited anchor session (covers a rare Answered-before-bind race). Was "first
+			// Invited anchor session", which crossed handset<->participant with concurrent calls.
+			std::shared_ptr<Session> session;
+			std::string callId;
+			for (auto& [cid, s] : _sessions)
 			{
-				if (session->getState() == Session::State::Invited && session->isAnchor())
+				if (s->isAnchor() && s->getState() == Session::State::Invited &&
+				    s->getAnchorParticipantId() == ev.participantId)
 				{
-					// Found the session!
-					auto caller = session->getSrc();
-					if (caller)
+					session = s; callId = cid; break;
+				}
+			}
+			if (!session)
+			{
+				for (auto& [cid, s] : _sessions)
+				{
+					if (s->isAnchor() && s->getState() == Session::State::Invited &&
+					    s->getAnchorParticipantId().empty())
 					{
-						std::string handsetIp;
-						uint16_t handsetPort = 0;
-						auto inviteMsg = session->getInviteMessage();
-						if (inviteMsg && parseCallerRtp(inviteMsg, handsetIp, handsetPort))
-						{
-							// Send 200 OK back to handset
-							std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-							// Reuse the To-tag from the 180 Ringing (stored on the session) so
-							// the 200 OK lands in the SAME dialog the phone is already ringing;
-							// a fresh tag here is why the Yealink kept ringing through the answer.
-							std::string toTag = session->getLocalTag();
-							if (toTag.empty()) toTag = IDGen::GenerateID(9); // defensive fallback
-							// Start the MediaBridge FIRST so the receiver's ephemeral port
-							// (what the handset must send its audio to) is known before we
-							// build the SDP answer. Advertising the sender's source port (the
-							// old behaviour) sent the handset's audio into a socket nothing
-							// read — the far end heard silence.
-							if (!_mediaBridge.startBridge(handsetIp, handsetPort, callId, ev.participantId))
-							{
-								queueLog("[3CX] MediaBridge failed to start", true);
-								break;
-							}
-							int rxPort = _mediaBridge.receiverPort();
-							queueLog("[3CX] MediaBridge started: Handset=" + handsetIp + ":" +
-							         std::to_string(handsetPort) + " <-> 3CX (rx port " + std::to_string(rxPort) + ")");
-							std::string sdpBody = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
-
-							auto ok = buildOkWithSdp(inviteMsg, activeIp, toTag, sdpBody);
-							dumpWire("[3CX] 200 OK ->", ok);
-
-							// This callback runs on the WS event task, NOT the SIP receive
-							// thread — use _asyncOutbox so the start-of-body _outbox.clear() in
-							// handle()/tick() can't wipe the 200 OK before it is sent.
-							_asyncOutbox.emplace_back(inviteMsg->getSource(), std::move(ok));
-							session->setState(Session::State::Connected);
-							// Remember the upstream (3CX) participant so the handset's BYE
-							// can drop it via REST. The OUTBOUND session was never given a
-							// participant id before (only inbound was), so asyncDropCall("")
-							// fell back to an empty _activeParticipantId → no drop → the PSTN
-							// leg lingered until 3CX timed out (or was killed by hand).
-							session->setAnchorParticipantId(ev.participantId);
-						}
+						session = s; callId = cid; break;
 					}
-					break;
+				}
+			}
+			if (session)
+			{
+				auto caller = session->getSrc();
+				std::string handsetIp;
+				uint16_t handsetPort = 0;
+				auto inviteMsg = session->getInviteMessage();
+				if (caller && inviteMsg && parseCallerRtp(inviteMsg, handsetIp, handsetPort))
+				{
+					std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+					// Reuse the To-tag from the 180 Ringing so the 200 OK lands in the SAME dialog
+					// the phone is already ringing (a fresh tag leaves Yealinks stuck ringing).
+					std::string toTag = session->getLocalTag();
+					if (toTag.empty()) toTag = IDGen::GenerateID(9); // defensive fallback
+					// Claim a free media bridge for this call (its own RTP rx/tx + playout). Start it
+					// FIRST so the receiver's ephemeral RX port is known before we build the SDP
+					// answer — that port is what the handset must send its audio to.
+					MediaBridge* bridge = bridgeForParticipant(ev.participantId);
+					if (!bridge) bridge = acquireFreeBridge();
+					if (bridge && bridge->startBridge(handsetIp, handsetPort, callId, ev.participantId))
+					{
+						int rxPort = bridge->receiverPort();
+						queueLog("[3CX] MediaBridge started: Handset=" + handsetIp + ":" +
+						         std::to_string(handsetPort) + " <-> 3CX (rx port " + std::to_string(rxPort) + ")");
+						std::string sdpBody = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
+
+						auto ok = buildOkWithSdp(inviteMsg, activeIp, toTag, sdpBody);
+						dumpWire("[3CX] 200 OK ->", ok);
+
+						// Runs on the WS event task, NOT the SIP receive thread — use _asyncOutbox so
+						// the start-of-body _outbox.clear() in handle()/tick() can't wipe the 200 OK.
+						_asyncOutbox.emplace_back(inviteMsg->getSource(), std::move(ok));
+						session->setState(Session::State::Connected);
+						// Remember the upstream (3CX) participant so the handset's BYE drops it by id.
+						session->setAnchorParticipantId(ev.participantId);
+					}
+					else
+					{
+						queueLog("[3CX] MediaBridge failed to start (no free bridge)", true);
+					}
 				}
 			}
 		}
@@ -5913,12 +5948,14 @@ void RequestsHandler::loadThreeCxConfig()
 		else if (ev.type == AnchorClient::CallEvent::Dropped)
 		{
 			queueLog("[3CX] Event: Dropped, participantId=" + ev.participantId);
-			// Find the active session and terminate it
+			// #100: terminate ONLY the session for THIS participant (was: the first anchor session,
+			// which tore down an unrelated concurrent call). Stop just this call's media bridge.
 			for (auto& [callId, session] : _sessions)
 			{
 				if (!session->isAnchor()) continue;
+				if (session->getAnchorParticipantId() != ev.participantId) continue;
 
-				_mediaBridge.stopBridge();
+				if (MediaBridge* b = bridgeForParticipant(ev.participantId)) b->stopBridge();
 				std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 				std::string localTag = session->getLocalTag();
 				if (localTag.empty()) localTag = IDGen::GenerateID(9); // defensive fallback
@@ -6081,12 +6118,51 @@ void RequestsHandler::sendRinging(
 	_outbox.emplace_back(data->getSource(), std::move(ringing));
 }
 
+// ── #100: media-bridge pool helpers ─────────────────────────────────────────────
+MediaBridge* RequestsHandler::acquireFreeBridge()
+{
+	for (auto& b : _mediaBridges) if (!b.isActive()) return &b;
+	return nullptr;
+}
+
+MediaBridge* RequestsHandler::bridgeForParticipant(const std::string& participantId)
+{
+	if (participantId.empty()) return nullptr;
+	for (auto& b : _mediaBridges) if (b.isFor(participantId)) return &b;
+	return nullptr;
+}
+
+MediaBridge* RequestsHandler::bridgeForCallId(const std::string& callID)
+{
+	if (callID.empty()) return nullptr;
+	for (auto& b : _mediaBridges) if (b.isForCallId(callID)) return &b;
+	return nullptr;
+}
+
+bool RequestsHandler::allBridgesBusy() const
+{
+	for (const auto& b : _mediaBridges) if (!b.isActive()) return false;
+	return true;
+}
+
+void RequestsHandler::bindOutboundParticipant(const std::string& callId, const std::string& ownLeg)
+{
+	if (callId.empty() || ownLeg.empty()) return;
+	std::lock_guard<std::mutex> lock(_mutex);
+	auto it = _sessions.find(callId);
+	if (it != _sessions.end() && it->second && it->second->isAnchor())
+	{
+		it->second->setAnchorParticipantId(ownLeg);
+	}
+}
+
 void RequestsHandler::routeAnchorCall(const std::shared_ptr<SipMessage>& data,
                                       const std::shared_ptr<SipClient>& caller,
                                       const std::string& dialed)
 {
-	// Check if we already have an active external call/bridge
-	if (_mediaBridge.isActive())
+	// #100: refuse a new anchor call only when EVERY media bridge is busy (all concurrent slots in
+	// use) — was "any single bridge active", which capped the box at one call.
+	if (allBridgesBusy())
 	{
 		std::shared_ptr<SipMessage> responseObj = getMessageFromPool(data->toString(), data->getSource());
 		responseObj->setHeader("SIP/2.0 486 Busy Here");
@@ -6142,10 +6218,10 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 		return;
 	}
 
-	// One media bridge ⇒ one trunk-bridged call at a time (the documented media cap).
-	if (_mediaBridge.isActive())
+	// #100: drop inbound only when EVERY media bridge is busy (no concurrent capacity left).
+	if (allBridgesBusy())
 	{
-		queueLog("[3CX] Inbound: media bridge busy — dropping inbound to " + dn);
+		queueLog("[3CX] Inbound: all media bridges busy — dropping inbound to " + dn);
 		asyncDropCall(participantId);
 		return;
 	}
@@ -6414,22 +6490,29 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 	std::string handsetIp; uint16_t handsetPort = 0;
 	std::string sdpAnswer;
 	bool bridged = false;
+	const std::string inPart = session->getAnchorParticipantId();
 	if (already)
 	{
-		if (_mediaBridge.isActive())
+		// #100: re-ACK retransmit — reuse THIS call's already-up bridge.
+		if (MediaBridge* b = bridgeForParticipant(inPart))
 		{
-			sdpAnswer = buildMediaSdp(activeIp, _mediaBridge.receiverPort(), /*sendRecv=*/true);
+			sdpAnswer = buildMediaSdp(activeIp, b->receiverPort(), /*sendRecv=*/true);
 			bridged = true;   // re-ACK only; bridge already up
 		}
 	}
-	else if (parseCallerRtp(ok, handsetIp, handsetPort) &&
-	         _mediaBridge.startBridge(handsetIp, handsetPort, callId, session->getAnchorParticipantId()))
+	else if (parseCallerRtp(ok, handsetIp, handsetPort))
 	{
-		int rxPort = _mediaBridge.receiverPort();
-		sdpAnswer = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
-		bridged = true;
-		queueLog("[3CX] Inbound: handset " + handsetIp + ":" + std::to_string(handsetPort) +
-		         " answered; bridge up (rx " + std::to_string(rxPort) + ")");
+		// #100: claim a free media bridge for this inbound call.
+		MediaBridge* b = bridgeForParticipant(inPart);
+		if (!b) b = acquireFreeBridge();
+		if (b && b->startBridge(handsetIp, handsetPort, callId, inPart))
+		{
+			int rxPort = b->receiverPort();
+			sdpAnswer = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
+			bridged = true;
+			queueLog("[3CX] Inbound: handset " + handsetIp + ":" + std::to_string(handsetPort) +
+			         " answered; bridge up (rx " + std::to_string(rxPort) + ")");
+		}
 	}
 	else
 	{
@@ -6511,7 +6594,8 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 	auto* arg = new MakeCallArg{ _anchorClient, destination, callId, callerNumber, this };
 	xTaskCreate([](void* p) {
 		auto* mca = static_cast<MakeCallArg*>(p);
-		if (!mca->anchor->makeCall(mca->dest))
+		std::string ownLeg;
+		if (!mca->anchor->makeCall(mca->dest, &ownLeg))
 		{
 			std::lock_guard<std::mutex> lock(mca->handler->_mutex);
 			mca->handler->queueLog("[3CX] Failed to initiate outbound call to " + mca->dest, true);
@@ -6519,6 +6603,9 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		}
 		else
 		{
+			// #100: bind this origination's own leg to its session NOW (locks _mutex internally) so
+			// the later Answered/Dropped maps to the right call when several are in flight.
+			mca->handler->bindOutboundParticipant(mca->callId, ownLeg);
 			std::lock_guard<std::mutex> lock(mca->handler->_mutex);
 			mca->handler->queueLog("[3CX] Initiating outbound call to " + mca->dest);
 		}
@@ -6528,7 +6615,8 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 	}, "3cx_makecall", 12288, arg, 5, NULL);
 #else
 	spawnAnchorWorker([this, destination, callId, callerNumber]() {
-		if (!_anchorClient->makeCall(destination))
+		std::string ownLeg;
+		if (!_anchorClient->makeCall(destination, &ownLeg))
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
 			queueLog("[3CX] Failed to initiate outbound call to " + destination, true);
@@ -6536,6 +6624,7 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		}
 		else
 		{
+			bindOutboundParticipant(callId, ownLeg);   // #100: bind own leg to session (locks _mutex)
 			std::lock_guard<std::mutex> lock(_mutex);
 			queueLog("[3CX] Initiating outbound call to " + destination);
 		}

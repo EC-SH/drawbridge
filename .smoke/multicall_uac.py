@@ -13,9 +13,20 @@ Usage:
 Watch the board's /api/status (tlsSocketsEst, mediaActive, freeHeap) + COM5 serial while
 this runs to find the real concurrent-call edge.
 """
-import socket, sys, threading, time, hashlib, random
+import socket, sys, threading, time, hashlib, random, json, urllib.request
 
 def now_ms(): return int(time.time() * 1000)
+
+def board_status(board_ip):
+    """GET /api/status -> the telemetry dict, or None. The playout under/overrun counters here
+    are the REAL media-plane quality signal: rtp_rx alone stays ~50pps even when the device is
+    starving (the sender pads underruns with comfort noise), so silence gaps show up only as
+    underruns on the board, not as missing packets at the UAC."""
+    try:
+        with urllib.request.urlopen("http://%s/api/status" % board_ip, timeout=5) as r:
+            return json.loads(r.read().decode()).get("telemetry", {})
+    except Exception as e:
+        return {"err": str(e)}
 
 def local_ip_for(target):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -187,14 +198,33 @@ def main():
     base = int(sys.argv[5]) if len(sys.argv) > 5 else 191
     lip = local_ip_for(board)
     print("[uac] %s -> %s, %d concurrent calls to %s, hold %ds, ext %d.." % (lip, board, n, dest, hold, base))
+    base_st = board_status(board)
     calls = [Call(board, base + i, dest, hold, lip) for i in range(n)]
     threads = [threading.Thread(target=c.run) for c in calls]
     for t in threads: t.start(); time.sleep(0.25)   # 250ms stagger so setups don't thundering-herd
+    # Sample the board mid-hold (after setups settle) for the peak media-plane snapshot.
+    time.sleep(0.25 * n + max(1.0, hold * 0.5))
+    peak_st = board_status(board)
     for t in threads: t.join()
+    after_st = board_status(board)
+
     ok = sum(1 for c in calls if c.result.startswith("OK"))
+    exp = hold * 50  # 50 pps for the full hold window
     print("\n[uac] ==== RESULTS ====")
-    for c in calls: print("  ext %d: %s" % (c.ext, c.result))
+    for c in calls:
+        cont = (" stream=%d%%" % min(100, int(100 * c.rtp_rx / exp))) if c.result.startswith("OK") else ""
+        print("  ext %d: %s%s" % (c.ext, c.result, cont))
     print("[uac] %d/%d calls reached media (rtp flowing both ways)" % (ok, n))
+
+    def g(d, k): return d.get(k, "?") if isinstance(d, dict) else "?"
+    du = "?" ; do = "?"
+    if isinstance(base_st, dict) and isinstance(after_st, dict) and "playoutUnderruns" in base_st and "playoutUnderruns" in after_st:
+        du = after_st["playoutUnderruns"] - base_st["playoutUnderruns"]
+        do = after_st["playoutOverruns"] - base_st["playoutOverruns"]
+    print("[uac] ==== MEDIA PLANE (board /api/status) ====")
+    print("  peak : mediaActive=%s tlsSocketsEst=%s freeHeap=%s psramFree=%s" %
+          (g(peak_st, "mediaActive"), g(peak_st, "tlsSocketsEst"), g(peak_st, "freeHeap"), g(peak_st, "psramFree")))
+    print("  playout glitches during run: underruns +%s  overruns +%s  (0/low = clean audio)" % (du, do))
     sys.exit(0 if ok == n else 1)
 
 if __name__ == "__main__":

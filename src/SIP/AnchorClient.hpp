@@ -41,8 +41,12 @@ public:
 	// Status query
 	virtual bool isConnected() const = 0;
 
-	// Originate a PSTN call
-	virtual bool makeCall(const std::string& destination) = 0;
+	// Originate a PSTN call. If ownLegOut is non-null, on success it receives the participant id
+	// of the leg WE control for this call (the makecall result.id) — so the caller can bind THIS
+	// origination to its session before any Answered event arrives, keeping handset↔participant
+	// correlation correct when N concurrent calls are in flight (#100). May be left empty if the
+	// leg couldn't be resolved synchronously (teardown then relies on the reconcile path).
+	virtual bool makeCall(const std::string& destination, std::string* ownLegOut = nullptr) = 0;
 
 	// Answer an inbound participant the upstream is offering to a monitored DN (the
 	// mirror of makeCall). Called once the local extension has accepted, so the

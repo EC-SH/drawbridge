@@ -30,7 +30,7 @@ bool ThreeCxAnchorClient::isStreaming() const
 	return false;
 }
 
-bool ThreeCxAnchorClient::makeCall(const std::string&)
+bool ThreeCxAnchorClient::makeCall(const std::string&, std::string*)
 {
 	return false;
 }
@@ -291,8 +291,9 @@ bool ThreeCxAnchorClient::isStreaming() const
 	return false;
 }
 
-bool ThreeCxAnchorClient::makeCall(const std::string& destination)
+bool ThreeCxAnchorClient::makeCall(const std::string& destination, std::string* ownLegOut)
 {
+	if (ownLegOut) ownLegOut->clear();
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		// Gate on BOTH _running and _connected (audit #66). _connected alone lets a
@@ -400,6 +401,7 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination)
 		// participant id 3CX later surfaces over the WS — that can be the far leg, on which a
 		// specific-id GET/drop returns 403 (issue #40). Drop/media key off this owned id.
 		std::string ownLeg = resolveOutboundLeg(respBody, destination);
+		if (ownLegOut) *ownLegOut = ownLeg;   // #100: let the engine bind this call's session now
 		if (!ownLeg.empty())
 		{
 			// Alloc THIS call's slot (startRxIfNeeded find-or-claims it for ownLeg) + prime the GET

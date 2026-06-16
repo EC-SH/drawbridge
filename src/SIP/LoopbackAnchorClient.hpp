@@ -22,7 +22,7 @@ public:
 	bool start() override;
 	void stop() override;
 	bool isConnected() const override;
-	bool makeCall(const std::string& destination) override;
+	bool makeCall(const std::string& destination, std::string* ownLegOut = nullptr) override;
 	bool answerCall(const std::string& participantId) override;
 	bool dropCall(const std::string& participantId) override;
 	void setEventCallback(EventCallback cb) override;

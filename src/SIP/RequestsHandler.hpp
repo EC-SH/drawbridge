@@ -38,6 +38,7 @@
 #include "LoopbackAnchorClient.hpp"
 #include "TelephonyProvider.hpp"
 #include "TelephonyApiConfig.hpp"
+#include "PoolConfig.hpp"   // #100: POCKETDIAL_MAX_ANCHOR_CALLS (concurrent media-bridge count)
 
 class RequestsHandler
 {
@@ -625,10 +626,18 @@ private:
 	void ackInboundFinal(const std::shared_ptr<Session>& session, const std::shared_ptr<SipMessage>& data);
 
 
-	// Server-side RTP media source (the 440 tone stream). One concurrent stream; the
-	// ESP-only UDP socket + 20 ms pacing task live inside it, guarded for host builds.
+	// Server-side RTP media source (the 440 tone / star-code media beachhead). One concurrent
+	// stream; the ESP-only UDP socket + 20 ms pacing task live inside it. This is SEPARATE from
+	// the anchor bridges below (it plays tones to a handset, independent of any 3CX call).
 	RtpSender            _rtpSender;
-	RtpReceiver          _rtpReceiver;
+	// #100: N concurrent anchor media bridges. Each bridge owns its OWN RtpReceiver (a distinct
+	// LAN ephemeral RX port the handset sends to) + RtpSender (the playout→handset stream), so up
+	// to POCKETDIAL_MAX_ANCHOR_CALLS calls can carry audio at once — matched 1:1 to the anchor's
+	// per-call slots. The arrays are parallel: _mediaBridges[i] is init()'d with _rtpReceivers[i]
+	// and _rtpSenders[i]. The anchor's single inbound rx callback fans out to the bridge that owns
+	// the participant (see the registerAudioRxCallback wiring in loadAnchorConfig).
+	RtpSender            _rtpSenders[POCKETDIAL_MAX_ANCHOR_CALLS];
+	RtpReceiver          _rtpReceivers[POCKETDIAL_MAX_ANCHOR_CALLS];
 	ThreeCxAnchorClient  _threeCxClient;
 	LoopbackAnchorClient _loopbackClient;
 	// Honest stubs for declared-but-unimplemented providers (compile-time
@@ -641,7 +650,18 @@ private:
 	// Telephony-API credential slots (guarded by _mutex, like _trunkCfg).
 	TelephonyApiConfig   _tapiCfg;
 	AnchorClient*        _anchorClient = nullptr;
-	MediaBridge          _mediaBridge;
+	MediaBridge          _mediaBridges[POCKETDIAL_MAX_ANCHOR_CALLS];
+
+	// #100 media-bridge pool helpers (all called under _mutex / on the anchor event task, never the
+	// RTP hot path). acquireFreeBridge claims the first idle bridge for a new call; the lookups
+	// find the active bridge serving a participant / call id (per-call teardown + rx fan-out).
+	MediaBridge* acquireFreeBridge();
+	MediaBridge* bridgeForParticipant(const std::string& participantId);
+	MediaBridge* bridgeForCallId(const std::string& callID);
+	bool allBridgesBusy() const;
+	// Bind a freshly-originated outbound call's session to the leg the anchor resolved (own leg),
+	// so a later Answered/Dropped event maps to the right session even with N calls in flight.
+	void bindOutboundParticipant(const std::string& callId, const std::string& ownLeg);
 
 #if !defined(ESP_PLATFORM) && !defined(ESP32)
 	// Async anchor-start worker (host builds). Must be JOINED in the destructor:

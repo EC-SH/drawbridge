@@ -29,6 +29,17 @@ public:
 	// Check if the bridge is currently active
 	bool isActive() const { return _active.load(std::memory_order_acquire); }
 
+	// #100: route one inbound (3CX->device) PCM chunk to this bridge's playout buffer IFF this
+	// bridge is active and serving `participantId`. Returns true if it consumed the chunk. The
+	// anchor exposes a SINGLE rx callback; RequestsHandler owns it and fans out to the bridge that
+	// owns the participant (the bridge no longer registers the anchor callback itself).
+	bool feedRx(const std::string& participantId, const int16_t* samples, size_t count);
+
+	// #100: lookups so RequestsHandler can find the bridge serving a participant / call id (for
+	// per-call teardown + the rx fan-out). Both return false when the bridge is idle.
+	bool isFor(const std::string& participantId) const;
+	bool isForCallId(const std::string& callID) const;
+
 	// The UDP port the bridge's RTP receiver is bound on (0 if not active). This
 	// is the port the handset must send its audio to, so it MUST be the value
 	// advertised in the 200 OK SDP answer — not the sender's source port.
