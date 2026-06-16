@@ -622,24 +622,13 @@ bool ThreeCxAnchorClient::writeAudio(const std::string& participantId, const int
 
 	int written = esp_http_client_write(slot->postClient, chunkBuf, total);
 
-	// DIAGNOSTIC: cadence + peak amplitude (keep until two-way audio is confirmed).
-	static int s_txFrames = 0;
-	int peak = 0;
-	for (size_t i = 0; i < count; ++i)
-	{
-		int v = pcmSamples[i] < 0 ? -pcmSamples[i] : pcmSamples[i];
-		if (v > peak) peak = v;
-	}
+	// #100: only the failure case logs now. The old per-frame cadence/peak log used a shared
+	// `static` counter (raced across N concurrent slots) and flooded the UART at multi-call scale —
+	// dropping serial lines and burning CPU on the 20 ms media pump. A short write still warns.
 	if (written != total)
 	{
-		ESP_LOGW(TAG, "POST writeAudio short/failed write rc=%d (want %d)", written, total);
+		ESP_LOGW(TAG, "POST writeAudio short/failed write rc=%d (want %d) for %s", written, total, participantId.c_str());
 	}
-	else if (s_txFrames == 0 || (s_txFrames % 50) == 0)
-	{
-		ESP_LOGI(TAG, "POST writeAudio: frame %d, %u pcm bytes (chunk-framed), peak=%d -> 3CX",
-		         s_txFrames, static_cast<unsigned>(rawLen), peak);
-	}
-	s_txFrames++;
 	return (written == total);
 }
 
@@ -1187,10 +1176,16 @@ std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallR
 			if (result)
 			{
 				std::string rid = legIdOf(result);
-				if (!rid.empty()) return rid;
+				if (!rid.empty())
+				{
+					ESP_LOGI(TAG, "resolveOutboundLeg: result.id=%s (from makecall response)", rid.c_str());
+					return rid;
+				}
 			}
 		}
 	}
+	ESP_LOGW(TAG, "resolveOutboundLeg: no result.id in makecall response (len=%u) — falling back to live list",
+	         static_cast<unsigned>(makecallRespBody.size()));
 
 	// 2) Fallback: pick the CONTROLLABLE own leg from the live participant list.
 	std::string url, srcDn;
@@ -1223,6 +1218,13 @@ std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallR
 
 		std::string id = legIdOf(elem);
 		if (id.empty()) continue;
+		// #100: skip a leg already claimed by another concurrent call's slot. Without this, two
+		// simultaneous originations (whose makecall responses lacked a distinct result.id) both
+		// pick the SAME first-controllable leg here and collide — only one call ever bridges.
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			if (slotForLocked(id)) continue;
+		}
 		if (firstControllable.empty()) firstControllable = id;
 
 		// Prefer the controllable leg whose party_dn IS our source DN — the initiator (own) leg.
@@ -2194,12 +2196,12 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 			// DIAGNOSTIC: dump every WS data frame raw, before any filtering, so we
 			// can see exactly what 3CX pushes on ring/answer/hangup. op_code 0x01=text,
 			// 0x02=binary, 0x08=close, 0x09=ping, 0x0A=pong, 0x00=continuation.
-			ESP_LOGI(TAG, "WS frame: op=0x%02x len=%d off=%d total=%d", data->op_code,
+			ESP_LOGD(TAG, "WS frame: op=0x%02x len=%d off=%d total=%d", data->op_code,
 			         data->data_len, data->payload_offset, data->payload_len);
 			if (data->op_code == 0x01 && data->data_ptr != nullptr && data->data_len > 0)
 			{
 				std::string rawDump(data->data_ptr, data->data_len);
-				ESP_LOGI(TAG, "WS payload: %s", rawDump.c_str());
+				ESP_LOGD(TAG, "WS payload: %s", rawDump.c_str());   // #100: ESP_LOGD — full-JSON dump flooded UART at multi-call scale
 			}
 
 			if (data->op_code == 0x01 && data->data_ptr != nullptr && data->data_len > 0)
@@ -2827,10 +2829,11 @@ void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)
 			continue;
 		}
 
-		// DIAGNOSTIC: confirm 3CX->device audio is arriving. First read + every ~100th.
-		if (rxReads == 0 || (rxReads % 100) == 0)
+		// #100: log only the FIRST inbound chunk (confirms the GET stream is live); the periodic
+		// per-100-chunk log × N concurrent calls flooded the UART (serial loss). ESP_LOGD for more.
+		if (rxReads == 0)
 		{
-			ESP_LOGI(TAG, "GET read: chunk %d, %d bytes <- 3CX", rxReads, bytesRead);
+			ESP_LOGI(TAG, "GET read: first chunk %d bytes <- 3CX (%s)", bytesRead, activePartId.c_str());
 		}
 		rxReads++;
 
