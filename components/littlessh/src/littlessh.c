@@ -109,6 +109,7 @@ struct lssh_session {
     bool authed;
     char username[64];
     uint32_t auth_tries;
+    uint32_t idle_beats;            /* consecutive SO_RCVTIMEO beats at a packet boundary */
 
     /* the one session channel */
     bool ch_open;
@@ -202,6 +203,17 @@ static bool namelist_has(const uint8_t *list, uint32_t len, const char *name){
 
 /* -------------------------------------------------------------- sockets */
 
+/* Pre-auth idle grace. SO_RCVTIMEO is 1 s — it doubles as the 1 Hz live-console tick
+ * ONCE a shell is up. BEFORE the shell starts (during the handshake, and while a human
+ * reads the prompt and types the admin PIN) a single 1 s gap must NOT drop the link:
+ * that hung up on every interactive login — only instant-auth automated clients ever got
+ * in. Allow this many consecutive 1 s beats at a packet boundary before giving up, so a
+ * person has time to authenticate while a truly dead/half-open peer is still reaped off
+ * the single client slot. */
+#ifndef LSSH_PREAUTH_IDLE_MAX_BEATS
+#define LSSH_PREAUTH_IDLE_MAX_BEATS 60   /* ~60 s at the 1 s SO_RCVTIMEO cadence */
+#endif
+
 static int io_recv_exact(lssh_session_t *s, uint8_t *buf, size_t n){
     size_t got = 0;
     while (got < n){
@@ -210,22 +222,30 @@ static int io_recv_exact(lssh_session_t *s, uint8_t *buf, size_t n){
         if (r < 0){
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK){
-                /* SO_RCVTIMEO fired. Once the interactive shell is up (ch_started:
-                 * on_open has fired), at a packet boundary, and not asked to stop,
-                 * treat it as an idle beat (keeps a live console display
-                 * refreshing) rather than a disconnect. Anywhere else — during the
-                 * handshake/auth, mid-packet, or once stop is requested — a stalled
-                 * peer is a wedge risk, so end the connection. */
-                if (s->ch_started && got == 0 && !(s->cfg->stop && *s->cfg->stop)){
-                    if (s->cfg->on_idle) s->cfg->on_idle(s->cfg->user, s);
-                    if (s->dead) return -1;
-                    continue;
+                /* SO_RCVTIMEO (1 Hz) fired at a packet boundary. */
+                const bool stopping = (s->cfg->stop && *s->cfg->stop);
+                if (got == 0 && !stopping){
+                    if (s->ch_started){
+                        /* Live console: treat the beat as idle (keeps the wallboard
+                         * refreshing) rather than a disconnect. */
+                        if (s->cfg->on_idle) s->cfg->on_idle(s->cfg->user, s);
+                        if (s->dead) return -1;
+                        s->idle_beats = 0;
+                        continue;
+                    }
+                    /* Pre-auth: a human needs several seconds to read the prompt and
+                     * type the PIN, so don't hang up on the first 1 s of silence. Wait
+                     * up to the grace window, then reap a dead/half-open peer. */
+                    if (++s->idle_beats < LSSH_PREAUTH_IDLE_MAX_BEATS) continue;
+                    return -1;
                 }
+                /* Mid-packet stall (got>0) or shutting down: a real wedge — end now. */
                 return -1;
             }
             return -1;
         }
         got += (size_t)r;
+        s->idle_beats = 0;   /* progress -> reset the pre-auth grace */
     }
     return 0;
 }
