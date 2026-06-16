@@ -62,6 +62,10 @@ void ThreeCxAnchorClient::tick()
 {
 }
 
+void ThreeCxAnchorClient::setRewarmIntervalSec(uint32_t)
+{
+}
+
 #else
 
 // ── ESP-IDF Implementation: real mTLS, WSS and chunked HTTPS streams ─────────
@@ -1223,6 +1227,15 @@ bool ThreeCxAnchorClient::resolveDevice()
 	return true;
 }
 
+void ThreeCxAnchorClient::setRewarmIntervalSec(uint32_t sec)
+{
+	// #107: live-applicable — the next idle tick uses the new cadence (0 disables). Reset the
+	// stamp so a freshly-set interval is measured from now, not from the previous schedule.
+	_rewarmIntervalSec.store(sec, std::memory_order_release);
+	_lastRewarmUs.store(0, std::memory_order_release);
+	ESP_LOGI(TAG, "TLS re-warm interval set to %u s (%s)", sec, sec ? "enabled" : "disabled");
+}
+
 void ThreeCxAnchorClient::tick()
 {
 	// Runs inline on the SIP task at ≤1 Hz — MUST be non-blocking: only atomic reads, one timer
@@ -1240,6 +1253,42 @@ void ThreeCxAnchorClient::tick()
 		{
 			ESP_LOGE(TAG, "tick: failed to spawn anchor-restart worker");
 			_restartInFlight.store(false, std::memory_order_release);
+		}
+	}
+
+	// ── #107: idle TLS re-warm heartbeat ─────────────────────────────────────────
+	// Keep the persistent POST media TLS session warm DURING IDLE so even the first call
+	// after a long quiet stretch resumes (~1 RTT) instead of paying the S3's ~1s software-
+	// ECDHE cold handshake at connect (the old answer-time dead air). Idle-gated: only when
+	// the anchor is up, no outbound flag is set, and no call's POST stream is live. Cadence
+	// is operator-configurable (default 1 h; 0 disables) so a different upstream's ticket
+	// lifetime is a config change, not a recompile. Spawns a one-shot worker for the blocking
+	// open/close — this tick (on the SIP task) never blocks. Placed BEFORE the outbound
+	// reconcile gate below because re-warm runs precisely when NOT in an outbound call.
+	const uint32_t rewarmSec = _rewarmIntervalSec.load(std::memory_order_acquire);
+	if (rewarmSec != 0 &&
+	    _running.load(std::memory_order_acquire) &&
+	    !_outboundActive.load(std::memory_order_acquire) &&
+	    !_postLive.load(std::memory_order_acquire) &&
+	    !_rewarmInFlight.load(std::memory_order_acquire))
+	{
+		const int64_t now  = esp_timer_get_time();
+		const int64_t last = _lastRewarmUs.load(std::memory_order_acquire);
+		if (last == 0)
+		{
+			// First idle tick: seed so the first re-warm fires one full interval from now.
+			_lastRewarmUs.store(now, std::memory_order_release);
+		}
+		else if (now - last >= static_cast<int64_t>(rewarmSec) * 1000000LL)
+		{
+			// Stamp BEFORE the spawn so the next-due math is correct even if the worker is slow.
+			_lastRewarmUs.store(now, std::memory_order_release);
+			_rewarmInFlight.store(true, std::memory_order_release);
+			if (xTaskCreate(&ThreeCxAnchorClient::rewarmTaskTrampoline, "3cx_rewarm", 6144, this, 5, nullptr) != pdPASS)
+			{
+				ESP_LOGE(TAG, "tick: failed to spawn TLS re-warm worker");
+				_rewarmInFlight.store(false, std::memory_order_release);
+			}
 		}
 	}
 
@@ -1328,6 +1377,92 @@ void ThreeCxAnchorClient::reconcileTaskTrampoline(void* arg)
 	// the only cJSON RAII above is confined to an inner scope that has already run.
 	self->_reconcileInFlight.store(false, std::memory_order_release);
 	vTaskDelete(nullptr);
+}
+
+// #107: one-shot worker spawned by tick() when the anchor is idle. Reopens the persistent
+// POST handle so its cached TLS session RESUMES (abbreviated handshake) and 3CX issues a
+// fresh ticket — extending validity so the next real call's /stream open also resumes. Runs
+// off the SIP task because the open/close blocks on TLS I/O.
+void ThreeCxAnchorClient::rewarmTaskTrampoline(void* arg)
+{
+	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	self->rewarmPostSession();
+	// Single exit: release the one-shot slot so tick() can re-arm, then self-delete.
+	self->_rewarmInFlight.store(false, std::memory_order_release);
+	vTaskDelete(nullptr);
+}
+
+void ThreeCxAnchorClient::rewarmPostSession()
+{
+	std::string baseUrl, sourceDn, token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		baseUrl  = _baseUrl;
+		sourceDn = _sourceDn;
+		token    = _accessToken;
+	}
+	if (baseUrl.empty())
+	{
+		return;   // unprovisioned / loopback — nothing to warm
+	}
+
+	// Exclusive with startMediaStreams()/writeAudio()/closePostClient() (all take _postMutex).
+	std::lock_guard<std::mutex> postLock(_postMutex);
+	// A call may have started between the tick() gate and here — NEVER disturb a live POST
+	// audio stream. (_postLive flips true under this same mutex in startMediaStreams.)
+	if (_postLive.load(std::memory_order_acquire))
+	{
+		return;
+	}
+
+	// Benign same-host target: we only need the TLS handshake (which resumes the cached
+	// session); the HTTP status is irrelevant. Created/kept as POST so startMediaStreams can
+	// reuse the handle unchanged (it re-points the URL to the call's /stream on the next call).
+	const std::string url = baseUrl + "/callcontrol/" + sourceDn + "/participants";
+	if (_postClient == nullptr)
+	{
+		// No handle yet (no call since boot): this open is a COLD handshake, but it primes the
+		// session so the first real call resumes.
+		_postClient = makeAuthedClient(url, HTTP_METHOD_POST, 1024, token);
+		if (!_postClient)
+		{
+			ESP_LOGW(TAG, "rewarm: failed to create POST client");
+			return;
+		}
+	}
+	else
+	{
+		esp_http_client_set_url(_postClient, url.c_str());
+		if (!token.empty())
+		{
+			const std::string authHeader = "Bearer " + token;
+			esp_http_client_set_header(_postClient, "Authorization", authHeader.c_str());
+		}
+	}
+
+	const int64_t t0 = esp_timer_get_time();
+	esp_err_t err = esp_http_client_open(_postClient, 0);   // 0-length body: handshake only
+	if (err != ESP_OK)
+	{
+		// Stale warm handle (server reaped the connection) or a cold failure: drop it so the
+		// next heartbeat — or the next real call's retry path — rebuilds from clean.
+		ESP_LOGW(TAG, "rewarm: POST open failed (%s) — dropping handle", esp_err_to_name(err));
+		esp_http_client_cleanup(_postClient);
+		_postClient = nullptr;
+		return;
+	}
+	// Drain headers + body so the connection is clean for the next reuse, then CLOSE but KEEP
+	// the handle (its cached TLS session is the whole point). Do NOT touch _postLive or the
+	// call-path handshake telemetry — this is maintenance, not a call.
+	(void)esp_http_client_fetch_headers(_postClient);
+	const int status = esp_http_client_get_status_code(_postClient);
+	char drain[256];
+	while (esp_http_client_read(_postClient, drain, sizeof(drain)) > 0) { /* discard */ }
+	esp_http_client_close(_postClient);
+
+	const int64_t ms = (esp_timer_get_time() - t0) / 1000;
+	ESP_LOGI(TAG, "rewarm: POST TLS session refreshed in %lld ms (status %d) -> %s",
+	         (long long)ms, status, (ms > 400) ? "FULL (was cold)" : "resumed");
 }
 
 // Issue #65 (L-1): one-shot worker that reclaims leaked GET sockets by cycling the

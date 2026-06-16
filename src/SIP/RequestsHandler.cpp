@@ -104,6 +104,8 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	loadRegistrarMode();
 	loadDevices();
 	loadThreeCxConfig();
+	// #107: anchor TLS re-warm cadence (defaults to 60 min if the NVS key is absent).
+	loadRewarmInterval();
 	// Prewarm the per-extension HA1 cache off the REGISTER hot path so the first
 	// Secure REGISTER does not pay a blocking NVS read while holding _mutex.
 	SipSecretStore::warmCache();
@@ -3272,6 +3274,38 @@ RequestsHandler::RegistrarMode RequestsHandler::getRegistrarMode() const
 	return _registrarMode.load(std::memory_order_relaxed);
 }
 
+void RequestsHandler::setRewarmMinutes(uint16_t minutes)
+{
+	if (minutes > 1440) minutes = 1440;   // cap at 24 h; 0 = disabled
+	std::vector<std::pair<bool, std::string>> localLogs;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		_rewarmMinutes.store(minutes, std::memory_order_relaxed);
+		persistRewarmInterval();
+		// Apply live: push the new cadence (seconds) into the running anchor (no-op on
+		// loopback). setRewarmIntervalSec() is just an atomic store — safe under _mutex.
+		if (_anchorClient)
+		{
+			_anchorClient->setRewarmIntervalSec(static_cast<uint32_t>(minutes) * 60u);
+		}
+		queueLog(std::string("Anchor TLS re-warm cadence set to ") + std::to_string(minutes) +
+		         (minutes ? " min" : " min (disabled)"));
+		localLogs = std::move(_logQueue);
+		_logQueue.clear();
+	}
+	for (const auto& log : localLogs)
+	{
+		if (log.first) std::cerr << log.second << std::endl;
+		else std::cout << log.second << std::endl;
+	}
+}
+
+uint16_t RequestsHandler::getRewarmMinutes() const
+{
+	// Lock-free read for the dashboard/TUI snapshot.
+	return _rewarmMinutes.load(std::memory_order_relaxed);
+}
+
 // ── Device registry (STAGE 2: Learn-mode adoption) ────────────────────────────
 
 void RequestsHandler::refreshDeviceSnapshot()
@@ -4954,6 +4988,39 @@ void RequestsHandler::persistRegistrarMode()
 #endif
 }
 
+// ── #107: anchor TLS re-warm cadence persistence ────────────────────────────────
+void RequestsHandler::loadRewarmInterval()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
+	{
+		return;
+	}
+	uint16_t v = 0;
+	esp_err_t err = nvs_get_u16(h, "rwm_min", &v);
+	nvs_close(h);
+	if (err == ESP_OK && v <= 1440)
+	{
+		_rewarmMinutes.store(v, std::memory_order_relaxed);
+	}
+	// else: keep the compile-time default (60 min).
+#endif
+}
+
+void RequestsHandler::persistRewarmInterval()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
+	{
+		nvs_set_u16(h, "rwm_min", _rewarmMinutes.load(std::memory_order_relaxed));
+		nvs_commit(h);
+		nvs_close(h);
+	}
+#endif
+}
+
 void RequestsHandler::loadDevices()
 {
 #if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
@@ -5726,6 +5793,11 @@ void RequestsHandler::loadThreeCxConfig()
 		         telephonyProviderName(bootType) + " client on " +
 		         (credsFromSlot ? tapiUrl : baseUrl));
 	}
+
+	// #107: push the persisted TLS re-warm cadence into the freshly-selected anchor (no-op on
+	// loopback). _rewarmMinutes was loaded from NVS earlier in this ctor; minutes -> seconds.
+	_anchorClient->setRewarmIntervalSec(
+		static_cast<uint32_t>(_rewarmMinutes.load(std::memory_order_relaxed)) * 60u);
 
 	_mediaBridge.init(&_rtpReceiver, &_rtpSender, _anchorClient);
 

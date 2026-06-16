@@ -38,6 +38,7 @@ public:
 	bool writeAudio(const int16_t* pcmSamples, size_t count) override;
 	void registerAudioRxCallback(AudioRxCallback cb) override;
 	void tick() override;   // non-blocking; runs the _outboundActive reconcile watchdog (ESP only)
+	void setRewarmIntervalSec(uint32_t sec) override;  // #107: idle TLS re-warm cadence (s); 0 = off
 
 	// Counts of POST media-stream opens by handshake type (set in startMediaStreams from the
 	// open's wall time — a full S3 ECDHE is always >~400ms, a resumed session well under).
@@ -90,6 +91,21 @@ private:
 	// Resolved device_id for the device-specific makecall transport, guarded by _mutex. Empty
 	// until lazily resolved; cleared on WS disconnect so a device registration flap re-resolves.
 	std::string       _deviceId;
+
+	// ── #107: idle TLS re-warm heartbeat ─────────────────────────────────────────
+	// Operator-configurable cadence (SECONDS) at which tick() refreshes the persistent POST
+	// media-stream TLS session WHILE IDLE, so even the first call after a long quiet stretch
+	// resumes its session instead of paying the S3's ~1s software-ECDHE cold handshake (the
+	// old answer-time dead air). 0 = disabled. Default 3600 s (1 h); driven from NVS via
+	// setRewarmIntervalSec(). Today this is a single PBX-wide cadence (one active anchor); when
+	// multi-carrier/multi-call lands (#100) it becomes per-provider. Atomic: written by the
+	// config setter, read on the SIP tick.
+	std::atomic<uint32_t> _rewarmIntervalSec{3600};
+	// One-shot guard so repeated ticks can't double-spawn the re-warm worker.
+	std::atomic<bool>     _rewarmInFlight{false};
+	// Monotonic (esp_timer) timestamp of the last re-warm spawn; 0 = unseeded (the first idle
+	// tick seeds it so the first re-warm fires one full interval after boot, not immediately).
+	std::atomic<int64_t>  _lastRewarmUs{0};
 
 	EventCallback   _eventCb;
 	AudioRxCallback _audioCb;
@@ -238,6 +254,10 @@ private:
 	bool resolveDevice();                                 // GET /devices → pickDeviceId → _deviceId
 	// One-shot worker spawned by tick() to clear a wedged _outboundActive (see .cpp).
 	static void reconcileTaskTrampoline(void* arg);
+	// #107: idle TLS re-warm — one-shot worker (spawned by tick() when idle) that reopens the
+	// persistent POST handle to perform a resumed handshake and refresh its session ticket.
+	static void rewarmTaskTrampoline(void* arg);
+	void rewarmPostSession();   // the blocking re-warm body; runs off the SIP task
 #endif
 };
 
