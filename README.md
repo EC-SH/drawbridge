@@ -54,7 +54,7 @@ esptool --chip esp32s3 -p COM3 -b 460800 write_flash \
 
 ### 🛠 Option 2 — Build the firmware from source
 
-For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building](#building)** — e.g. `idf.py -D SIP_TRANSPORT=display flash monitor`.
+For development or custom configs (ESP-IDF v6.0.1+ ~~or Arduino~~). See **[Building](#building)** — e.g. `idf.py -D SIP_TRANSPORT=display flash monitor`.
 
 ---
 
@@ -76,7 +76,7 @@ For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building]
 - **Call Detail Records (`/api/cdr`)** and **Do-Not-Disturb (`/api/dnd`)**
 - Concurrency & memory-safety hardening, input validation, per-IP rate limiting
 - Configurable memory pools + hardware tiers ([SCALING.md](docs/SCALING.md))
-- Host (Linux/Windows) build for development/CI + Arduino IDE sketch templates *(the desktop/server product is being deprecated under the ESP32-only pivot, #96/#97; the host build is retained as the dev/test target)*
+- Host (Linux/Windows) build for development/CI ~~+ Arduino IDE sketch templates~~ *(Arduino sketches removed under the ESP32-only pivot, #96; the desktop/server product is also being deprecated, #96/#97, but the host build is retained as the dev/test target)*
 - **End-to-end hardware validation on the JC3248W535** (Issue #44) ✅
 - **Commercial softswitch call-control API trunk anchor**: Terminate the handset's RTP locally and bridge audio to an upstream softswitch over mTLS HTTPS/WSS (PCM16 @ 8kHz)
 - **Outbound trunk teardown** — a handset hangup reliably drops the upstream PSTN leg (own-leg correlation + reconcile watchdog; *hardware-confirmed*)
@@ -96,7 +96,7 @@ For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building]
 - **ESP32-only pivot** — deprecate the desktop/server product; decide the on-target/QEMU test harness that replaces the host CI gate (Issue #96)
 - **Configurable TLS re-warm heartbeat** — periodic idle re-warm of the POST audio TLS session so even the first call after a long idle gap resumes instead of cold-handshaking; interval will be user-configurable (Issue #107, *being implemented now*)
 - Inbound PSTN soak / stability hardening (post-#102 ring-all)
-- Arduino IDE platform-guard verification (Issue #41)
+- ~~Arduino IDE platform-guard verification (Issue #41)~~ — dropped (Arduino removed, ESP32-only #96)
 - Raise UDP RX mailbox + multi-IP load testing
 - SD-card support
 - Zero-Touch Phone Auto-Provisioning (#35), Live SIP Tracer (#32), PCAP dump (#33)
@@ -127,7 +127,7 @@ For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building]
   * [ESP32-S3 (ESP-IDF v6.0.1)](#esp32-s3-esp-idf-v53)
   * [JC3248W535EN Smart Display](#jc3248w535en-smart-display)
   * [W5500 Ethernet & PoE](#w5500-ethernet--poe)
-  * [ESP32-S3 (Arduino IDE)](#esp32-s3-arduino-ide)
+  * ~~[ESP32-S3 (Arduino IDE)](#esp32-s3-arduino-ide)~~ *(removed — ESP32-only)*
 * [API Reference](#api-reference)
 * [Configuration](#configuration)
 * [License](#license)
@@ -223,7 +223,7 @@ drawbridge/
 │   └── wifi/                   # DNS/HTTP redirect captive portal wizard
 │       ├── DnsServer.cpp
 │       └── DnsServer.hpp
-├── sketches/                   # Self-contained Arduino IDE sketches
+├── sketches/                   # [X] REMOVED (ESP32-only pivot #96) — was: Arduino IDE sketches
 │   ├── SipServer/              # Generic ESP32-S3 Wi-Fi SoftAP
 │   ├── SipServerETH/           # Waveshare ESP32-S3-ETH (W5500)
 │   ├── SipServer_T_ETH_Lite_W5500/   # LilyGO T-ETH-Lite W5500
@@ -400,14 +400,16 @@ followed by `Ethernet link UP` and the DHCP `IP: …` once the cable is connecte
 
 ---
 
-### ESP32-S3 (Arduino IDE)
-If compiling within an Arduino framework:
+### ~~ESP32-S3 (Arduino IDE)~~ — removed (ESP32-only pivot, #96)
+> The Arduino sketch ports (`sketches/`) were removed; the ESP-IDF build is the only firmware path. Kept struck-through for history.
 
-1. Open Boards Manager and install the **ESP32 board package** by Espressif.
-2. Open `sketches/SipServer/SipServer.ino` (or target `SipServerETH.ino` for wired PoE W5500 connections).
-3. Set your target board to **ESP32S3 Dev Module** (or specific board model).
-4. Configure **Flash Mode = QIO 80MHz** and **PSRAM = OPI PSRAM** (mandatory for display sketches).
-5. Click **Upload**.
+~~If compiling within an Arduino framework:~~
+
+~~1. Open Boards Manager and install the **ESP32 board package** by Espressif.~~
+~~2. Open `sketches/SipServer/SipServer.ino` (or target `SipServerETH.ino` for wired PoE W5500 connections).~~
+~~3. Set your target board to **ESP32S3 Dev Module** (or specific board model).~~
+~~4. Configure **Flash Mode = QIO 80MHz** and **PSRAM = OPI PSRAM** (mandatory for display sketches).~~
+~~5. Click **Upload**.~~
 
 ---
 

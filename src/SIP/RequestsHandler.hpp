@@ -4,7 +4,7 @@
 // Gated open mode (Issue #56). Undefine/disable to run in closed/restricted mode.
 #define POCKETDIAL_OPEN_REGISTRAR
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -643,7 +643,7 @@ private:
 	AnchorClient*        _anchorClient = nullptr;
 	MediaBridge          _mediaBridge;
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 	// Async anchor-start worker (host builds). Must be JOINED in the destructor:
 	// the previous detached thread captured `this` and outlived the handler in
 	// unit tests, segfaulting the suite nondeterministically.
@@ -913,7 +913,7 @@ private:
 	struct DtmfAccum
 	{
 		std::string digits;          // accumulated digit string
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		TickType_t  lastTick{0};     // xTaskGetTickCount() of last digit
 #else
 		uint32_t    lastTick{0};     // monotonic ms counter on host

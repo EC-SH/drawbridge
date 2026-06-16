@@ -1,6 +1,6 @@
 #include "ThreeCxAnchorClient.hpp"
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 
 // ── Host stubs: compile-compatible no-ops for host tests ──────────────────
 ThreeCxAnchorClient::ThreeCxAnchorClient() = default;

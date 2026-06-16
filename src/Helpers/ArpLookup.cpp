@@ -8,7 +8,7 @@
 
 #include <cstdio>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include "esp_netif.h"
 #include "esp_netif_net_stack.h"   // esp_netif_get_netif_impl()
 #include "lwip/etharp.h"
@@ -32,7 +32,7 @@ namespace ArpLookup
 		return out;
 	}
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 
 	namespace
 	{

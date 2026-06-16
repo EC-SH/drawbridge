@@ -2,7 +2,7 @@
 #include <thread>
 #include <cstring>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include "esp_log.h"
 static const char* UDP_TAG = "UdpServer";
 #endif
@@ -25,7 +25,7 @@ static const char* UDP_TAG = "UdpServer";
 // behaviour preserved for host/desktop builds).
 bool UdpServer::openSocket()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	uint32_t backoffMs = kBackoffInitialMs;
 
 	while (true)
@@ -126,7 +126,7 @@ UdpServer::~UdpServer()
 void UdpServer::startReceive()
 {
 	_keepRunning = true;
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	if (_receiverExited == nullptr)
 	{
 		_receiverExited = xSemaphoreCreateBinary();
@@ -171,7 +171,7 @@ void UdpServer::receiveLoop()
 	{
 		senderEndPoint = {};
 		int bytesReceived = 0;
-#if defined(__linux__) || defined(__APPLE__) || defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(__linux__) || defined(__APPLE__) || defined(ESP_PLATFORM) || defined(ESP32)
 		bytesReceived = static_cast<int>(recvfrom(_sockfd, buffer, BUFFER_SIZE, 0,
 			reinterpret_cast<struct sockaddr*>(&senderEndPoint), reinterpret_cast<socklen_t*>(&len)));
 #elif defined _WIN32 || defined _WIN64
@@ -195,7 +195,7 @@ void UdpServer::closeServer()
 	if (_sockfd >= 0)
 	{
 		shutdown(_sockfd, 2);
-#if defined(__linux__) || defined(__APPLE__) || defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(__linux__) || defined(__APPLE__) || defined(ESP_PLATFORM) || defined(ESP32)
 		close(_sockfd);
 #elif defined _WIN32 || defined _WIN64
 		closesocket(_sockfd);
@@ -203,7 +203,7 @@ void UdpServer::closeServer()
 		_sockfd = -1;
 	}
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	// Block until receiveLoop() has fully exited before returning, so the
 	// UdpServer object is not destroyed out from under the running task.
 	// Closing the socket above unblocks recvfrom() immediately; the timeout is

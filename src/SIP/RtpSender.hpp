@@ -24,7 +24,7 @@
 // No hot-path heap: the tone is synthesized 20 ms (160 samples) at a time into a
 // fixed stack/member buffer; nothing is allocated per packet.
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <lwip/sockets.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -110,7 +110,7 @@ public:
 	std::string activeCallId() const;
 
 private:
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	static void taskTrampoline(void* arg);
 	void runLoop();                       // 20 ms-paced sender loop (Core 0)
 	int               _sock = -1;

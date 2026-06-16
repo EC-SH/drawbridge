@@ -7,7 +7,7 @@
 #include <atomic>
 #include <functional>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include "esp_websocket_client.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
@@ -121,7 +121,7 @@ private:
 	int64_t _tokenObtainedUs = 0;
 	int64_t _tokenLifetimeUs = 0;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	esp_websocket_client_handle_t _wsClient   = nullptr;
 	// PERSISTENT POST audio handle. Kept alive across calls so its saved TLS session RESUMES
 	// on the next open (abbreviated handshake, ~1 RTT) instead of re-paying the ~1s software

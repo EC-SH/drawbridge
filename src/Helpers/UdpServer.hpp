@@ -1,7 +1,7 @@
 #ifndef UDP_SERVER_HPP
 #define UDP_SERVER_HPP
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -24,7 +24,7 @@
 #include <functional>
 #include <thread>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -64,7 +64,7 @@ private:
 	OnNewMessageEvent _onNewMessageEvent;
 	std::atomic<bool> _keepRunning;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	TaskHandle_t _receiverTaskHandle = nullptr;
 	SemaphoreHandle_t _receiverExited = nullptr;
 #else

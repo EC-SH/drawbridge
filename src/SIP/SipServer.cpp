@@ -1,9 +1,7 @@
 #include "SipServer.hpp"
 #include "SipMessageTypes.h"
 
-#if defined(ARDUINO)
-#include <ESPmDNS.h>
-#elif defined(ESP_PLATFORM)
+#if defined(ESP_PLATFORM)
 #include <mdns.h>
 #endif
 
@@ -21,15 +19,7 @@ SipServer::SipServer(std::string ip, int port, int httpPort) :
 	_socket.startReceive();
 
 	// ── Multicast DNS (mDNS) responder broadcast ─────────────────────
-#if defined(ARDUINO)
-	if (MDNS.begin(POCKETDIAL_HOSTNAME)) {
-		MDNS.addService("sip", "udp", port);
-		MDNS.addService("http", "tcp", httpPort);
-		std::cout << "[mDNS] Broadcast active: " << POCKETDIAL_HOSTNAME << ".local\n";
-	} else {
-		std::cerr << "[mDNS] Failed to start responder\n";
-	}
-#elif defined(ESP_PLATFORM)
+#if defined(ESP_PLATFORM)
 	esp_err_t err = mdns_init();
 	if (err == ESP_OK) {
 		mdns_hostname_set(POCKETDIAL_HOSTNAME);
@@ -43,7 +33,7 @@ SipServer::SipServer(std::string ip, int port, int httpPort) :
 #endif
 
 	// ── Desktop Background Tick Thread ───────────────────────────────
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 	_tickRunning = true;
 	_tickThread = std::thread(&SipServer::tickLoop, this);
 #endif
@@ -51,7 +41,7 @@ SipServer::SipServer(std::string ip, int port, int httpPort) :
 
 SipServer::~SipServer()
 {
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 	if (_tickRunning)
 	{
 		_tickRunning = false;
@@ -77,7 +67,7 @@ void SipServer::onHandled(const sockaddr_in& dest, std::shared_ptr<SipMessage> m
 	_socket.send(dest, message->toString());
 }
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 void SipServer::tickLoop()
 {
 	while (_tickRunning)

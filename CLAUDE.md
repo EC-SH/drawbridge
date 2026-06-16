@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-pocket-dial is a self-contained SIP PBX that runs on a single ESP32-S3 (no router/SIP trunk needed). One C++17 SIP engine (`src/`) is compiled three ways: ESP-IDF firmware, Arduino sketches, and a host executable. For LAN extension↔extension calls RTP media flows **peer-to-peer** between phones (the device only brokers signaling); when a call goes out the WAN trunk anchor, the device terminates the handset's RTP locally and bridges it (see the WAN-anchor notes below).
+pocket-dial is a self-contained SIP PBX that runs on a single ESP32-S3 (no router/SIP trunk needed). One C++17 SIP engine (`src/`) is compiled three ways: ESP-IDF firmware, ~~Arduino sketches,~~ and a host executable. *(~~Arduino sketches~~ removed under the ESP32-only pivot, #96.)* For LAN extension↔extension calls RTP media flows **peer-to-peer** between phones (the device only brokers signaling); when a call goes out the WAN trunk anchor, the device terminates the handset's RTP locally and bridges it (see the WAN-anchor notes below).
 
 > **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating the desktop/server product. PR #97 removed the install/quickstart deadweight and the "run it on a computer/Pi" framing. **The host build has NOT been removed** — `main.cpp` still exists and the host GoogleTest/cppcheck/HTTP-smoke job is still the blocking CI gate (`.github/workflows/ci.yml`). The open question (tracked in **#96**) is whether to gut the host harness entirely or port the suite to on-target Unity/QEMU; until on-target coverage replaces it, the host gate stays. Treat the "compiled three ways / Host is what CI gates on" framing below as a transitional state, not a permanent commitment.
 
@@ -76,16 +76,16 @@ Core affinity differs by transport and is wired through compile defs in `main/CM
 - Never dispatch networking/file I/O onto the LVGL core. Cross-core state must go through the snapshotted dashboard getters, not raw shared mutexes.
 
 ### Platform abstraction pattern
-Code branches on `defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)` vs `__linux__` vs `_WIN32`. When editing `src/`, preserve all three arms. Headers like `host_compat.h` (in `main/`) and the `!ESP_PLATFORM` stubs in `RtpSender.cpp` exist so the engine stays host-compilable and unit-testable.
+Code branches on `defined(ESP_PLATFORM) || defined(ESP32)` (~~formerly also `|| defined(ARDUINO)` — removed, #96~~) vs `__linux__` vs `_WIN32`. When editing `src/`, preserve all three arms. Headers like `host_compat.h` (in `main/`) and the `!ESP_PLATFORM` stubs in `RtpSender.cpp` exist so the engine stays host-compilable and unit-testable.
 
 ### SIP interoperability quirks (don't "fix" these — they're deliberate)
 - `clearBody()` strips caller SDP from forwarded `180 Ringing` (prevents early-media loops on Yealink-class phones) and rewrites `Content-Length`.
 - `enforceG711()` forces the codec list to `0 8 101` on forked INVITE / 200 OK SDP. Any SDP mutation MUST resync `Content-Length` afterward (this was the historical `777`/`999` bug class).
 
 ## Layout notes
-- `src/` — cross-platform engine (Helpers + SIP). The single source of truth; sketches and firmware all compile it.
+- `src/` — cross-platform engine (Helpers + SIP). The single source of truth; ~~sketches and~~ firmware (and the host build) compile it.
 - `main/` — ESP-IDF component: per-transport entry points, `drivers/` (AXS15231B QSPI panel), `ui/` (LVGL CGA dashboard + QR), `wifi/` (captive-portal DNS).
-- `sketches/` — standalone Arduino IDE ports (the `SipServer_JC3248W535` sketch is **deprecated** in favor of the ESP-IDF display build).
+- ~~`sketches/` — standalone Arduino IDE ports (the `SipServer_JC3248W535` sketch is **deprecated** in favor of the ESP-IDF display build).~~ **Removed** (ESP32-only pivot, #96) — the ESP-IDF build is the only firmware path.
 - `.smoke/` — hardware smoke scripts (serial capture, SIP probe, NVS provisioning generator).
 - `tests/http/test_api.sh` is the single HTTP smoke suite used by both CI and on-hardware runs.
 - `docs/` — deep-dives (ARCHITECTURE, SCALING, THREAT_MODEL, OTA, PROVISIONING, RTP, SBC_TRUNK). `ISSUES.md` is the live architectural roadmap/issue tracker.

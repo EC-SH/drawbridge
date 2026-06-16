@@ -17,7 +17,7 @@
 // wolfSSH_stream_read into feed(). This keeps the renderer host-compilable and
 // unit-testable (tests inject a std::string-collecting callback) with zero ESP or
 // wolfSSH dependency — the only platform guard is for esp_timer (uptime/clock),
-// behind the existing defined(ESP_PLATFORM)||defined(ESP32)||defined(ARDUINO).
+// behind the existing defined(ESP_PLATFORM)||defined(ESP32).
 //
 // ── Live data ────────────────────────────────────────────────────────────────
 // The hub status line + title-bar clock reflect reality through a LiveStats

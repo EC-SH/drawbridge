@@ -6,7 +6,7 @@
 #include "Session.hpp"
 #include "SipMessageFactory.hpp"
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 #include <thread>
 #include <atomic>
 #endif
@@ -28,7 +28,7 @@ private:
 	RequestsHandler _handler;
 	SipMessageFactory _messagesFactory;
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 	std::thread _tickThread;
 	std::atomic<bool> _tickRunning{false};
 	void tickLoop();

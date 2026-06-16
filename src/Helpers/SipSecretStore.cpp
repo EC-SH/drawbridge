@@ -12,7 +12,7 @@
 #include <cctype>
 #include <algorithm>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	#include "nvs_flash.h"
 	#include "nvs.h"
 	#include "esp_random.h"   // esp_random() — hardware CSPRNG (RF subsystem active)
@@ -78,7 +78,7 @@ namespace
 	// non-deterministic source. Both are uniform over 0..255.
 	unsigned char csprngByte()
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		return (unsigned char)(esp_random() & 0xFFu);
 #else
 		static thread_local std::random_device rd;
@@ -87,7 +87,7 @@ namespace
 #endif
 	}
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	// In-RAM HA1 cache (ESP only — on host hostMap() already lives in RAM). Keeps
 	// steady-state Secure REGISTERs off the flash path: getHa1() reads NVS at most
 	// once per extension per boot, then serves from RAM. Coherent with set/clear.
@@ -99,7 +99,7 @@ namespace
 	}
 #endif
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	// --- Index maintenance (ESP): a newline-separated set of secured extensions,
 	// stored under kIndexKey so securedExtensions() needs no NVS enumeration. ---
 
@@ -180,7 +180,7 @@ namespace SipSecretStore
 
 		std::lock_guard<std::mutex> lock(storeMutex());
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		nvs_handle_t h;
 		if (nvs_open(kNamespace, NVS_READWRITE, &h) != ESP_OK)
 		{
@@ -244,7 +244,7 @@ namespace SipSecretStore
 
 	void warmCache()
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		// securedExtensions() and getHa1() each take storeMutex() internally and
 		// release before the next call returns, so calling them in sequence here is
 		// safe (std::mutex is non-recursive). getHa1() populates ha1Cache() as a
@@ -265,7 +265,7 @@ namespace SipSecretStore
 
 		std::lock_guard<std::mutex> lock(storeMutex());
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		// RAM cache first — the hot path (a secured phone re-REGISTERing) never
 		// touches flash after the first lookup for that extension.
 		{
@@ -314,7 +314,7 @@ namespace SipSecretStore
 
 		std::lock_guard<std::mutex> lock(storeMutex());
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		nvs_handle_t h;
 		if (nvs_open(kNamespace, NVS_READWRITE, &h) != ESP_OK)
 		{
@@ -341,7 +341,7 @@ namespace SipSecretStore
 	{
 		std::lock_guard<std::mutex> lock(storeMutex());
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		nvs_handle_t h;
 		if (nvs_open(kNamespace, NVS_READONLY, &h) != ESP_OK)
 		{

@@ -23,7 +23,7 @@
 // returns std::nullopt (no ARP table), mirroring the RtpSender / SshServer host
 // stubs so the host test build and non-display builds stay compilable.
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <lwip/sockets.h>
 #elif defined(__linux__)
 #include <netinet/in.h>
