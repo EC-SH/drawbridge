@@ -83,6 +83,7 @@ void ThreeCxAnchorClient::setRewarmIntervalSec(uint32_t)
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
 #include "ThreeCxAnchorLogic.hpp"   // host-tested entity-path tokenizer + URL builders (issue #49)
+#include "PsramTask.hpp"            // #100: PSRAM-backed task stacks (off the scarce internal-RAM heap)
 
 static const char* TAG = "ThreeCxAnchor";
 
@@ -1908,10 +1909,11 @@ bool ThreeCxAnchorClient::startWsWorkers()
 	for (int i = 0; i < kWsWorkers; ++i)
 	{
 		// 12288 stack: the worker runs getLegStatus()+startMediaStreams() — the same blocking
-		// TLS HTTP the WS task used to carry (its stack was 16384 for exactly that). Unpinned
-		// so the scheduler keeps it off the SIP core.
-		if (xTaskCreate(&ThreeCxAnchorClient::wsWorkerTrampoline, "3cx_wsw", 12288, this, 4,
-		                &_wsWorkerHandles[i]) != pdPASS)
+		// TLS HTTP the WS task used to carry. Unpinned so the scheduler keeps it off the SIP core.
+		// #100: stack in PSRAM (WithCaps) — with kWsWorkers>1 for concurrent setup, N*12 KB would
+		// otherwise eat internal RAM. TLS I/O only (no flash writes) → PSRAM-safe; self-deletes WithCaps.
+		if (xTaskCreateWithCaps(&ThreeCxAnchorClient::wsWorkerTrampoline, "3cx_wsw", 12288, this, 4,
+		                &_wsWorkerHandles[i], PD_TASK_STACK_CAPS) != pdPASS)
 		{
 			ESP_LOGE(TAG, "startWsWorkers: xTaskCreate worker %d failed (heap?)", i);
 			_wsWorkerHandles[i] = nullptr;
@@ -1964,7 +1966,7 @@ void ThreeCxAnchorClient::wsWorkerTrampoline(void* arg)
 	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
 	self->runWsWorker();
 	if (self->_wsWorkerDoneSem) xSemaphoreGive(self->_wsWorkerDoneSem);   // released BEFORE delete
-	vTaskDelete(nullptr);
+	vTaskDeleteWithCaps(nullptr);   // #100: created WithCaps(PSRAM) — reclaim the PSRAM stack/TCB
 }
 
 void ThreeCxAnchorClient::runWsWorker()
@@ -2406,7 +2408,10 @@ bool ThreeCxAnchorClient::startRxIfNeeded(const std::string& participantId)
 		if (slot->rxDoneSem) { vSemaphoreDelete(slot->rxDoneSem); slot->rxDoneSem = nullptr; }
 		return false;
 	}
-	BaseType_t rc = xTaskCreatePinnedToCore(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, arg, 6, &slot->rxTaskHandle, 1);
+	// #100: stack in PSRAM (WithCaps) — N concurrent calls' GET-rx tasks would otherwise exhaust
+	// internal RAM. The task does HTTPS GET reads + the audio rx callback only (no flash writes),
+	// so a PSRAM stack is safe. Force-kill + self-exit both use vTaskDeleteWithCaps.
+	BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, arg, 6, &slot->rxTaskHandle, 1, PD_TASK_STACK_CAPS);
 	if (rc != pdPASS)
 	{
 		ESP_LOGE(TAG, "Failed to create Rx task for %s", participantId.c_str());
@@ -2593,7 +2598,7 @@ void ThreeCxAnchorClient::stopMediaStreams(const std::string& participantId)
 			if (xSemaphoreTake(doneSem, pdMS_TO_TICKS(2000)) != pdTRUE)
 			{
 				ESP_LOGE(TAG, "Rx task failed to exit in time! Forcing task deletion.");
-				vTaskDelete(taskToKill);
+				vTaskDeleteWithCaps(taskToKill);   // #100: rx task is WithCaps(PSRAM) — reclaim its stack
 				// try_lock: if the deleted task was holding getMutex when killed, the mutex is
 				// permanently poisoned and a blocking lock_guard would deadlock here.
 				if (slot->getMutex.try_lock())
@@ -2669,7 +2674,7 @@ void ThreeCxAnchorClient::rxTaskTrampoline(void* arg)
 	{
 		xSemaphoreGive(slot->rxDoneSem);
 	}
-	vTaskDelete(nullptr);
+	vTaskDeleteWithCaps(nullptr);   // #100: created WithCaps(PSRAM) — reclaim the PSRAM stack/TCB
 }
 
 void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)

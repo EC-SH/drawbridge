@@ -201,7 +201,7 @@ private:
 		std::string partId;       // the participant 3CX surfaced in the event entity path
 		std::string callerId;     // inbound From display name (best-effort)
 	};
-	static constexpr int kWsWorkers    = 1;    // bump for multi-call setup concurrency (#100)
+	static constexpr int kWsWorkers    = 3;    // #100: parallelize concurrent media setups (PSRAM stacks)
 	static constexpr int kWsQueueDepth = 16;
 	QueueHandle_t     _wsWorkQueue = nullptr;
 	TaskHandle_t      _wsWorkerHandles[kWsWorkers] = {};

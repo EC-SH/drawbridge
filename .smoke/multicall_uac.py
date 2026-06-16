@@ -49,6 +49,9 @@ class Call:
         self.board_ip, self.ext, self.dest = board_ip, ext, dest
         self.hold_sec, self.local_ip = hold_sec, local_ip
         self.result = "init"; self.rtp_rx = 0
+        self.sip = self.rtp = None
+        self.sip_port = self.rtp_port = 0
+        self.tag = self.callid = self.contact = ""
 
     def _sip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((self.local_ip, 0)); s.settimeout(5.0)
@@ -72,32 +75,31 @@ class Call:
         except Exception:
             pass
 
-    def run(self):
-        try:
-            self._run()
-        except Exception as e:
-            self.result = "EXC:%s" % e
+    def prepare(self):
+        # Create the persistent SIP + RTP sockets and dialog identifiers once, so registration and
+        # the later concurrent INVITE share the same Contact/socket (a real phone is registered well
+        # before it dials).
+        self.sip, self.sip_port = self._sip()
+        self.rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.rtp.bind((self.local_ip, 0)); self.rtp.settimeout(0.05)
+        self.rtp_port = self.rtp.getsockname()[1]
+        self.tag = "uac%d-%d" % (self.ext, random.randint(1000, 9999))
+        self.callid = "mc-%d-%d@%s" % (self.ext, now_ms(), self.local_ip)
+        self.contact = "<sip:%d@%s:%d>" % (self.ext, self.local_ip, self.sip_port)
 
-    def _run(self):
-        sip, sip_port = self._sip()
-        rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); rtp.bind((self.local_ip, 0)); rtp.settimeout(0.05)
-        rtp_port = rtp.getsockname()[1]
-        tag = "uac%d-%d" % (self.ext, random.randint(1000, 9999))
-        callid = "mc-%d-%d@%s" % (self.ext, now_ms(), self.local_ip)
-        contact = "<sip:%d@%s:%d>" % (self.ext, self.local_ip, sip_port)
-
-        # 1. REGISTER (Open/Learn registrar -> 200, no digest). The board sends a "register beep"
+    def register(self):
+        # REGISTER (Open/Learn registrar -> 200, no digest). The board sends a "register beep"
         # INVITE back to a freshly-registered contact, which can arrive before (or instead of) the
-        # REGISTER 200 on this socket; and under a concurrent ramp a single REGISTER/200 can be
-        # dropped. So: loop recvfrom looking specifically for the REGISTER 200 (ignore the beep
-        # INVITE — answer it 200 so it doesn't retransmit), and retry the whole REGISTER a few times.
-        registered = False
+        # REGISTER 200; and a single REGISTER/200 can be dropped. So: loop recvfrom for the REGISTER
+        # 200 (reject the beep INVITE so it stops retransmitting), and retry a few times. Done once,
+        # up front (sequentially), so the register-beep storm doesn't confound the concurrent-CALL
+        # capacity test that follows. Returns True on success.
+        sip, sip_port = self.sip, self.sip_port
         for attempt in range(4):
             reg = ("REGISTER sip:%s SIP/2.0\r\nVia: SIP/2.0/UDP %s:%d;branch=z9hG4bK%d\r\n"
                    "Max-Forwards: 70\r\nFrom: <sip:%d@%s>;tag=%s\r\nTo: <sip:%d@%s>\r\n"
                    "Call-ID: reg-%s\r\nCSeq: %d REGISTER\r\nContact: %s\r\nExpires: 120\r\nContent-Length: 0\r\n\r\n"
                    % (self.board_ip, self.local_ip, sip_port, random.randint(1, 1 << 30),
-                      self.ext, self.board_ip, tag, self.ext, self.board_ip, callid, attempt + 1, contact)).encode()
+                      self.ext, self.board_ip, self.tag, self.ext, self.board_ip, self.callid, attempt + 1, self.contact)).encode()
             sip.sendto(reg, (self.board_ip, 5060))
             deadline = time.time() + 2.5
             while time.time() < deadline:
@@ -107,15 +109,21 @@ class Call:
                     break
                 first = data.split(b"\r\n", 1)[0]
                 if b"REGISTER" in data and b" 200 " in first:
-                    registered = True
-                    break
+                    return True
                 if data.startswith(b"INVITE"):
-                    # register-beep: ACK-less 200 so the board stops retransmitting, then keep waiting
-                    self._beep_ok(sip, data)
-            if registered:
-                break
-        if not registered:
-            self.result = "REG-TIMEOUT"; return
+                    self._beep_ok(sip, data)   # register-beep: clear it so it doesn't pollute the socket
+        self.result = "REG-TIMEOUT"; return False
+
+    def run(self):
+        try:
+            self.place_call()
+        except Exception as e:
+            self.result = "EXC:%s" % e
+
+    def place_call(self):
+        sip, sip_port = self.sip, self.sip_port
+        rtp, rtp_port = self.rtp, self.rtp_port
+        tag, callid, contact = self.tag, self.callid, self.contact
 
         # 2. INVITE dest with SDP offer (our RTP port)
         sdp = ("v=0\r\no=uac %d %d IN IP4 %s\r\ns=mc\r\nc=IN IP4 %s\r\nt=0 0\r\n"
@@ -198,12 +206,22 @@ def main():
     base = int(sys.argv[5]) if len(sys.argv) > 5 else 191
     lip = local_ip_for(board)
     print("[uac] %s -> %s, %d concurrent calls to %s, hold %ds, ext %d.." % (lip, board, n, dest, hold, base))
-    base_st = board_status(board)
     calls = [Call(board, base + i, dest, hold, lip) for i in range(n)]
+    for c in calls: c.prepare()
+
+    # Phase 1: register every extension FIRST (sequentially, robustly) so the register-beep storm
+    # doesn't confound the concurrent-CALL test. Real phones are registered long before they dial.
+    reg_ok = sum(1 for c in calls if c.register())
+    print("[uac] registered %d/%d extensions" % (reg_ok, n))
+    time.sleep(0.5)   # let the last register-beep settle
+
+    # Phase 2: fire all INVITEs near-simultaneously (100 ms stagger ~ a realistic burst) — THIS is
+    # the concurrent-call capacity measurement.
+    base_st = board_status(board)
     threads = [threading.Thread(target=c.run) for c in calls]
-    for t in threads: t.start(); time.sleep(0.25)   # 250ms stagger so setups don't thundering-herd
+    for t in threads: t.start(); time.sleep(0.1)
     # Sample the board mid-hold (after setups settle) for the peak media-plane snapshot.
-    time.sleep(0.25 * n + max(1.0, hold * 0.5))
+    time.sleep(0.1 * n + max(1.5, hold * 0.5))
     peak_st = board_status(board)
     for t in threads: t.join()
     after_st = board_status(board)

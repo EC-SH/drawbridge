@@ -30,6 +30,7 @@
 	#include "esp_system.h"
 	#include "esp_idf_version.h"
 	#include <cstring>
+	#include "PsramTask.hpp"   // #100: PSRAM-backed stacks for the transient TLS call workers
 #endif
 
 std::vector<std::shared_ptr<SipMessage>> RequestsHandler::_messagePool;
@@ -6592,7 +6593,7 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		RequestsHandler* handler;
 	};
 	auto* arg = new MakeCallArg{ _anchorClient, destination, callId, callerNumber, this };
-	xTaskCreate([](void* p) {
+	xTaskCreateWithCaps([](void* p) {
 		auto* mca = static_cast<MakeCallArg*>(p);
 		std::string ownLeg;
 		if (!mca->anchor->makeCall(mca->dest, &ownLeg))
@@ -6610,9 +6611,9 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 			mca->handler->queueLog("[3CX] Initiating outbound call to " + mca->dest);
 		}
 		delete mca;
-		vTaskDelete(NULL);
+		vTaskDeleteWithCaps(NULL);   // #100: created WithCaps(PSRAM)
 		// 12288: makeCall is a TLS HTTPS round trip — same overflow as 3cx_start.
-	}, "3cx_makecall", 12288, arg, 5, NULL);
+	}, "3cx_makecall", 12288, arg, 5, NULL, PD_TASK_STACK_CAPS);   // #100: stack in PSRAM (N concurrent setups)
 #else
 	spawnAnchorWorker([this, destination, callId, callerNumber]() {
 		std::string ownLeg;
@@ -6647,12 +6648,12 @@ void RequestsHandler::asyncDropCall(const std::string& participantId)
 	// fail to allocate; the drop worker then never runs and the PSTN leg never tears down.
 	// This used to be silent — surface it (and free the arg) so the failure is visible in
 	// the serial log instead of a phantom non-drop.
-	if (xTaskCreate([](void* p) {
+	if (xTaskCreateWithCaps([](void* p) {
 		auto* dca = static_cast<DropCallArg*>(p);
 		dca->anchor->dropCall(dca->partId);
 		delete dca;
-		vTaskDelete(NULL);
-	}, "3cx_dropcall", 12288, arg, 5, NULL) != pdPASS)
+		vTaskDeleteWithCaps(NULL);   // #100: created WithCaps(PSRAM)
+	}, "3cx_dropcall", 12288, arg, 5, NULL, PD_TASK_STACK_CAPS) != pdPASS)   // #100: stack in PSRAM
 	{
 		queueLog("[3CX] asyncDropCall: drop worker xTaskCreate FAILED (heap exhausted) — leg NOT dropped", true);
 		delete arg;
@@ -6676,7 +6677,7 @@ void RequestsHandler::asyncAnswerCall(const std::string& participantId)
 		RequestsHandler* handler;
 	};
 	auto* arg = new AnswerCallArg{ _anchorClient, participantId, this };
-	xTaskCreate([](void* p) {
+	xTaskCreateWithCaps([](void* p) {
 		auto* aca = static_cast<AnswerCallArg*>(p);
 		if (!aca->anchor->answerCall(aca->partId))
 		{
@@ -6684,9 +6685,9 @@ void RequestsHandler::asyncAnswerCall(const std::string& participantId)
 			aca->handler->queueLog("[3CX] Failed to answer inbound participant " + aca->partId, true);
 		}
 		delete aca;
-		vTaskDelete(NULL);
+		vTaskDeleteWithCaps(NULL);   // #100: created WithCaps(PSRAM)
 		// 12288: answerCall is a TLS HTTPS round trip — same overflow as 3cx_start.
-	}, "3cx_answer", 12288, arg, 5, NULL);
+	}, "3cx_answer", 12288, arg, 5, NULL, PD_TASK_STACK_CAPS);   // #100: stack in PSRAM
 #else
 	spawnAnchorWorker([this, participantId]() {
 		if (!_anchorClient->answerCall(participantId))
