@@ -19,7 +19,7 @@
 #include <cstdio>
 
 // ── Platform includes ─────────────────────────────────────────────────────────
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -156,7 +156,7 @@ SshServer& SshServer::instance()
 void SshServer::registerCommand(const esp_console_cmd_t* cmd)
 {
     if (!cmd) return;
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     esp_err_t err = esp_console_cmd_register(cmd);
     if (err != ESP_OK)
     {
@@ -169,7 +169,7 @@ void SshServer::registerCommand(const esp_console_cmd_t* cmd)
 
 // Built-in commands registered regardless of wolfSSH presence.
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 
 static int cmd_show_status(int argc, char** argv)
 {
@@ -278,7 +278,7 @@ static int cmd_factory_reset(int argc, char** argv)
 
 void SshServer::registerBuiltinCommands()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     // Register each command. esp_console_cmd_t::func is a raw function pointer;
     // the named static functions (all with C linkage ABI — no captures) convert
     // implicitly without a cast.
@@ -303,7 +303,7 @@ void SshServer::initConsole()
     if (_consoleInitialized) return;
     _consoleInitialized = true;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     esp_console_config_t consoleCfg = ESP_CONSOLE_CONFIG_DEFAULT();
     consoleCfg.max_cmdline_length = 256;
     consoleCfg.max_cmdline_args   = 8;
@@ -325,7 +325,7 @@ void SshServer::start()
     // Always initialize the console so commands are available even in stub mode.
     initConsole();
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     // Read NVS "ssh_enabled" key.
     {
         // Read-only: opening NVS_READWRITE merely to READ a flag is wrong and can fail
@@ -365,7 +365,7 @@ void SshServer::start()
     }
     ESP_LOGI(TAG, "wolfSSH initialized");
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     if (_taskHandle != nullptr)
     {
         // Already running — skip re-spawn.
@@ -410,7 +410,7 @@ void SshServer::start()
 #elif defined(POCKETDIAL_HAS_LITTLESSH)
     // littlessh backend (PSA/mbedTLS) — gives transports without wolfSSH a real
     // SSH console. The task owns its own accept loop (lssh_server_run).
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     pd_littlessh_clear_stop();             // re-arm if a prior stop was requested
     if (_taskHandle != nullptr) return;    // already running (now un-stopped)
     {
@@ -430,7 +430,7 @@ void SshServer::start()
 void SshServer::stop()
 {
 #if defined(POCKETDIAL_HAS_LITTLESSH) && \
-    (defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO))
+    (defined(ESP_PLATFORM) || defined(ESP32))
     // Cooperative shutdown. stop() is reached from the [4]/[K] TUI toggle, which
     // runs ON the littlessh task itself — vTaskDelete'ing it here would self-
     // delete mid-session and leak the listen socket, client fd, ~20 KB session
@@ -438,7 +438,7 @@ void SshServer::stop()
     // unwinds at the next idle beat and the task clears its own handle.
     pd_littlessh_request_stop();
     ESP_LOGI(TAG, "littlessh SSH stop requested (cooperative)");
-#elif defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#elif defined(ESP_PLATFORM) || defined(ESP32)
     if (_taskHandle != nullptr)
     {
         vTaskDelete(_taskHandle);
@@ -456,7 +456,7 @@ void SshServer::setEnabled(bool enabled)
 {
     _enabled = enabled;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     nvs_handle_t h;
     if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
     {
@@ -1139,7 +1139,7 @@ void SshServer::sshListenTask(void* arg)
     // the bundled wolfSSH demo ECC P-256 key so SSH works out of the box. (The demo key is
     // public — fine for a trusted LAN console; provision a unique key for production.)
     bool keyLoaded = false;
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     {
         nvs_handle_t h;
         if (nvs_open("storage", NVS_READONLY, &h) == ESP_OK)
@@ -1283,7 +1283,7 @@ void SshServer::sshListenTask(void* arg)
 
 #endif  // POCKETDIAL_HAS_WOLFSSH
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     vTaskDelete(nullptr);
 #endif
 }

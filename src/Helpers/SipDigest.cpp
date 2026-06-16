@@ -23,7 +23,7 @@
 #include <mutex>
 #include <vector>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	#include "esp_random.h"
 #else
 	#include <random>
@@ -204,7 +204,7 @@ namespace
 	// random_device (host is a developer/CI simulator). Mirrors AdminAuth.
 	void fillRandom(uint8_t* buf, size_t len)
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		for (size_t i = 0; i < len; ++i)
 		{
 			buf[i] = static_cast<uint8_t>(esp_random() & 0xFF);

@@ -6,7 +6,7 @@
 // Platform note: this file is host-compilable. The ONLY platform-gated bit is the
 // uptime fallback (esp_timer); everything else — ANSI emission, palette, glyphs,
 // component geometry, input decode, screen router — is pure C++17. The guard
-// matches the pattern used across src/ (ESP_PLATFORM||ESP32||ARDUINO).
+// matches the pattern used across src/ (ESP_PLATFORM||ESP32).
 
 #include "Tui.hpp"
 #include "SipSecretStore.hpp"   // single audited CSPRNG secret generator ([4]/[D]/[G])
@@ -15,7 +15,7 @@
 #include <cstdio>
 #include <cstring>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include "esp_timer.h"
 #include "esp_system.h"   // esp_restart() for the [R] reboot confirm
 #include "nvs_flash.h"    // nvs_flash_erase() for the [4]/[X] factory reset
@@ -190,7 +190,7 @@ Tui::LiveStats Tui::stats() const
 {
     if (_stats) return _stats();
     LiveStats z;   // zeros, but a correct spine (host fallback / unattached)
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     z.uptimeSec = static_cast<uint64_t>(esp_timer_get_time() / 1000000LL);
 #endif
     return z;
@@ -200,7 +200,7 @@ Tui::MonitorSnapshot Tui::monitor() const
 {
     if (_monitor) return _monitor();
     MonitorSnapshot z;   // all-idle, correct spine (unattached / host fallback)
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     z.uptimeSec = static_cast<uint64_t>(esp_timer_get_time() / 1000000LL);
 #endif
     return z;
@@ -2943,7 +2943,7 @@ void Tui::onKeyConfirm(Key k, unsigned char ch)
         if (ch == 'y' || ch == 'Y')
         {
             // Confirmed reboot.
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
             // Tell the operator, then restart. The channel teardown is implicit
             // (the board resets); SshServer's loop will see the disconnect.
             put("\r\n");
@@ -3046,7 +3046,7 @@ void Tui::onKeyModeConfirm(Key k, unsigned char ch)
 // to join a network. Host build: nothing to switch — return to the network screen.
 void Tui::applyModeSwitch()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     LiveStats st = stats();
     uint8_t next = (st.netMode == 1) ? 2 : 1;   // STATION→AP, else →STATION
     nvs_handle_t h;
@@ -3134,7 +3134,7 @@ void Tui::onKeyFactoryConfirm(Key k, unsigned char ch)
 // Host build: nothing to erase — return to the security screen.
 void Tui::applyFactoryReset()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     put("\r\n");
     roled(Role::Alert, "Factory reset\xe2\x80\xa6 erasing NVS and restarting.\r\n");
     nvs_flash_erase();

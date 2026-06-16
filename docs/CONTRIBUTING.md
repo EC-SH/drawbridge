@@ -8,7 +8,7 @@ Welcome! This guide assists contributors in setting up the development environme
 
 The **pocket-dial** firmware compiles under two build environments depending on your target configuration:
 * **ESP-IDF Toolchain**: Preferred for production, smart-displays, and advanced multithreading builds.
-* **Arduino Toolchain**: Used for rapid prototyping and flashing individual `.ino` sketch targets.
+* ~~**Arduino Toolchain**: Used for rapid prototyping and flashing individual `.ino` sketch targets.~~ *(removed — ESP32-only pivot, #96)*
 
 ### A. ESP-IDF Environment Setup (Recommended)
 1. Install **ESP-IDF v5.1** or newer (v5.1.x / v5.2.x are fully supported). Follow the [Espressif Installation Guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/index.html).
@@ -21,7 +21,7 @@ The **pocket-dial** firmware compiles under two build environments depending on 
    xtensa-esp32s3-elf-gcc --version
    ```
 
-### B. Arduino IDE Toolchain
+### ~~B. Arduino IDE Toolchain~~ — removed (ESP32-only pivot, #96)
 1. Download **Arduino IDE v2.x** or compile via `arduino-cli`.
 2. Add the Espressif Board Manager URL under Preferences:
    ```text
@@ -54,7 +54,7 @@ The **pocket-dial** firmware compiles under two build environments depending on 
    idf.py -p COM3 flash monitor
    ```
 
-### B. Compiling via Arduino IDE
+### ~~B. Compiling via Arduino IDE~~ — removed (ESP32-only pivot, #96)
 1. Open the `.ino` sketch from the `sketches/` directory corresponding to your board (e.g., `sketches/SipServer_T_ETH_Lite_W5500/SipServer_T_ETH_Lite_W5500.ino`).
 2. Select your board under **Tools > Board**:
    * For S3-ETH and T-ETH-Lite: Select **ESP32S3 Dev Module**.

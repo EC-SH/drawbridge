@@ -21,7 +21,7 @@
 #include <cstring>
 #include <chrono>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	// On the device, credentials persist in NVS and randomness comes from the
 	// hardware RNG. nvs_flash/nvs/esp_random are core ESP-IDF components present
 	// on EVERY transport (wifi, eth, display) — they are not WiFi-specific, so
@@ -242,7 +242,7 @@ namespace
 	// from std::random_device — adequate for the host simulator.
 	void fillRandom(uint8_t* buf, size_t len)
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		// Hardware CSPRNG, available on every ESP transport.
 		for (size_t i = 0; i < len; ++i)
 		{
@@ -351,7 +351,7 @@ namespace
 		}
 		s.loaded = true;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		nvs_handle_t h;
 		if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
 		{
@@ -377,7 +377,7 @@ namespace
 	// Caller must hold state().mutex.
 	bool persistCredentialLocked(const AuthState& s)
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		nvs_handle_t h;
 		if (nvs_open("storage", NVS_READWRITE, &h) != ESP_OK)
 		{
@@ -398,7 +398,7 @@ namespace
 	// Caller must hold state().mutex.
 	void eraseCredentialLocked()
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		nvs_handle_t h;
 		if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
 		{
@@ -650,7 +650,7 @@ namespace AdminAuth
 	// host unit tests exercise the same logic path.
 	bool credentialIsSet()
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		nvs_handle_t h;
 		if (nvs_open("storage", NVS_READONLY, &h) != ESP_OK)
 		{

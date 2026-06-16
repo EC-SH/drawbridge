@@ -28,7 +28,7 @@
 //   The drain task body:
 //       while (1) { LogQueue::drainToUart(); vTaskDelay(pdMS_TO_TICKS(10)); }
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 
 #include <cstdio>
 #include <cstring>

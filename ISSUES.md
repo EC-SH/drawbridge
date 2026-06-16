@@ -95,7 +95,7 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Severity**: Low
 * **Description**: Expose an HTTP endpoint `/api/diagnostics/pcap` to export a rolling ring-buffer of captured network packets in raw PCAP format for native analysis in Wireshark.
 
-#### 🔵 Issue: SIP core: Arduino IDE platform detection guards need verification (ESP32/ARDUINO defines)
+#### 🔵 ~~Issue: SIP core: Arduino IDE platform detection guards need verification (ESP32/ARDUINO defines)~~ — won't-do (Arduino support removed, ESP32-only #96)
 * **Status**: ⏳ Open / Planned
 * **Labels**: `build-system`, `compatibility`
 * **Severity**: Low

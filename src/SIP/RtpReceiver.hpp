@@ -36,7 +36,7 @@
 // invoked with pointers into that fixed buffer (the sink must consume/copy
 // synchronously — it must not retain the pointer past the callback).
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <lwip/sockets.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -153,7 +153,7 @@ private:
 	// hold _slotMutex. Clears the sink and active/port state.
 	void clearSlotLocked();
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	static void taskTrampoline(void* arg);
 	void runLoop();                       // recvfrom-paced receive loop (Core 0)
 

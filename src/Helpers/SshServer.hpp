@@ -36,7 +36,7 @@
 // is attached (attachHandler), else it falls back to zeros with a correct spine.
 class RequestsHandler;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include "esp_console.h"
 #else
 // Host stub: minimal esp_console_cmd_t definition so the header compiles on Linux/Windows.
@@ -170,7 +170,7 @@ private:
     uint8_t     _netMode{0};        // 0=SETUP/captive, 1=STATION, 2=AP (standalone)
     bool        _netInfoSet{false}; // true once setNetInfo() has run
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
     TaskHandle_t _taskHandle{nullptr};
 #else
     void* _taskHandle{nullptr};       // placeholder on host — no FreeRTOS

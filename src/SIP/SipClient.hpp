@@ -1,7 +1,7 @@
 #ifndef SIP_CLIENT_HPP
 #define SIP_CLIENT_HPP
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <lwip/sockets.h>
 #undef INADDR_NONE
 #elif defined(__linux__)

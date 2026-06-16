@@ -18,7 +18,7 @@
 #include "SipSecretStore.hpp"
 #include "ArpLookup.hpp"
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	// PBX config (call-forward / ring groups) and the persistent CDR ring live in
 	// NVS on the device. nvs_flash/nvs are core ESP-IDF components present on every
 	// transport, so they gate on ESP_PLATFORM (not POCKETDIAL_HAS_WIFI). On host the
@@ -121,7 +121,7 @@ RequestsHandler::~RequestsHandler()
 	// on host. tick() is no longer running by destruction time, so this takes the lock
 	// itself; no concurrent writer remains.
 	flushDirtyNvs();
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 	if (_anchorStartThread.joinable())
 	{
 		_anchorStartThread.join();
@@ -3981,7 +3981,7 @@ void RequestsHandler::tick()
 	// erase/program never stalls SIP signaling. No-op on host.
 	flushDirtyNvs();
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 	// Issue #67: reap finished host anchor-call workers so they don't accumulate as
 	// joinable thread objects until destruction. (ESP uses self-deleting tasks.)
 	reapAnchorWorkers();
@@ -4846,7 +4846,7 @@ void RequestsHandler::loadPbxConfig()
 	}
 	_pbxConfigLoaded = true;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
 	{
@@ -4957,7 +4957,7 @@ void RequestsHandler::persistPageZones()  { _nvsDirty |= kNvsDirtyPageZones; }
 
 void RequestsHandler::loadRegistrarMode()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
 	{
@@ -4976,7 +4976,7 @@ void RequestsHandler::loadRegistrarMode()
 
 void RequestsHandler::persistRegistrarMode()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
 	{
@@ -4991,7 +4991,7 @@ void RequestsHandler::persistRegistrarMode()
 // ── #107: anchor TLS re-warm cadence persistence ────────────────────────────────
 void RequestsHandler::loadRewarmInterval()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
 	{
@@ -5010,7 +5010,7 @@ void RequestsHandler::loadRewarmInterval()
 
 void RequestsHandler::persistRewarmInterval()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
 	{
@@ -5023,7 +5023,7 @@ void RequestsHandler::persistRewarmInterval()
 
 void RequestsHandler::loadDevices()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
 	{
@@ -5074,7 +5074,7 @@ void RequestsHandler::persistDevices() { _nvsDirty |= kNvsDirtyDevices; }
 
 void RequestsHandler::loadCdrRing()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_CDR_NS, NVS_READWRITE, &h) != ESP_OK)
 	{
@@ -5145,7 +5145,7 @@ void RequestsHandler::persistCdrRing() { _nvsDirty |= kNvsDirtyCdr; }
 // the prior write-through's silent-failure behaviour).
 void RequestsHandler::flushDirtyNvs()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	uint8_t dirty;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
@@ -5203,7 +5203,7 @@ void RequestsHandler::flushDirtyNvs()
 
 void RequestsHandler::loadAdminExt()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
 	{
@@ -5224,7 +5224,7 @@ void RequestsHandler::loadAdminExt()
 void RequestsHandler::saveAdminExt(const std::string& ext)
 {
 	_adminExt = ext;
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
 	{
@@ -5276,7 +5276,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 	auto& accum = _dtmfState[callId];
 
 	// --- 3. Timeout: reset accumulator if > TIMEOUT_MS since last digit -----
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	TickType_t now = xTaskGetTickCount();
 	uint32_t elapsedMs = (now - accum.lastTick) * portTICK_PERIOD_MS;
 #else
@@ -5334,7 +5334,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			if (code == "001")
 			{
 				// NTP resync (esp_sntp_restart is ESP-IDF v5+; fall back to log if absent)
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 				esp_sntp_restart();
 #else
@@ -5347,7 +5347,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			else if (code == "101")
 			{
 				// Topology switch: toggle wifi_mode between 1 (CLIENT) and 2 (AP).
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 				nvs_handle_t h;
 				if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
 				{
@@ -5379,7 +5379,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 					if (rest[3] == '1')
 					{
 						queueLog("[admin] factory reset confirmed via DTMF");
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 						nvs_flash_erase();
 						esp_restart();
 #else
@@ -5576,7 +5576,7 @@ std::string RequestsHandler::setTrunkConfig(const TrunkConfig& cfg)
 		}
 	}
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open("storage", NVS_READWRITE, &h) != ESP_OK)
 	{
@@ -5656,7 +5656,7 @@ void RequestsHandler::loadThreeCxConfig()
 	std::string sourceDn;
 	uint8_t useLoopback = 0;
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	nvs_handle_t h;
 	if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
 	{
@@ -5767,7 +5767,7 @@ void RequestsHandler::loadThreeCxConfig()
 	// Drop the local plaintext copy now the client holds it (best-effort).
 	std::fill(tapiSecret.begin(), tapiSecret.end(), '\0');
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 	// Host builds never run a live upstream client (no TLS/WebSocket stack in
 	// the host binary) — same force-to-loopback the old code applied.
 	if (bootType == TelephonyProviderType::ThreeCx)
@@ -5802,7 +5802,7 @@ void RequestsHandler::loadThreeCxConfig()
 	_mediaBridge.init(&_rtpReceiver, &_rtpSender, _anchorClient);
 
 	// Start the anchor client asynchronously to avoid blocking the constructor with TLS fetchToken
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	struct StartClientArg {
 		AnchorClient* anchor;
 		RequestsHandler* handler;
@@ -6500,7 +6500,7 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 void RequestsHandler::asyncMakeCall(const std::string& destination, const std::string& callId, const std::string& callerNumber)
 {
 	if (!_anchorClient) return;
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	struct MakeCallArg {
 		AnchorClient* anchor;
 		std::string dest;
@@ -6546,7 +6546,7 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 void RequestsHandler::asyncDropCall(const std::string& participantId)
 {
 	if (!_anchorClient) return;
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	struct DropCallArg {
 		AnchorClient* anchor;
 		std::string partId;
@@ -6580,7 +6580,7 @@ void RequestsHandler::asyncAnswerCall(const std::string& participantId)
 	// Answer an inbound upstream participant off the SIP thread (the POST is a TLS round
 	// trip). Mirrors asyncDropCall's threading/lifetime rules exactly.
 	if (!_anchorClient) return;
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	struct AnswerCallArg {
 		AnchorClient* anchor;
 		std::string partId;
@@ -6609,7 +6609,7 @@ void RequestsHandler::asyncAnswerCall(const std::string& participantId)
 #endif
 }
 
-#if !defined(ESP_PLATFORM) && !defined(ESP32) && !defined(ARDUINO)
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
 // Issue #67: spawn a host anchor worker that runs `job` then flips its done-flag.
 // The flag lets reapAnchorWorkers() join+erase finished threads in tick(), so the
 // live thread count tracks in-flight calls rather than growing without bound. We

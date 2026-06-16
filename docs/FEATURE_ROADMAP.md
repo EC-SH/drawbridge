@@ -126,7 +126,7 @@ Complexity is a t-shirt size for *signalling-side* work unless noted.
 | **P1** | **Provisioning dashboard editor** (MAC→ext map, window toggle, capacity meter vs `MAX_CLIENTS`) | The v3 UI for provisioning; surfaces headroom and the per-MAC token regen. | **M** | [PROVISIONING.md](PROVISIONING.md) §6 v3 |
 | **P2** | **DHCP Option 66 true zero-touch** (fork bundled `dhcpserver`) | Removes the typed URL entirely. IDF-version-sensitive fork; documented as a maintained patch. | **M–L** | [PROVISIONING.md](PROVISIONING.md) §1.1, §6 v2 |
 | **P2** | **Multi-vendor provisioning** (Grandstream/Polycom/Cisco renderers) | Extends MVP beyond Yealink; mostly static format strings (~2–4 KB `.text`). | **M** | [PROVISIONING.md](PROVISIONING.md) §2.5–2.6 |
-| **P2** | **Arduino-IDE build-guard verification** | Confirm `ESP32/ARDUINO/ESP_PLATFORM` macro paths for hobbyist flashing. | **S** | #41 |
+| ~~P2~~ | ~~**Arduino-IDE build-guard verification**~~ *(removed — Arduino dropped, #96)* | ~~Confirm `ESP32/ARDUINO/ESP_PLATFORM` macro paths for hobbyist flashing.~~ | — | #41 |
 | **P2** | **End-to-end hardware validation sweep** (display redraw vs SIP tick latency) | Gate on physical hardware re-connection; verify LVGL redraw doesn't starve the RT loop. | **S** (test) | #44 |
 
 ---

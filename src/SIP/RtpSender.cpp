@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstring>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <unistd.h>
 #include <sys/socket.h>
 #include "esp_log.h"
@@ -26,7 +26,7 @@ namespace
 	// the hardware RNG; on host std::rand is fine (these are test-only there).
 	uint32_t rand32()
 	{
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 		return esp_random();
 #else
 		return (static_cast<uint32_t>(std::rand()) << 16) ^ static_cast<uint32_t>(std::rand());
@@ -140,7 +140,7 @@ RtpSender::RtpSender() : _serverRtpPort(SERVER_RTP_PORT)
 
 RtpSender::~RtpSender()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	// Ask the media task to stop, then BLOCK until it has fully exited before this
 	// object's storage is reclaimed (the task captures `this`). This runs off the SIP
 	// hot path, so a bounded busy-wait is fine; ~500 ms cap backstops a wedged task.
@@ -163,7 +163,7 @@ std::string RtpSender::activeCallId() const
 // ─────────────────────────────────────────────────────────────────────────────
 //  ESP-only: real UDP socket + 20 ms FreeRTOS pacing task
 // ─────────────────────────────────────────────────────────────────────────────
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 
 bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::string& callID, FrameProvider provider)
 {

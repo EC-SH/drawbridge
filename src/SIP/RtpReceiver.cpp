@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 #include <unistd.h>
 #include <sys/socket.h>
 #include "esp_log.h"
@@ -154,7 +154,7 @@ RtpReceiver::RtpReceiver()
 
 RtpReceiver::~RtpReceiver()
 {
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 	// Ask the receive task to stop, then BLOCK until it has fully exited before
 	// this object's storage is reclaimed (the task captures `this`). Closing the
 	// socket in stop() unblocks a parked recvfrom() immediately; the ~500 ms cap
@@ -178,7 +178,7 @@ void RtpReceiver::clearSlotLocked()
 // ─────────────────────────────────────────────────────────────────────────────
 //  ESP-only: real UDP socket + recvfrom receive task (Core 0)
 // ─────────────────────────────────────────────────────────────────────────────
-#if defined(ESP_PLATFORM) || defined(ESP32) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ESP32)
 
 bool RtpReceiver::start(uint16_t localPort, Sink sink)
 {
