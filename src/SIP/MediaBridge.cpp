@@ -128,6 +128,18 @@ bool MediaBridge::isForCallId(const std::string& callID) const
 	return _active.load(std::memory_order_acquire) && !callID.empty() && _callID == callID;
 }
 
+std::string MediaBridge::participantId() const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _active.load(std::memory_order_acquire) ? _participantId : std::string();
+}
+
+std::string MediaBridge::callId() const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _active.load(std::memory_order_acquire) ? _callID : std::string();
+}
+
 void MediaBridge::stopBridge()
 {
 	std::lock_guard<std::mutex> lock(_mutex);

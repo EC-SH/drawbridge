@@ -39,6 +39,10 @@ public:
 	// per-call teardown + the rx fan-out). Both return false when the bridge is idle.
 	bool isFor(const std::string& participantId) const;
 	bool isForCallId(const std::string& callID) const;
+	// The participant / call id this bridge is serving ("" if idle). For the orphan-bridge sweep:
+	// drop the upstream leg of a bridge that has outlived its session.
+	std::string participantId() const;
+	std::string callId() const;
 
 	// The UDP port the bridge's RTP receiver is bound on (0 if not active). This
 	// is the port the handset must send its audio to, so it MUST be the value

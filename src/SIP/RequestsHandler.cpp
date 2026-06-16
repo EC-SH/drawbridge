@@ -3865,6 +3865,37 @@ void RequestsHandler::tick()
 			}
 		}
 
+		// #100: reap ORPHANED media bridges — active but with NO owning anchor session. Under a
+		// concurrent burst a bridge can outlive its session (a session reaped/ended while its bridge
+		// teardown didn't match, or an Answered landing just after its session was reaped). The
+		// session-based reaper above can't see these — they'd pump to a dead handset forever, hold
+		// the per-call GET/POST/RTP sockets, and (until dropped) keep the upstream leg up. Drop the
+		// leg + free the bridge. Safe at 1 Hz: a legit bridge is bound to its session under _mutex
+		// in the Answered handler (same lock tick() holds), so an unowned active bridge is a real orphan.
+		for (auto& b : _mediaBridges)
+		{
+			if (!b.isActive()) continue;
+			const std::string bpart = b.participantId();
+			const std::string bcall = b.callId();
+			bool owned = false;
+			for (const auto& [cid, s] : _sessions)
+			{
+				if (!s->isAnchor()) continue;
+				if ((!bcall.empty() && cid == bcall) ||
+				    (!bpart.empty() && s->getAnchorParticipantId() == bpart))
+				{
+					owned = true;
+					break;
+				}
+			}
+			if (!owned)
+			{
+				if (!bpart.empty()) asyncDropCall(bpart);
+				b.stopBridge();
+				queueLog("[3CX] reaped orphaned media bridge (no session) leg " + bpart);
+			}
+		}
+
 		// Sweep rate-limit buckets older than 60 seconds (Issue #58)
 		for (auto rit = _rateBuckets.begin(); rit != _rateBuckets.end(); )
 		{
