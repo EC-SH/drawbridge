@@ -280,6 +280,14 @@ private:
 	// persistent POST handle to perform a resumed handshake and refresh its session ticket.
 	static void rewarmTaskTrampoline(void* arg);
 	void rewarmPostSession();   // the blocking re-warm body; runs off the SIP task
+	// #100: one-shot (spawned after connect) that cold-primes EVERY slot's POST TLS session (via HTTP
+	// keep-alive) so a cold-start concurrent burst RESUMES each per-call POST open (~1 RTT) instead
+	// of the S3's ~1s software ECDHE. Per-handle keep-alive only (the warm handle's own connection);
+	// NOT a separate session-key cache. POST only: the GET stream's fast teardown shuts the socket to
+	// unblock its long-poll read, killing keep-alive, so GET can't stay warm without a timeout-based
+	// rx teardown (follow-up). Runs off the SIP task (8 cold handshakes, background, at idle).
+	static void prewarmTaskTrampoline(void* arg);
+	void prewarmAllSlots();
 #endif
 };
 

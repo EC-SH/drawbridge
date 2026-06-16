@@ -231,6 +231,14 @@ bool ThreeCxAnchorClient::start()
 	// doesn't pay the handshake during post-dial delay.
 	warmCtrlConnection();
 
+	// 4. #100: cold-prime EVERY call slot's POST TLS session (keep-alive) in the background so a
+	// cold-start concurrent burst RESUMES each per-call POST open instead of paying the S3's ~1s
+	// software ECDHE. One-shot, off this task. (GET stays cold per call — see prewarmAllSlots.)
+	if (xTaskCreateWithCaps(&ThreeCxAnchorClient::prewarmTaskTrampoline, "3cx_prewarm", 6144, this, 4, nullptr, PD_TASK_STACK_CAPS) != pdPASS)
+	{
+		ESP_LOGW(TAG, "start: failed to spawn slot pre-warm worker (first concurrent burst pays cold handshakes)");
+	}
+
 	return true;
 }
 
@@ -1596,6 +1604,74 @@ void ThreeCxAnchorClient::rewarmPostSession()
 	}
 }
 
+// #100: cold-prime EVERY slot's GET *and* POST TLS session after connect, so a cold-start concurrent
+// burst RESUMES each per-call open instead of paying the S3's ~1s software ECDHE per stream. We only
+// need the TLS HANDSHAKE to complete (the HTTP status is irrelevant) — afterwards CLOSE but KEEP each
+// handle so its cached session resumes on the real call. Sequential + off the SIP task (16 cold
+// handshakes ≈ ~16 s at idle); spawned once from start().
+void ThreeCxAnchorClient::prewarmTaskTrampoline(void* arg)
+{
+	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	self->prewarmAllSlots();
+	vTaskDeleteWithCaps(nullptr);
+}
+
+void ThreeCxAnchorClient::prewarmAllSlots()
+{
+	std::string baseUrl, sourceDn, token;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		baseUrl  = _baseUrl;
+		sourceDn = _sourceDn;
+		token    = _accessToken;
+	}
+	if (baseUrl.empty()) return;   // unprovisioned / loopback
+	// Benign same-host target: only the handshake matters (GET → participant list 200; POST → 405).
+	const std::string url = baseUrl + "/callcontrol/" + sourceDn + "/participants";
+
+	auto warmHandle = [&](esp_http_client_handle_t& h, esp_http_client_method_t method) -> bool {
+		if (!_running.load(std::memory_order_acquire)) return false;
+		if (!h) h = makeAuthedClient(url, method, 1024, token);
+		if (!h) return false;
+		const int64_t t0 = esp_timer_get_time();
+		if (esp_http_client_open(h, 0) != ESP_OK)
+		{
+			esp_http_client_cleanup(h); h = nullptr; return false;
+		}
+		(void)esp_http_client_fetch_headers(h);
+		char d[256];
+		while (esp_http_client_read(h, d, sizeof(d)) > 0) { /* discard */ }
+		esp_http_client_close(h);   // KEEP the handle + its now-cached session
+		const int64_t ms = (esp_timer_get_time() - t0) / 1000;
+		ESP_LOGI(TAG, "prewarm: TLS session primed in %lld ms (%s)", (long long)ms, (ms > 400) ? "cold" : "resumed");
+		return true;
+	};
+
+	int warmed = 0;
+	for (auto& slot : _calls)
+	{
+		if (!_running.load(std::memory_order_acquire)) break;
+		// Never disturb a slot that's mid-call (a real call grabbed it during prewarm).
+		bool busy = false;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			busy = !slot.participantId.empty();
+		}
+		if (busy) continue;
+
+		// POST only: the POST handle resumes via HTTP keep-alive across calls (clean close). The GET
+		// stream can't be kept warm the same way — its fast teardown shut​down()s the socket to
+		// unblock the long-poll read, which kills the keep-alive connection, so a per-call GET open
+		// pays a fresh handshake regardless. Warming it here would just leak the handle (runRxLoop
+		// creates a fresh GET client). Warming GET needs a timeout-based rx teardown (follow-up).
+		{
+			std::lock_guard<std::mutex> pl(slot.postMutex);
+			if (!slot.postLive.load(std::memory_order_acquire) && warmHandle(slot.postClient, HTTP_METHOD_POST)) ++warmed;
+		}
+	}
+	ESP_LOGI(TAG, "prewarm: %d/%d slots' POST TLS sessions primed (resumable)", warmed, POCKETDIAL_MAX_ANCHOR_CALLS);
+}
+
 // Issue #65 (L-1): one-shot worker that reclaims leaked GET sockets by cycling the
 // whole anchor. stop() tears down the WS + control + media clients and frees every
 // socket it still OWNS; the leaked _getClient handles cannot be closed (their mutex is
@@ -2756,6 +2832,7 @@ void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)
 	{
 		for (int attempt = 0; attempt < kMaxAttempts && _rxTaskHandle != nullptr; ++attempt)
 		{
+			const int64_t openT0 = esp_timer_get_time();
 			esp_err_t err = esp_http_client_open(_getClient, 0);
 			if (err == ESP_OK)
 			{
@@ -2763,6 +2840,11 @@ void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)
 				int status = esp_http_client_get_status_code(_getClient);
 				if (status == 200)
 				{
+					// #100: surface the GET handshake cost — a warm/pre-warmed handle RESUMES (well
+					// under ~400 ms), a cold one pays the S3's ~1s software ECDHE. The metric that
+					// proves the concurrent-burst wall is lifted.
+					const int64_t openMs = (esp_timer_get_time() - openT0) / 1000;
+					ESP_LOGI(TAG, "GET open %lld ms -> %s handshake", (long long)openMs, (openMs > 400) ? "FULL" : "resumed");
 					opened = true;
 					break;
 				}
