@@ -5874,7 +5874,7 @@ void RequestsHandler::loadThreeCxConfig()
 							// build the SDP answer. Advertising the sender's source port (the
 							// old behaviour) sent the handset's audio into a socket nothing
 							// read — the far end heard silence.
-							if (!_mediaBridge.startBridge(handsetIp, handsetPort, callId))
+							if (!_mediaBridge.startBridge(handsetIp, handsetPort, callId, ev.participantId))
 							{
 								queueLog("[3CX] MediaBridge failed to start", true);
 								break;
@@ -6423,7 +6423,7 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 		}
 	}
 	else if (parseCallerRtp(ok, handsetIp, handsetPort) &&
-	         _mediaBridge.startBridge(handsetIp, handsetPort, callId))
+	         _mediaBridge.startBridge(handsetIp, handsetPort, callId, session->getAnchorParticipantId()))
 	{
 		int rxPort = _mediaBridge.receiverPort();
 		sdpAnswer = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);

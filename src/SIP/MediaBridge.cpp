@@ -20,7 +20,7 @@ void MediaBridge::init(RtpReceiver* receiver, RtpSender* sender, AnchorClient* a
 	_anchor   = anchor;
 }
 
-bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort, const std::string& callID)
+bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort, const std::string& callID, const std::string& participantId)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
 
@@ -36,10 +36,11 @@ bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort
 
 	_playoutBuffer.clear();
 	_callID = callID;
+	_participantId = participantId;
 	_active.store(true, std::memory_order_release);
 
 	// Register audio rx callback with the WAN anchor client (inbound HTTP GET stream)
-	_anchor->registerAudioRxCallback([this](const int16_t* samples, size_t count) {
+	_anchor->registerAudioRxCallback([this](const std::string& /*pid*/, const int16_t* samples, size_t count) {
 		if (_active.load(std::memory_order_acquire))
 		{
 			_playoutBuffer.write(samples, count);
@@ -61,7 +62,7 @@ bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort
 		// Write the PCM16 samples to the WAN anchor POST stream
 		if (decodedCount > 0 && _anchor)
 		{
-			_anchor->writeAudio(decoded, decodedCount);
+			_anchor->writeAudio(_participantId, decoded, decodedCount);
 		}
 	});
 
@@ -131,4 +132,5 @@ void MediaBridge::stopBridge()
 
 	_playoutBuffer.clear();
 	_callID.clear();
+	_participantId.clear();
 }

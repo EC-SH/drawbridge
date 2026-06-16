@@ -35,7 +35,7 @@ public:
 	bool answerCall(const std::string& participantId) override;
 	bool dropCall(const std::string& participantId) override;
 	void setEventCallback(EventCallback cb) override;
-	bool writeAudio(const int16_t* pcmSamples, size_t count) override;
+	bool writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count) override;
 	void registerAudioRxCallback(AudioRxCallback cb) override;
 	void tick() override;   // non-blocking; runs the _outboundActive reconcile watchdog (ESP only)
 	void setRewarmIntervalSec(uint32_t sec) override;  // #107: idle TLS re-warm cadence (s); 0 = off

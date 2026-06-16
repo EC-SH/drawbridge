@@ -18,8 +18,10 @@ public:
 	// Set up the bridge dependencies
 	void init(RtpReceiver* receiver, RtpSender* sender, AnchorClient* anchor);
 
-	// Start bridging a handset's RTP stream to the media anchor
-	bool startBridge(const std::string& handsetIp, uint16_t handsetPort, const std::string& callID);
+	// Start bridging a handset's RTP stream to the media anchor. participantId is the upstream
+	// anchor participant this bridge serves — it tags writeAudio() so the anchor routes this
+	// bridge's handset audio to the right POST stream when N calls run concurrently (#100).
+	bool startBridge(const std::string& handsetIp, uint16_t handsetPort, const std::string& callID, const std::string& participantId);
 
 	// Stop all active streams and tear down the bridge
 	void stopBridge();
@@ -45,6 +47,7 @@ private:
 
 	std::atomic<bool> _active{false};
 	std::string       _callID;
+	std::string       _participantId;   // #100: the upstream anchor participant id this bridge serves
 
 	mutable std::mutex _mutex;
 };

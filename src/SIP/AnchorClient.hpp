@@ -22,7 +22,7 @@ public:
 		std::string callerId;
 	};
 	using EventCallback = std::function<void(const CallEvent&)>;
-	using AudioRxCallback = std::function<void(const int16_t* pcmSamples, size_t count)>;
+	using AudioRxCallback = std::function<void(const std::string& participantId, const int16_t* pcmSamples, size_t count)>;
 
 	virtual ~AnchorClient() = default;
 
@@ -56,10 +56,13 @@ public:
 	// Register listener for control channel events
 	virtual void setEventCallback(EventCallback cb) = 0;
 
-	// Stream audio chunks to the active call's POST stream
-	virtual bool writeAudio(const int16_t* pcmSamples, size_t count) = 0;
+	// Stream audio chunks to a specific call's POST stream, keyed by participant id so N
+	// concurrent anchor calls each route to their own upstream stream (#100).
+	virtual bool writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count) = 0;
 
-	// Register callback to receive audio chunks from the active call's GET stream
+	// Register the callback that receives audio chunks from the anchor's GET stream(s). The
+	// callback is invoked with the participant id of the call the audio belongs to, so the
+	// consumer routes each call's inbound audio to its own MediaBridge (#100).
 	virtual void registerAudioRxCallback(AudioRxCallback cb) = 0;
 
 	// Periodic, non-blocking maintenance pump, driven from RequestsHandler::tick()

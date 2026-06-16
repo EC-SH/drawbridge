@@ -70,7 +70,7 @@ public:
 	bool answerCall(const std::string&) override { return false; }
 	bool dropCall(const std::string&) override { return false; }
 	void setEventCallback(EventCallback) override {}   // no events will ever fire
-	bool writeAudio(const int16_t*, size_t) override { return false; }
+	bool writeAudio(const std::string&, const int16_t*, size_t) override { return false; }
 	void registerAudioRxCallback(AudioRxCallback) override {}
 	void tick() override {}                            // no periodic maintenance
 

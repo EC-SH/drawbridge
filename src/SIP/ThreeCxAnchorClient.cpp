@@ -49,7 +49,7 @@ void ThreeCxAnchorClient::setEventCallback(EventCallback)
 {
 }
 
-bool ThreeCxAnchorClient::writeAudio(const int16_t*, size_t)
+bool ThreeCxAnchorClient::writeAudio(const std::string&, const int16_t*, size_t)
 {
 	return false;
 }
@@ -541,8 +541,9 @@ void ThreeCxAnchorClient::setEventCallback(EventCallback cb)
 	_eventCb = cb;
 }
 
-bool ThreeCxAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
+bool ThreeCxAnchorClient::writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count)
 {
+	(void)participantId;   // #100 B1: single POST stream today; B2 routes by participant to its slot
 	if (pcmSamples == nullptr || count == 0)
 	{
 		return false;
@@ -2577,9 +2578,11 @@ void ThreeCxAnchorClient::runRxLoop()
 		rxReads++;
 
 		AudioRxCallback audioCb;
+		std::string partId;
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
 			audioCb = _audioCb;
+			partId = _activeParticipantId;   // #100 B2 will make this the slot's participant id
 		}
 
 		if (audioCb)
@@ -2589,7 +2592,7 @@ void ThreeCxAnchorClient::runRxLoop()
 			const int16_t* pcmSamples = reinterpret_cast<const int16_t*>(readBuf);
 			if (sampleCount > 0)
 			{
-				audioCb(pcmSamples, sampleCount);
+				audioCb(partId, pcmSamples, sampleCount);
 			}
 		}
 	}

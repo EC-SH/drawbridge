@@ -235,7 +235,7 @@ void LoopbackAnchorClient::setEventCallback(EventCallback cb)
 	_eventCb = cb;
 }
 
-bool LoopbackAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
+bool LoopbackAnchorClient::writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count)
 {
 	if (!_connected)
 	{
@@ -243,14 +243,16 @@ bool LoopbackAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
 	}
 
 	AudioRxCallback audioCb;
+	std::string partId;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		audioCb = _audioCb;
+		partId = participantId.empty() ? _activeParticipantId : participantId;
 	}
 
 	if (audioCb && pcmSamples != nullptr && count > 0)
 	{
-		audioCb(pcmSamples, count);
+		audioCb(partId, pcmSamples, count);   // loopback: echo this participant's audio back
 	}
 
 	return true;
