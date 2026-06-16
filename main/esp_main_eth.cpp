@@ -41,6 +41,7 @@
 #include "nvs.h"
 #include "esp_mac.h"     // esp_read_mac, ESP_MAC_ETH
 #include "esp_timer.h"   // esp_timer_get_time
+#include "ntp_time.h"    // ntp_time_start (minimal NIST SNTP client)
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -386,6 +387,11 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "FATAL: No IP after 30 s.  Check cable / PoE / DHCP.");
         return;
     }
+
+    // ── NTP: sync the wall clock from NIST (client-only; see ntp_time.c) ──────────
+    // No RTC battery on this board, so time()/CDR/log timestamps need this. Outbound
+    // UDP only, single NIST host, socket released after each sync. Non-blocking.
+    ntp_time_start();
 
     // ── Task 1D: INFRA mode — start DHCP server on loopback netif if requested
     {
