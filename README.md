@@ -61,9 +61,11 @@ For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building]
 ## Project Status & MVP Roadmap
 
 > [!NOTE]
-> **Current phase**: In Development — Commercial Softswitch Call-Control API Trunk Anchor & Performance Hardening.
+> **Current phase**: In Development — Commercial Softswitch Call-Control API Trunk Anchor, Inbound PSTN, & Performance Hardening.
 >
-> Following the v1.2.0 MVP release, we have integrated a WAN trunk anchor against a commercial softswitch's call-control API (terminating local SIP/RTP and bridging to mTLS HTTPS/WSS audio streams), resolved 27 concurrency/memory defects in the SIP engine, and implemented call setup/teardown latency optimizations.
+> Following the v1.2.0 MVP release, we have integrated a WAN trunk anchor against a commercial softswitch's call-control API (terminating local SIP/RTP and bridging to mTLS HTTPS/WSS audio streams), resolved the audit cluster of concurrency/memory-safety defects in the SIP engine, and landed call setup/teardown latency optimizations. **Inbound PSTN→extension ring-all is now hardware-verified pre-alpha** — a call to the DID forks to every registered extension with two-way audio — and **outbound teardown is hardware-confirmed** (a handset hangup now reliably drops the upstream leg).
+>
+> **Direction note (in progress, #96/#97):** the project is pivoting to an **ESP32-only** focus and deprecating the desktop/server product. The host build and its CI test gate still exist for now (the on-target/QEMU test-harness decision is open in #96), so the desktop entry point and host smoke suite below remain accurate during the transition.
 
 ### ✅ **Completed**
 - Core SIP signaling (REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS)
@@ -74,10 +76,13 @@ For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building]
 - **Call Detail Records (`/api/cdr`)** and **Do-Not-Disturb (`/api/dnd`)**
 - Concurrency & memory-safety hardening, input validation, per-IP rate limiting
 - Configurable memory pools + hardware tiers ([SCALING.md](docs/SCALING.md))
-- Desktop (Linux/Windows) mode + Arduino IDE sketch templates
+- Host (Linux/Windows) build for development/CI + Arduino IDE sketch templates *(the desktop/server product is being deprecated under the ESP32-only pivot, #96/#97; the host build is retained as the dev/test target)*
 - **End-to-end hardware validation on the JC3248W535** (Issue #44) ✅
 - **Commercial softswitch call-control API trunk anchor**: Terminate the handset's RTP locally and bridge audio to an upstream softswitch over mTLS HTTPS/WSS (PCM16 @ 8kHz)
-- **Inbound PSTN→extension calls (Mode 1)** via the trunk anchor (delayed-offer INVITE toward the extension; *hardware-verified pre-alpha — two-way audio, bridging, and DTMF working; soak/stability hardening in progress*)
+- **Outbound trunk teardown** — a handset hangup reliably drops the upstream PSTN leg (own-leg correlation + reconcile watchdog; *hardware-confirmed*)
+- **Inbound PSTN→extension ring-all (Mode 1)** via the trunk anchor — a PSTN call to the DID forks to **every registered extension** with two-way audio (*hardware-verified pre-alpha — ring-all, bridging, and DTMF working; soak/stability hardening in progress*)
+- **Anchor performance hardening** — TLS session resumption + warm cached control session, media cut-through (both-ways pre-warm + outbound TLS resumption), playout-buffer latency cap+drain, LWIP IRAM tuning, and a WS-event worker pool, dropping connect/teardown from ~1 s toward ~100 ms two-way audio
+- **Soak observability** — `/api/status` now exposes RTP playout underrun/overrun counters, heap/PSRAM/session-pool stats, anchor connection state + estimated TLS socket count, TLS full-vs-resumed handshake counts, and last-boot reset reason
 - **SIP digest authentication** with per-extension secrets (`SipSecretStore`) and **open / learn / secure registrar modes** (`RegistrarMode`)
 - **Call forwarding**: unconditional (CFU), on-busy (CFB), no-answer (CFNA)
 - **Ring/hunt groups** (`/api/group`)
@@ -88,12 +93,13 @@ For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building]
 - **Call Setup and Teardown Latency Optimizations**: Parsed status directly from WS payloads, implemented exponential back-off on retries, configured HTTP timeouts, and optimized loopback simulation delays (Issue #29)
 
 ### ⏳ **In Progress / Backlog**
+- **ESP32-only pivot** — deprecate the desktop/server product; decide the on-target/QEMU test harness that replaces the host CI gate (Issue #96)
+- **Configurable TLS re-warm heartbeat** — periodic idle re-warm of the POST audio TLS session so even the first call after a long idle gap resumes instead of cold-handshaking; interval will be user-configurable (Issue #107, *being implemented now*)
+- Inbound PSTN soak / stability hardening (post-#102 ring-all)
 - Arduino IDE platform-guard verification (Issue #41)
-- Raise UDP RX mailbox + multi-IP load testing (Issues #78, #79)
-- SD-card support (Issue #80)
+- Raise UDP RX mailbox + multi-IP load testing
+- SD-card support
 - Zero-Touch Phone Auto-Provisioning (#35), Live SIP Tracer (#32), PCAP dump (#33)
-- WS Event Task Stack Size optimization (#86)
-- Desktop/Host Media Transport Support (#87)
 
 **For detailed issue tracking and resolved items, see [ISSUES.md](ISSUES.md) and the [GitHub Issue Tracker](../../issues).**
 
@@ -122,7 +128,6 @@ For development or custom configs (ESP-IDF v6.0.1+ or Arduino). See **[Building]
   * [JC3248W535EN Smart Display](#jc3248w535en-smart-display)
   * [W5500 Ethernet & PoE](#w5500-ethernet--poe)
   * [ESP32-S3 (Arduino IDE)](#esp32-s3-arduino-ide)
-  * [Desktop (Linux / Windows)](#desktop-mode)
 * [API Reference](#api-reference)
 * [Configuration](#configuration)
 * [License](#license)

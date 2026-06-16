@@ -43,7 +43,7 @@ Cross-references:
 | Security (HTTP) | Same-origin/CSRF check, 16 KB body cap, `SO_RCVTIMEO`, no wildcard CORS | `ARCHITECTURE.md` §5 |
 | Dev / debug | Desktop (Linux/Windows) host build & CI smoke harness; SIP load tester + liveness/SSH/HTTP smoke scripts | `main.cpp`, `tests/load/sip_stress.py`, `.smoke/`, `tests/http/test_api.sh` |
 | **Config over SSH** | **SSH "sysop terminal"** — two interchangeable backends behind one façade: wolfSSH (display build, hardware-verified end-to-end) and the from-scratch **littlessh** PSA/mbedTLS backend (eth/wifi/lan8720 builds). ANSI/TUI hub (banner → System Monitor · Network · PBX Config — incl. the shipped **Trunk** tab · Security · Reports/CDR · About). Ring groups, call-forward, DND, and trunk credentials are configurable over SSH. | `src/Helpers/Tui.cpp`, `src/Helpers/SshServer.cpp`, `src/Helpers/SshServerLittlessh.cpp`, `components/littlessh/`, `cmake/patch_wolfssl.py` |
-| **WAN trunk anchor** | Outbound calls beyond the LAN via a commercial softswitch's HTTPS call-control API (`9`-prefix dial plan, mTLS/WSS, on-device µ-law⇄PCM16 `MediaBridge`), plus **inbound PSTN→extension (Mode 1)** — delayed-offer INVITE, answer-on-handset-200 (*inbound not yet hardware-verified*) | `src/SIP/AnchorClient.hpp`, `ThreeCxAnchorClient.cpp`, `MediaBridge.cpp`, [ARCHITECTURE.md](ARCHITECTURE.md) §6 |
+| **WAN trunk anchor** | Outbound calls beyond the LAN via a commercial softswitch's HTTPS call-control API (`9`-prefix dial plan, mTLS/WSS, on-device µ-law⇄PCM16 `MediaBridge`; outbound teardown hardware-confirmed), plus **inbound PSTN→extension ring-all (Mode 1)** — delayed-offer INVITE forked to every registered extension, answer-on-handset-200 (*hardware-verified pre-alpha; soak hardening in progress*). Performance-hardened with TLS session resumption, both-ways media cut-through, and a capped/drained playout buffer. | `src/SIP/AnchorClient.hpp`, `MediaBridge.cpp`, `PlayoutBuffer.cpp`, [ARCHITECTURE.md](ARCHITECTURE.md) §6 |
 | **PBX call features** | CDR ring, per-extension **DND**, **call-forward** (CFU/CFB/CFNA), **ring groups** (ring-all / hunt), **blind transfer** (REFER), DTMF star-codes (`*60/*80/*72/*73/*69/*11`) | `src/SIP/RequestsHandler.cpp`, `CallDetailRecord.hpp`, `PbxConfig.hpp` |
 
 ---
@@ -232,9 +232,12 @@ all later config growth.)
 > vendor-neutral engineering design for the raw-SIP-trunk (B2BUA / mini-SBC) variant — media model,
 > digest-UAC reuse, NAT-for-trunks, security, dial-plan, config surface, and phased build order.
 
-> **Status (2026-06-12):** the **call-control-API variant of this track is now built** — the WAN
-> trunk anchor (§1, [ARCHITECTURE.md](ARCHITECTURE.md) §6) ships outbound trunk calls **and**
-> inbound PSTN→extension Mode 1 via a commercial softswitch's HTTPS call-control API. The
+> **Status (2026-06-15):** the **call-control-API variant of this track is now built and hardware-verified** —
+> the WAN trunk anchor (§1, [ARCHITECTURE.md](ARCHITECTURE.md) §6) ships outbound trunk calls (teardown
+> hardware-confirmed) **and** inbound PSTN→extension Mode 1 **ring-all** (forks to every registered
+> extension; hardware-verified pre-alpha) via a commercial softswitch's HTTPS call-control API, with
+> performance hardening (TLS session resumption, both-ways media cut-through, capped/drained playout
+> buffer) bringing connect/teardown toward ~100 ms. The
 > **raw-SIP-trunk (B2BUA over SIP) variant below remains unbuilt.** This track consciously extends
 > pocket-dial from a *LAN-only signalling registrar* into a small **SIP edge gateway / mini-SBC**
 > that trunks **up to a single commercial softswitch / CPaaS fabric** (and through it to the PSTN),

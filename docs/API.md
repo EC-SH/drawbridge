@@ -118,9 +118,31 @@ Returns a detailed JSON object representing the active state of the SIP registra
       "state": "Connected",
       "duration": "03:45"
     }
-  ]
+  ],
+  "telemetry": {
+    "anchorConnected": true,
+    "mediaActive": true,
+    "tlsSocketsEst": 5,
+    "tlsFullHandshakes": 1,
+    "tlsResumedHandshakes": 7,
+    "playoutUnderruns": 3,
+    "playoutOverruns": 0,
+    "clientPool": { "used": 2, "cap": 32 },
+    "sessionPool": { "used": 1, "cap": 8 },
+    "freeHeap": 184320,
+    "minFreeHeap": 151200,
+    "psramFree": 8200000,
+    "psramTotal": 8388608,
+    "resetReason": "poweron"
+  }
 }
 ```
+
+> [!NOTE]
+> The `telemetry` object is **soak/health instrumentation** (issues #81-84). The anchor, media,
+> and pool counters are read from the registrar's lock-free snapshot; the heap/PSRAM/reset-reason
+> fields are read from the platform. On the host build these system fields emit `0` / `"host"` so
+> the JSON schema is identical everywhere.
 
 #### Field Schema Definitions
 
@@ -140,6 +162,21 @@ Returns a detailed JSON object representing the active state of the SIP registra
 | `sessions[].callee` | String | Target extension receiving the call. |
 | `sessions[].state` | String | Active session state: `Invited`, `Connected`, `Busy`, `Unavailable`, `Cancel`, `Bye`. |
 | `sessions[].duration` | String | Active call length formatted as `MM:SS` or `HH:MM:SS`. |
+| `telemetry` | Object | Soak/health instrumentation (see note above). |
+| `telemetry.anchorConnected` | Boolean | Whether the WAN trunk anchor's control connection is up. |
+| `telemetry.mediaActive` | Boolean | Whether an anchor media bridge is currently streaming. |
+| `telemetry.tlsSocketsEst` | Integer | Estimated anchor TLS sockets in use (≈3 persistent + 2 per active call). |
+| `telemetry.tlsFullHandshakes` | Integer | Count of full (cold) TLS handshakes to the anchor since boot. |
+| `telemetry.tlsResumedHandshakes` | Integer | Count of resumed TLS handshakes (the session-resumption win — should dominate). |
+| `telemetry.playoutUnderruns` | Integer | RTP `PlayoutBuffer` underruns (far-end audio starved; emitted comfort noise). |
+| `telemetry.playoutOverruns` | Integer | RTP `PlayoutBuffer` overruns (oldest samples dropped to cap latency). |
+| `telemetry.clientPool` | Object | Registrar client pool occupancy: `{ "used": N, "cap": M }`. |
+| `telemetry.sessionPool` | Object | Call-session pool occupancy: `{ "used": N, "cap": M }`. |
+| `telemetry.freeHeap` | Integer | Current free internal heap, bytes (ESP only; `0` on host). |
+| `telemetry.minFreeHeap` | Integer | Low-water free internal heap since boot, bytes (ESP only). |
+| `telemetry.psramFree` | Integer | Free PSRAM, bytes (ESP only). |
+| `telemetry.psramTotal` | Integer | Total PSRAM, bytes (ESP only). |
+| `telemetry.resetReason` | String | Last-boot reset cause: `poweron`, `sw`, `panic`, `brownout`, `task_wdt`, `int_wdt`, `cpu_lockup`, … (`"host"` on host builds). |
 
 ---
 

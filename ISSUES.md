@@ -8,18 +8,33 @@ This document serves as the active issue tracker and architectural roadmap for *
 
 This backlog is prioritized by architectural dependency and deployment urgency.
 
-### 🔴 Critical Priority: Commercial-Softswitch Call Control & Media Loopback (WAN Bridge)
+### 🔴 Critical Priority: Commercial-Softswitch (3CX) Call Control & Media Loopback (WAN Bridge)
 
-> **Status (2026-06-13):** The core WAN-anchor capability — RTP receive/decode (#61), the
-> call-control client (#63), and bridge orchestration (#64) — **shipped via PR #39** (merged to
-> `main`, commits `46d27a3`/`f3a4efa`) and is hardware-confirmed. Those three are now under
-> [Resolved Issues](#resolved-issues). The items below remain genuinely open follow-ups.
+> **Status (2026-06-15):** The core WAN-anchor capability — RTP receive/decode (#61), the
+> call-control client (#63), and bridge orchestration (#64) — **shipped via PR #39** and is
+> hardware-confirmed. Since then, on `main` (newest first): **inbound PSTN ring-all (#102/#80)**
+> forks an inbound DID call to every registered extension with two-way audio (**hardware-verified
+> pre-alpha** — this cleared the project's inbound-PSTN capability gate); **outbound teardown
+> (#39/#40, #95)** is hardware-confirmed; and a **performance-hardening wave** landed — TLS session
+> resumption + warm control session (#93/#99), media cut-through both-ways pre-warm + outbound TLS
+> resumption (#105), playout-buffer cap+drain (#104), LWIP IRAM tuning (#98), and the WS-event
+> worker pool (#101). Soak telemetry now ships in `/api/status` (#81-84/#103). Connect/teardown
+> dropped from ~1 s toward ~100 ms. The items below remain genuinely open follow-ups.
+>
+> **In flight (not shipped):** a **configurable TLS re-warm heartbeat (#107)** — periodic idle
+> re-warm of the POST audio TLS session so even the first call after a long idle gap resumes instead
+> of cold-handshaking; the interval will be user-configurable. Being implemented now.
+>
+> **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating
+> the desktop/server product. PR #97 removed the install/quickstart deadweight and the desktop
+> framing; the host build + its CI test gate are retained until an on-target/QEMU harness replaces
+> them (open in #96). This affects the host-development items below.
 
-#### 🔴 Issue #86: WAN Anchor: Optimize WS Event Task Stack Size
-* **Status**: ⏳ Open / Planned
+#### 🟢 Issue #86: WAN Anchor: Optimize WS Event Task Stack Size
+* **Status**: ✅ Resolved (PR #101)
 * **Labels**: `performance`, `anchor`, `memory-safety`
 * **Severity**: Critical
-* **Description**: The WebSocket task stack is currently set to 16,384 bytes to accommodate blocking HTTP GET calls (like `getParticipantStatus`) executing directly inside the WebSocket callback thread. Move these blocking calls off the WebSocket thread by dispatching events asynchronously to an event loop/queue, allowing the task stack to shrink to ~4-6 KB.
+* **Description**: The WebSocket task stack was sized at 16,384 bytes to accommodate blocking HTTP GET calls (like `getParticipantStatus`) executing directly inside the WebSocket callback thread. PR #101 moved the blocking WS-event work off the event thread to a **worker pool** (also making the anchor pool-ready for multi-call), allowing the event task stack to shrink.
 
 #### 🔴 Issue #29: Anchor/Loopback: Call Setup and Teardown Latency Optimizations
 * **Status**: ✅ Resolved (Implemented on branch `optimize-call-performance`)
@@ -31,14 +46,19 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 
 ### 🟡 High Priority: Platform Compatibility & Host Development
 
+> **Note (#96/#97):** the ESP32-only pivot deprecates the desktop/server product, which
+> de-prioritizes the two host-media items below — they are likely **WON'T-DO** unless the host
+> build is kept as a full runtime target rather than just a dev/test harness. Pending the #96
+> test-harness decision.
+
 #### 🟡 Issue #62: Real Desktop (host) Media Transport
-* **Status**: ⏳ Open / Planned
+* **Status**: ⏳ Open / Planned (likely de-scoped by the ESP32-only pivot, #96/#97)
 * **Labels**: `api-integration`, `media`, `desktop`
 * **Severity**: High
 * **Description**: Currently, the `RtpSender` socket and pacing are gated behind `#if ESP_PLATFORM`, leaving desktop builds with no-op stubs. Implement standard POSIX UDP socket writes and a platform-independent 20ms pacing loop to support audio bridging on desktop (Linux/Windows) gateway installations.
 
 #### 🟡 Issue #87: WAN Anchor: Implement Desktop/Host Media Transport Support
-* **Status**: ⏳ Open / Planned
+* **Status**: ⏳ Open / Planned (likely de-scoped by the ESP32-only pivot, #96/#97)
 * **Labels**: `api-integration`, `media`, `desktop`, `anchor`
 * **Severity**: High
 * **Description**: `ThreeCxAnchorClient` is currently completely stubbed out on host/desktop builds. Refactor the network socket, task, and HTTP/WebSocket client interfaces to use POSIX/Windows compatible headers (instead of `esp_websocket_client` / `esp_http_client`), allowing the WAN-anchor gateway integration to be testable and runnable on local PCs.
@@ -140,6 +160,48 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 > [L-6] virtual-peer `make_shared` in the hot path — are all **resolved** and closed on GitHub.
 > (These audit-renumbered issues are tracked on the GitHub issue tracker; they are distinct from
 > this document's older internal numbering.)
+
+### 🟢 Issue #80 / #102: Inbound PSTN Ring-All (Mode 1)
+* **Status**: ✅ Resolved (PR #102) — **hardware-verified pre-alpha**
+* **Labels**: `api-integration`, `anchor`, `sip`, `media`, `hardware-testing`
+* **Description**: An inbound PSTN call to the DID now forks a delayed-offer INVITE to **every
+  registered extension** (ring-all); the first 200 OK wins (losing forks CANCELed), the anchor leg is
+  answered on the handset's 200, and the `MediaBridge` starts against the answering handset. Two-way
+  audio and DTMF confirmed on hardware. Root cause of the prior failure: a route-point-already-Connected
+  upset was misclassified as outbound by #43. This cleared the project's inbound-PSTN capability gate;
+  soak/stability hardening continues.
+
+### 🟢 Issue #39 / #40 / #95: Reliable Outbound Anchor Teardown
+* **Status**: ✅ Resolved (PR #39, #95) — hardware-confirmed
+* **Labels**: `api-integration`, `anchor`, `bug`, `critical`
+* **Description**: A handset hangup now reliably drops the upstream PSTN leg. Root fixes: control our
+  **own** leg (`makecall` result id, else dest-suffix) rather than the WS-surfaced far leg; absorb the
+  anchor ACK; well-formed teardown BYE; store the participant id on the answered session; and free the
+  audio sockets first so the drop worker can spawn (mbedTLS moved to external/PSRAM allocation, #95).
+  Plus a reconcile watchdog and the participant-action `application/json "{}"` body fix.
+
+### 🟢 Issue #91: Register-Beep INVITE Transaction Not Completed on Teardown
+* **Status**: ✅ Resolved (PR #91)
+* **Labels**: `bug`, `sip`
+* **Description**: The register-beep INVITE transaction was never completed on teardown because the
+  beep Call-ID lookup never matched — `SipMessage`'s header getter returns the whole `"Name: value"`
+  line, not the bare value. Fixed the lookup.
+
+### 🟢 Issues #93 / #99 / #105 / #104 / #98 / #101 / #81-84 / #103: Anchor Performance & Observability
+* **Status**: ✅ Resolved (PRs #99, #105, #104, #98, #101, #103) — hardware-confirmed
+* **Labels**: `performance`, `anchor`, `observability`, `media`
+* **Description**: A performance-hardening + observability wave on the WAN anchor:
+  * **#93/#99** TLS session resumption + warm cached control session + keepalive (the S3 has AES/SHA
+    but **no ECC/ECDSA hardware**, so the ECDHE handshake is software ~1 s; resumption is the
+    workaround — resumed connect ~682 ms → ~116 ms).
+  * **#105** Media cut-through: both-ways pre-warm + outbound TLS resumption to kill answer-time dead
+    air (the upstream won't route a pre-Connect POST, so the outbound stream is primed one-shot at
+    answer), with handshake telemetry.
+  * **#104** Playout-buffer cap + drain (≤200 ms ceiling, oldest-sample drop) to kill accumulated
+    one-way latency on a bursty TCP far-end; adds `TCP_NODELAY`.
+  * **#98** LWIP IRAM optimization for lower RTP/SIP jitter.
+  * **#101** Move blocking WS-event work to a worker pool (pool-ready for multi-call); see #86.
+  * **#81-84/#103** Soak telemetry in `/api/status` (anchor/TLS/playout/pool/heap-PSRAM/reset-reason).
 
 ### 🟢 Issue #48: `RequestsHandler` Mutex Lock Contention under Status Polling
 * **Status**: ✅ Resolved (v1.3.0 / `32166b5` & `f09a98c`)
