@@ -77,6 +77,15 @@ public:
 		fullOut = 0;
 		resumedOut = 0;
 	}
+
+	// #107: operator-configurable cadence (SECONDS) for the idle TLS re-warm heartbeat.
+	// The anchor periodically refreshes its media-stream TLS session WHILE IDLE so even the
+	// first call after a long quiet stretch resumes its session instead of paying a cold
+	// handshake at connect. 0 disables it. This is a SETTING, not a constant, so a different
+	// upstream provider's session-ticket lifetime (or a change in the current one) is a
+	// config edit rather than a recompile. Default no-op for anchors that don't stream media
+	// (loopback); the real implementation is in ThreeCxAnchorClient.
+	virtual void setRewarmIntervalSec(uint32_t sec) { (void)sec; }
 };
 
 #endif // ANCHOR_CLIENT_HPP

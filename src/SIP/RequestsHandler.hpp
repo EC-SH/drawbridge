@@ -205,6 +205,11 @@ public:
 	void setRegistrarMode(RegistrarMode mode);
 	RegistrarMode getRegistrarMode() const;
 
+	// #107: anchor TLS re-warm cadence (MINUTES); 0 = disabled. Persists to NVS and pushes
+	// the new cadence (as seconds) into the live anchor immediately. getter is lock-free.
+	void setRewarmMinutes(uint16_t minutes);
+	uint16_t getRewarmMinutes() const;
+
 	// ── Device registry (STAGE 2: Learn-mode adoption) ────────────────────────────
 	// Adopted-device lifecycle for the TUI. A device is keyed by its 12-hex MAC and
 	// remembers the extension it registered as and whether it has been promoted from
@@ -756,6 +761,16 @@ private:
 #endif
 	void loadRegistrarMode();             // boot-time reload from NVS; caller holds _mutex
 	void persistRegistrarMode();          // write-through after a mode change; holds _mutex
+
+	// ── #107: anchor TLS re-warm cadence (minutes) ──────────────────────────────────
+	// PBX-wide cadence at which the WAN anchor re-warms its IDLE media TLS session so even the
+	// first call after a long idle still resumes (vs. a ~1 s software-ECDHE cold handshake).
+	// 0 = disabled. Persisted to NVS "pbxcfg" (key "rwm_min"); pushed to the live anchor (as
+	// seconds) at boot and on change. Atomic so the dashboard/TUI getter is lock-free. Default
+	// 60 min. One PBX-wide value today (single active anchor); per-provider when #100 lands.
+	std::atomic<uint16_t> _rewarmMinutes{60};
+	void loadRewarmInterval();            // boot-time reload from NVS (ctor; single-threaded)
+	void persistRewarmInterval();         // write-through after a change; caller holds _mutex
 
 	// ── Device registry (STAGE 2: Learn-mode adoption) ────────────────────────────
 	// Adopted devices keyed by 12-hex MAC. Bounded by POCKETDIAL_MAX_CLIENTS (a flood
