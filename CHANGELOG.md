@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased - 2026-06-15
+
+WAN-anchor inbound PSTN, teardown reliability, performance hardening, and soak observability.
+**Inbound PSTN→extension ring-all is now hardware-verified pre-alpha** (the project's last
+capability gate); **outbound teardown is hardware-confirmed**. Connect/teardown latency dropped
+from ~1 s toward ~100 ms two-way audio.
+
+### Added
+- **Inbound PSTN ring-all (Mode 1)** (#102 / #80): an inbound call to the DID forks a delayed-offer
+  INVITE to **every registered extension**; the first 200 OK wins (losing forks CANCELed), the anchor
+  leg is answered on the handset's 200, and the media bridge starts against the answering handset.
+  Hardware-verified pre-alpha — ring-all, two-way audio, and DTMF confirmed; soak hardening ongoing.
+- **Soak telemetry in `/api/status`** (#81-84 / #103): a `telemetry` object exposing anchor
+  connection state + estimated TLS socket count, TLS full-vs-resumed handshake counts, RTP playout
+  underrun/overrun counters, client/session pool occupancy, heap/PSRAM headroom, and last-boot
+  reset reason. Host build emits `0`/`"host"` so the schema is stable. See [docs/API.md](docs/API.md).
+
+### Changed / Performance
+- **TLS session resumption + warm cached control session + keepalive** (#93 / #99): the S3 has no
+  ECC/ECDSA hardware, so the ECDHE handshake is software (~1 s); resumption is the workaround. A
+  resumed connect drops from ~682 ms to ~116 ms.
+- **Media cut-through** (#105): both-ways pre-warm + outbound TLS resumption to kill answer-time dead
+  air (the upstream won't route a pre-Connect POST, so the outbound stream is primed one-shot at
+  answer), plus handshake telemetry.
+- **Playout-buffer latency fix** (#104): cap + drain the `PlayoutBuffer` (≤200 ms ceiling, oldest-
+  sample drop on overrun) so a bursty TCP far-end stream can't accumulate hundreds of ms of one-way
+  latency. Adds `TCP_NODELAY`.
+- **WS-event worker pool** (#101): move blocking WebSocket-event work off the event thread to a
+  worker pool (pool-ready for multi-call), shrinking the event task stack.
+- **LWIP IRAM optimization** (#98): place hot LWIP paths in IRAM for lower RTP/SIP jitter.
+
+### Fixed
+- **Reliable outbound teardown** (#39 / #40): a handset hangup now reliably drops the upstream PSTN
+  leg, via own-leg correlation (control our own leg, not the WS-surfaced far leg) plus a reconcile
+  watchdog and the associated race fixes. Hardware-confirmed.
+- **PSTN leg freed on hangup** (#95): drop the upstream leg by freeing audio sockets first
+  (the drop worker previously couldn't spawn under internal-heap exhaustion; mbedTLS now uses
+  external/PSRAM allocation). Hardware-confirmed ~1 s teardown.
+- **Register-beep INVITE transaction** (#91): complete the register-beep INVITE transaction on
+  teardown (the beep Call-ID lookup never matched because the header getter returned the whole line).
+- **Audit cluster** (#41-#74, landed as #77-#89): concurrency & memory-safety, security hardening,
+  lock-discipline/perf, BLF-stays-lit-on-hold, a vendor-neutrality scrub of the public docs, and
+  expanded test coverage.
+
+### Recovered features (#37)
+- Call Hold/resume, Call Park, Page/Zone paging, BLF/Presence, and the telephony-provider credential
+  layer (also itemized in the recovered/all-features entry below).
+
+### Direction (in progress — not shipped)
+- **ESP32-only pivot** (#96 / #97): deprecating the desktop/server product; #97 removed install/
+  quickstart deadweight and the desktop "run on a computer/Pi" framing. The host build and its CI
+  test gate are retained until an on-target/QEMU harness replaces them (open question in #96).
+- **Configurable TLS re-warm heartbeat** (#107): periodic idle re-warm of the POST audio TLS session
+  so even the first call after a long idle gap resumes instead of cold-handshaking; interval to be
+  user-configurable. Being implemented now.
+
 ## Unreleased (fix/anchor-trunk-teardown) - 2026-06-13
 
 Pre-existing commercial-softswitch outbound-trunk (WAN-anchor) teardown bugs — surfaced when the

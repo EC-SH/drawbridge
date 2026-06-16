@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-pocket-dial is a self-contained SIP PBX that runs on a single ESP32-S3 (no router/SIP trunk needed) **and** as a desktop/server binary. One C++17 SIP engine (`src/`) is compiled three ways: ESP-IDF firmware, Arduino sketches, and a host executable. RTP media flows **peer-to-peer** between phones; the device only brokers signaling.
+pocket-dial is a self-contained SIP PBX that runs on a single ESP32-S3 (no router/SIP trunk needed). One C++17 SIP engine (`src/`) is compiled three ways: ESP-IDF firmware, Arduino sketches, and a host executable. For LAN extension↔extension calls RTP media flows **peer-to-peer** between phones (the device only brokers signaling); when a call goes out the WAN trunk anchor, the device terminates the handset's RTP locally and bridges it (see the WAN-anchor notes below).
+
+> **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating the desktop/server product. PR #97 removed the install/quickstart deadweight and the "run it on a computer/Pi" framing. **The host build has NOT been removed** — `main.cpp` still exists and the host GoogleTest/cppcheck/HTTP-smoke job is still the blocking CI gate (`.github/workflows/ci.yml`). The open question (tracked in **#96**) is whether to gut the host harness entirely or port the suite to on-target Unity/QEMU; until on-target coverage replaces it, the host gate stays. Treat the "compiled three ways / Host is what CI gates on" framing below as a transitional state, not a permanent commitment.
 
 ## Build & test
 
