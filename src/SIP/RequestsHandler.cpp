@@ -50,6 +50,12 @@ namespace
 	// How long an unanswered leg rings before the no-answer action fires (CFNA
 	// forward, or advancing to the next hunt-group member). Polled from tick().
 	constexpr auto NO_ANSWER_TIMEOUT = std::chrono::seconds(20);
+	// #100: after the 200 OK goes to the handset on an outbound anchor call, how long we wait for
+	// its ACK before reaping the call as abandoned. A call that bridges LATE (past the caller's
+	// own INVITE deadline, under a cold-handshake burst) finds the handset already gone — it never
+	// ACKs, so without this the 3CX leg + media bridge linger forever (a zombie that survives a
+	// board reboot and must be killed by hand on the PBX). On a healthy call the ACK lands in ~1 s.
+	constexpr auto ANCHOR_ACK_TIMEOUT = std::chrono::seconds(15);
 
 	// NVS namespaces / keys for the persisted PBX config and CDR ring. Kept short
 	// (NVS keys are capped at 15 chars). Forward/group entries are stored one blob
@@ -1756,6 +1762,9 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 	// silence is purely an RTP/media problem, not a SIP one.
 	if (session.value()->isAnchor())
 	{
+		// #100: the handset ACKed our 200 — the call is genuinely established, so disarm the
+		// post-200 ACK-deadline reaper (else tick() would tear down a live call at the deadline).
+		session.value()->clearRingTimer();
 		queueLog("[3CX] Handset ACK received — SIP dialog CONNECTED for " + std::string(data->getCallID()));
 		// The server is the UAS for the handset leg of a WAN-anchor (trunk) call, so
 		// this ACK confirms our 200 OK and is the end of the transaction — ABSORB it.
@@ -3744,7 +3753,14 @@ void RequestsHandler::tick()
 		std::vector<std::string> expiredCallIds;
 		for (const auto& [callID, session] : _sessions)
 		{
-			if (session->isRingExpired(now) && session->getState() == Session::State::Invited)
+			// Invited = no-answer (CFNA/hunt/anchor-never-connected). #100: a CONNECTED OUTBOUND
+			// anchor whose ACK deadline expired is an abandoned call (handset gone, never ACKed) —
+			// reap it too so its 3CX leg + bridge don't zombie.
+			const bool connectedAbandonedAnchor =
+				session->getState() == Session::State::Connected &&
+				session->isAnchor() && !session->isAnchorInbound();
+			if (session->isRingExpired(now) &&
+			    (session->getState() == Session::State::Invited || connectedAbandonedAnchor))
 			{
 				expiredCallIds.push_back(callID);
 			}
@@ -3770,6 +3786,34 @@ void RequestsHandler::tick()
 				queueLog("[3CX] Inbound: no answer from " +
 				         std::to_string(session->getPendingTargets().size()) + " extension(s) — cancelled");
 				endCall(callID, session->getAnchorParticipantId(), "", "inbound no answer");
+				continue;
+			}
+
+			// #100: plain OUTBOUND anchor call that expired — either 3CX never connected it (still
+			// Invited) or the handset never ACKed our 200 (Connected but abandoned). Either way DROP
+			// the 3CX leg + free its media bridge so it doesn't linger as a zombie on the PBX (which
+			// erodes the key's concurrent-call budget and otherwise needs a manual kill). 503 the
+			// caller only while it's still ringing (a Connected-abandoned handset is already gone).
+			if (session->isAnchor())
+			{
+				const std::string part = session->getAnchorParticipantId();
+				MediaBridge* b = bridgeForParticipant(part);
+				if (!b) b = bridgeForCallId(callID);
+				if (b) b->stopBridge();
+				if (!part.empty()) asyncDropCall(part);
+				const bool stillRinging = (session->getState() == Session::State::Invited);
+				if (stillRinging && session->getInviteMessage())
+				{
+					auto invite = session->getInviteMessage();
+					auto resp = getMessageFromPool(invite->toString(), invite->getSource());
+					resp->setHeader("SIP/2.0 503 Service Unavailable");
+					resp->clearBody();
+					resp->setContact(buildContact(std::string(invite->getToNumber())));
+					_outbox.emplace_back(invite->getSource(), std::move(resp));
+				}
+				queueLog(std::string("[3CX] anchor call reaped (no ") + (stillRinging ? "answer" : "ACK") +
+				         ") — dropped leg " + part);
+				endCall(callID, session->getSrc() ? session->getSrc()->getNumber() : "", part, "anchor reap");
 				continue;
 			}
 
@@ -5932,6 +5976,11 @@ void RequestsHandler::loadThreeCxConfig()
 						session->setState(Session::State::Connected);
 						// Remember the upstream (3CX) participant so the handset's BYE drops it by id.
 						session->setAnchorParticipantId(ev.participantId);
+						// #100: re-arm as an ACK deadline. If the handset never ACKs this 200 (it
+						// bridged late, past the caller's deadline, and the phone already gave up),
+						// tick() reaps the call and drops the 3CX leg + bridge — else it zombies on
+						// 3CX (survives a board reboot). onAck clears it on a healthy call (~1 s).
+						session->armRingTimer(std::chrono::steady_clock::now() + ANCHOR_ACK_TIMEOUT);
 					}
 					else
 					{
@@ -6162,11 +6211,16 @@ void RequestsHandler::routeAnchorCall(const std::shared_ptr<SipMessage>& data,
                                       const std::string& dialed)
 {
 	// #100: refuse a new anchor call only when EVERY media bridge is busy (all concurrent slots in
-	// use) — was "any single bridge active", which capped the box at one call.
+	// use). Use 503 Service Unavailable + Retry-After, NOT 486 Busy Here: 486 means the CALLED PARTY
+	// is busy (a final, don't-retry-this-party answer), but here the dialed PSTN number isn't busy —
+	// OUR gateway is at its concurrent-call capacity. 503 tells the caller's UA / any upstream this is
+	// a temporary gateway condition to retry or reroute, which is the correct gateway-at-capacity
+	// semantic and lets a phone/trunk fail over instead of giving up on the destination.
 	if (allBridgesBusy())
 	{
 		std::shared_ptr<SipMessage> responseObj = getMessageFromPool(data->toString(), data->getSource());
-		responseObj->setHeader("SIP/2.0 486 Busy Here");
+		responseObj->setHeader("SIP/2.0 503 Service Unavailable");
+		responseObj->addHeader("Retry-After", "5");
 		responseObj->clearBody();
 		responseObj->setContact(buildContact(caller->getNumber()));
 		endHandle(data->getFromNumber(), responseObj);
@@ -6198,6 +6252,10 @@ void RequestsHandler::routeAnchorCall(const std::shared_ptr<SipMessage>& data,
 	// treat the 200 as a foreign dialog and never leave the ringing state.
 	std::string localTag = IDGen::GenerateID(9);
 	newSession->setLocalTag(localTag);
+	// #100: arm a no-answer timer so an outbound anchor call that 3CX never connects (makecall
+	// accepted but the leg never reaches Connected) is reaped by tick() — its 3CX leg dropped —
+	// instead of lingering as a zombie. Re-armed as an ACK deadline once we send the 200 OK.
+	newSession->armRingTimer(std::chrono::steady_clock::now() + NO_ANSWER_TIMEOUT);
 	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
 	sendRinging(data, activeIp, localTag, "[3CX]");
 

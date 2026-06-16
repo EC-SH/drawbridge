@@ -204,6 +204,10 @@ def main():
     dest = sys.argv[3] if len(sys.argv) > 3 else "9807"
     hold = int(sys.argv[4]) if len(sys.argv) > 4 else 8
     base = int(sys.argv[5]) if len(sys.argv) > 5 else 191
+    # Inter-INVITE stagger (s). 0.1 = a near-simultaneous burst (stresses cold-handshake setup);
+    # ~1.5 = realistic phased dialing so each call's TLS handshakes finish before the next starts
+    # (tests STEADY-STATE concurrency — how many calls the box can HOLD at once).
+    stagger = float(sys.argv[6]) if len(sys.argv) > 6 else 0.1
     lip = local_ip_for(board)
     print("[uac] %s -> %s, %d concurrent calls to %s, hold %ds, ext %d.." % (lip, board, n, dest, hold, base))
     calls = [Call(board, base + i, dest, hold, lip) for i in range(n)]
@@ -219,9 +223,9 @@ def main():
     # the concurrent-call capacity measurement.
     base_st = board_status(board)
     threads = [threading.Thread(target=c.run) for c in calls]
-    for t in threads: t.start(); time.sleep(0.1)
+    for t in threads: t.start(); time.sleep(stagger)
     # Sample the board mid-hold (after setups settle) for the peak media-plane snapshot.
-    time.sleep(0.1 * n + max(1.5, hold * 0.5))
+    time.sleep(stagger * n + max(1.5, hold * 0.5))
     peak_st = board_status(board)
     for t in threads: t.join()
     after_st = board_status(board)
