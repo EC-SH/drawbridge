@@ -185,6 +185,7 @@ void RequestsHandler::initHandlers()
 	_handlers.emplace(SipMessageTypes::BYE,               std::bind(&RequestsHandler::onBye,            this, std::placeholders::_1));
 	_handlers.emplace(SipMessageTypes::REQUEST_TERMINATED,std::bind(&RequestsHandler::onReqTerminated,  this, std::placeholders::_1));
 	_handlers.emplace(SipMessageTypes::REFER,             std::bind(&RequestsHandler::onRefer,          this, std::placeholders::_1));
+	_handlers.emplace(SipMessageTypes::UPDATE,            std::bind(&RequestsHandler::onUpdate,         this, std::placeholders::_1));
 	_handlers.emplace(SipMessageTypes::MESSAGE,           std::bind(&RequestsHandler::onMessage,        this, std::placeholders::_1));
 	_handlers.emplace(SipMessageTypes::SUBSCRIBE,         std::bind(&RequestsHandler::onSubscribe,      this, std::placeholders::_1));
 }
@@ -1058,6 +1059,85 @@ void RequestsHandler::onReinvite(std::shared_ptr<SipMessage> data)
 
 	// Surface the hold/resume state on the dashboard at once — tick() only
 	// rebuilds the session view at 1 Hz, so without this the change would lag.
+	refreshSessionSnapshot();
+}
+
+void RequestsHandler::onUpdate(std::shared_ptr<SipMessage> data)
+{
+	// RFC 3311: mid-dialog UPDATE — SDP renegotiation (hold, codec change) or a
+	// bodiless session-timer keep-alive from the refresher side.
+
+	auto sessionOpt = getSession(data->getCallID());
+	if (!sessionOpt.has_value())
+	{
+		auto resp = getMessageFromPool(data->toString(), data->getSource());
+		resp->setHeader("SIP/2.0 481 Call/Transaction Does Not Exist");
+		resp->clearBody();
+		_outbox.emplace_back(data->getSource(), std::move(resp));
+		return;
+	}
+	auto session = sessionOpt.value();
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+
+	if (!data->hasSdp())
+	{
+		// Bodiless UPDATE: session-timer refresh — 200 OK and reset expiry.
+		auto resp = getMessageFromPool(data->toString(), data->getSource());
+		resp->setHeader(SipMessageTypes::OK);
+		resp->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		resp->clearBody();
+		resp->syncContentLength();
+		_outbox.emplace_back(data->getSource(), std::move(resp));
+
+		if (session->getSessionExpiresSeconds() > 0)
+		{
+			session->armSessionTimer(session->getSessionExpiresSeconds(),
+			                         session->isRefresher(),
+			                         std::chrono::steady_clock::now());
+		}
+		return;
+	}
+
+	// SDP-bearing UPDATE: relay to the peer leg (same logic as onReinvite).
+	auto src  = session->getSrc();
+	auto dest = session->getDest();
+	const std::string destNum = dest ? dest->getNumber() : "";
+
+	if (session->isAnchor() || session->isAnchorInbound() ||
+	    destNum == "777" || destNum == "440" || !src || !dest)
+	{
+		auto resp = getMessageFromPool(data->toString(), data->getSource());
+		resp->setHeader("SIP/2.0 488 Not Acceptable Here");
+		resp->clearBody();
+		_outbox.emplace_back(data->getSource(), std::move(resp));
+		return;
+	}
+
+	std::shared_ptr<SipClient> peer;
+	if (sameAddress(data->getSource(), src->getAddress()))
+		peer = dest;
+	else if (sameAddress(data->getSource(), dest->getAddress()))
+		peer = src;
+
+	if (!peer) return;
+
+	// Relay UNTOUCHED — peer 200 OKs it directly; hold direction is tracked here.
+	_outbox.emplace_back(peer->getAddress(), data);
+
+	const auto dir = data->getSdpDirection();
+	if (dir == SipMessage::SdpDirection::SendOnly ||
+	    dir == SipMessage::SdpDirection::RecvOnly ||
+	    dir == SipMessage::SdpDirection::Inactive)
+	{
+		session->setState(Session::State::Held);
+		queueLog("Update/Hold: " + std::string(data->getFromNumber()) +
+		         " held call " + std::string(data->getCallID()));
+	}
+	else
+	{
+		session->setState(Session::State::Connected);
+		queueLog("Update/Resume: call " + std::string(data->getCallID()) + " resumed");
+	}
 	refreshSessionSnapshot();
 }
 

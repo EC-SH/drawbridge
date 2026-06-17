@@ -32,6 +32,8 @@ public:
 	static constexpr auto NOT_FOUND          = "SIP/2.0 404 Not Found";
 	static constexpr auto BAD_REQUEST        = "SIP/2.0 400 Bad Request";
 	static constexpr auto ACCEPTED           = "SIP/2.0 202 Accepted";
+	// RFC 3311 mid-dialog SDP renegotiation without re-INVITE.
+	static constexpr auto UPDATE             = "UPDATE";
 };
 
 #endif

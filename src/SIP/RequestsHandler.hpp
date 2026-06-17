@@ -267,6 +267,7 @@ private:
 	void onOk(std::shared_ptr<SipMessage> data);
 	void onAck(std::shared_ptr<SipMessage> data);
 	void onRefer(std::shared_ptr<SipMessage> data);   // blind transfer (RFC 3515)
+	void onUpdate(std::shared_ptr<SipMessage> data);  // RFC 3311 mid-dialog UPDATE
 	void onMessage(std::shared_ptr<SipMessage> data); // inbound MESSAGE (RFC 3428): ack 200 OK
 
 	// ── BLF/presence: SUBSCRIBE/NOTIFY dialog-event package (RFC 6665 + 4235) ────
