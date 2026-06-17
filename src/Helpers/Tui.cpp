@@ -918,7 +918,21 @@ void Tui::renderHub()
         bodyBlank();
     }
 
-    // Prompt sigil + select line (brand §3.4). (◉)─▶ Select an option: _
+    // Prompt sigil / command palette (brand §3.4).
+    // Normal:   (◉)─▶ Select an option: _
+    // CmdMode:  :[<buffer>]_   (command palette active)
+    if (_cmdMode)
+    {
+        std::string body; int vis = 0;
+        body += "  "; vis += 2;
+        if (_color) body += std::string("\x1b[") + sgrFor(Role::Text) + "m";
+        body += ":"; vis += 1;
+        body += _cmdBuf; vis += static_cast<int>(_cmdBuf.size());
+        body += "_"; vis += 1;           // cursor placeholder
+        if (_color) body += "\x1b[0m";
+        bodyRow(body, vis);
+    }
+    else
     {
         std::string body; int vis = 0;
         body += "  "; vis += 2;
@@ -2670,6 +2684,8 @@ void Tui::gotoScreen(Screen s)
         case Screen::DeviceForget:   renderDeviceForget();   break;
         case Screen::PbxTrunkEdit:   renderPbxTrunkEdit();   break;
         case Screen::FirstRun:       renderFirstRun();       break;
+        case Screen::DrawbridgeEgg:  renderDrawbridgeEgg();  break;
+        case Screen::OperatorCard:   renderOperatorCard();   break;
     }
 }
 
@@ -2746,6 +2762,8 @@ bool Tui::feed(const char* data, size_t len)
             case Screen::DeviceForget:   onKeyDeviceForget(Key::Esc, 0); break;
             case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(Key::Esc, 0); break;
             case Screen::FirstRun:       onKeyFirstRun(Key::Esc, 0); break;
+            case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(Key::Esc, 0); break;
+            case Screen::OperatorCard:   onKeyOperatorCard(Key::Esc, 0); break;
             case Screen::Banner:
                 gotoScreen(stats().provisioned ? Screen::Hub : Screen::FirstRun);
                 break;
@@ -2798,6 +2816,8 @@ bool Tui::feedByte(unsigned char c)
             case Screen::DeviceForget:   onKeyDeviceForget(esc, 0); break;
             case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(esc, 0); break;
             case Screen::FirstRun:       onKeyFirstRun(esc, 0); break;
+            case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(esc, 0); break;
+            case Screen::OperatorCard:   onKeyOperatorCard(esc, 0); break;
             case Screen::Hub:            onKeyHub(esc, 0); break;
             case Screen::Banner:
                 gotoScreen(stats().provisioned ? Screen::Hub : Screen::FirstRun);
@@ -2849,6 +2869,8 @@ bool Tui::feedByte(unsigned char c)
                 case Screen::DeviceForget:   onKeyDeviceForget(k, 0); break;
                 case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(k, 0); break;
                 case Screen::FirstRun:       onKeyFirstRun(k, 0); break;
+                case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(k, 0); break;
+                case Screen::OperatorCard:   onKeyOperatorCard(k, 0); break;
                 case Screen::Banner:         break;
             }
         }
@@ -2902,6 +2924,8 @@ bool Tui::feedByte(unsigned char c)
         case Screen::DeviceForget:   onKeyDeviceForget(k, c); break;
         case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(k, c); break;
         case Screen::FirstRun:       onKeyFirstRun(k, c); break;
+        case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(k, c); break;
+        case Screen::OperatorCard:   onKeyOperatorCard(k, c); break;
         case Screen::Banner:         break;   // handled above
     }
     return _running;
@@ -2910,7 +2934,35 @@ bool Tui::feedByte(unsigned char c)
 // Hub typeahead (tui-ia §3.2): single key, no Enter.
 void Tui::onKeyHub(Key k, unsigned char ch)
 {
-    if (k == Key::CtrlL) { gotoScreen(Screen::Hub); return; }  // redraw
+    if (k == Key::CtrlL) { _cmdMode = false; _cmdBuf.clear(); gotoScreen(Screen::Hub); return; }
+
+    // : command palette — started by ':' at the hub, consumed until Enter or Esc.
+    if (_cmdMode)
+    {
+        if (k == Key::Esc || (k == Key::Char && ch == 0x03 /*Ctrl-C*/))
+        {
+            _cmdMode = false; _cmdBuf.clear(); gotoScreen(Screen::Hub);
+        }
+        else if (k == Key::Backspace)
+        {
+            if (!_cmdBuf.empty()) { _cmdBuf.pop_back(); gotoScreen(Screen::Hub); }
+        }
+        else if (k == Key::Enter)
+        {
+            _cmdMode = false;
+            std::string cmd = _cmdBuf; _cmdBuf.clear();
+            if      (cmd == "drawbridge") gotoScreen(Screen::DrawbridgeEgg);
+            else if (cmd == "operator")   gotoScreen(Screen::OperatorCard);
+            else                          gotoScreen(Screen::Hub);  // unknown: clear and redraw
+        }
+        else if (k == Key::Char && ch >= 0x20 && ch < 0x7f && _cmdBuf.size() < 20)
+        {
+            _cmdBuf += static_cast<char>(ch);
+            gotoScreen(Screen::Hub);  // repaint with updated cmd buffer
+        }
+        return;
+    }
+
     if (k == Key::Esc)   { /* no-op at home (tui-ia §0/D7) */ return; }
 
     if (k == Key::Char)
@@ -2950,6 +3002,10 @@ void Tui::onKeyHub(Key k, unsigned char ch)
                 return;
             case '?':
                 gotoScreen(Screen::Help);
+                return;
+            case ':':
+                _cmdMode = true; _cmdBuf.clear();
+                gotoScreen(Screen::Hub);   // repaint to show ":[_]" prompt slot
                 return;
             default:
                 return;                    // ignore unbound keys (no beep spam)
@@ -6144,4 +6200,209 @@ void Tui::onKeyFirstRun(Key k, unsigned char ch)
                 return;
         }
     }
+}
+
+// ── Easter egg: :drawbridge ───────────────────────────────────────────────────
+// Portcullis ASCII + commissioning facts.  Pull-only (Tier-2); summoned from
+// the hub command palette via  :drawbridge<Enter>.  Any key returns to hub.
+// ═══════════════════════════════════════════════════════════════════════════════
+void Tui::renderDrawbridgeEgg()
+{
+    LiveStats st = stats();
+    clearScreen();
+    hideCursor();
+    drawSpineTop("drawbridge", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(fcols() - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto bodyRow = [&](const std::string& body) {
+        roled(Role::Border, v);
+        put(" ");
+        put(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+
+    // Portcullis ASCII art (7 rows).  Fits inside the 78-col body with indent.
+    static const char* art[] = {
+        "          |||||||||||||||||||||||||||||||||||||||||||||||",
+        "          |  [ ]  [ ]  [ ]  [ ]  [ ]  [ ]  [ ]  [ ]  |",
+        "          |  ===  ===  ===  ===  ===  ===  ===  ===  |",
+        "          |=========================================|",
+        "          |   _______   ___________   _______      |",
+        "          |  |       | |           | |       |     |",
+        "          |  |_______|  \\_________/  |_______|     |",
+    };
+    const int artRows = (int)(sizeof(art) / sizeof(art[0]));
+
+    int bodyUsed = 0;
+    bodyBlank(); ++bodyUsed;
+    for (int i = 0; i < artRows; ++i)
+    {
+        bodyRow(col(Role::Text, art[i]));
+        ++bodyUsed;
+    }
+    bodyBlank(); ++bodyUsed;
+
+    // Commissioning facts.
+    auto fact = [&](const char* label, const std::string& value) {
+        std::string line = "          ";
+        line += col(Role::Text, label);
+        line += "  ";
+        line += value;
+        bodyRow(line);
+        ++bodyUsed;
+    };
+
+    {
+        unsigned long u = (unsigned long)st.uptimeSec;
+        unsigned days  = (unsigned)(u / 86400u);
+        unsigned hours = (unsigned)((u % 86400u) / 3600u);
+        unsigned mins  = (unsigned)((u % 3600u) / 60u);
+        char buf[48];
+        if (days > 0)
+            snprintf(buf, sizeof(buf), "%ud %uh %um", days, hours, mins);
+        else if (hours > 0)
+            snprintf(buf, sizeof(buf), "%uh %um", hours, mins);
+        else
+            snprintf(buf, sizeof(buf), "%um", mins);
+        fact("On post since", col(Role::Lamp, std::string(buf)));
+    }
+    fact("Host ", col(Role::Lamp, st.host));
+    if (!st.mac.empty())
+        fact("MAC  ", col(Role::Dim, st.mac));
+    fact("Build", col(Role::Dim, std::string(st.fw) + "  " + __DATE__));
+
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
+    drawFooter("[any key] Back");
+    _lastClock = fmtClock(st.uptimeSec);
+}
+
+void Tui::onKeyDrawbridgeEgg(Key k, unsigned char ch)
+{
+    (void)ch;
+    _cmdMode = false; _cmdBuf.clear();
+    if (k == Key::CtrlL) { gotoScreen(Screen::DrawbridgeEgg); return; }
+    gotoScreen(Screen::Hub);
+}
+
+// ── Easter egg: :operator ─────────────────────────────────────────────────────
+// Night-shift switchboard operator card.  Quiet-board vs active-board variants.
+// Pull-only (Tier-2); summoned via  :operator<Enter>.  Any key returns to hub.
+// ═══════════════════════════════════════════════════════════════════════════════
+void Tui::renderOperatorCard()
+{
+    LiveStats st = stats();
+    MonitorSnapshot ms = monitor();
+    ReportsSnapshot rs = reports();
+
+    clearScreen();
+    hideCursor();
+    drawSpineTop("night shift", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(fcols() - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto bodyRow = [&](const std::string& body) {
+        roled(Role::Border, v);
+        put(" ");
+        put(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+
+    int bodyUsed = 0;
+    auto emit = [&](const std::string& s) { bodyRow(s); ++bodyUsed; };
+
+    bodyBlank(); ++bodyUsed;
+
+    // Header: DRAWBRIDGE switchboard operator card.
+    {
+        std::string h = "  ";
+        h += col(Role::Header, glyph(Glyph::WordmarkL));
+        h += col(Role::Header, " DRAWBRIDGE ");
+        h += col(Role::Header, glyph(Glyph::WordmarkR));
+        h += col(Role::Text, "  night-shift switchboard");
+        emit(h);
+    }
+    emit(col(Role::Dim, "  Operator on duty.  Calls connected.  No complaints so far."));
+    {
+        const char* H = glyph(Glyph::BoxH);
+        std::string r = "  ";
+        for (int i = 0; i < fcols() - 6; ++i) r += H;
+        bodyRow(col(Role::Border, r));
+        ++bodyUsed;
+    }
+
+    // Live stats.
+    int activeCalls = ms.activeCalls;
+    int online      = ms.online;
+    int cdrCount    = (int)rs.cdr.size();
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d", online);
+    emit(col(Role::Text, std::string("  Extensions registered ........ ") + col(Role::Lamp, buf)));
+
+    snprintf(buf, sizeof(buf), "%d", activeCalls);
+    emit(col(Role::Text, std::string("  Calls in progress ............ ") + col(Role::Lamp, buf)));
+
+    snprintf(buf, sizeof(buf), "%d", cdrCount);
+    emit(col(Role::Text, std::string("  Calls handled this session ... ") + col(Role::Lamp, buf)));
+
+    {
+        unsigned long u = (unsigned long)st.uptimeSec;
+        unsigned days  = (unsigned)(u / 86400u);
+        unsigned hours = (unsigned)((u % 86400u) / 3600u);
+        unsigned mins  = (unsigned)((u % 3600u) / 60u);
+        if (days > 0)
+            snprintf(buf, sizeof(buf), "%ud %uh %um", days, hours, mins);
+        else if (hours > 0)
+            snprintf(buf, sizeof(buf), "%uh %um", hours, mins);
+        else
+            snprintf(buf, sizeof(buf), "%um", mins);
+        emit(col(Role::Text, std::string("  Board uptime ................. ") + col(Role::Lamp, buf)));
+    }
+
+    bodyBlank(); ++bodyUsed;
+
+    // Closing line: variant based on call activity (UX verdict E3).
+    const char* closing = (activeCalls > 0)
+        ? "  Board's alive.  Calls in flight."
+        : "  Quiet board.  Good board.";
+    emit(col(Role::Text, closing));
+
+    for (int i = bodyUsed; i < bodyRows(); ++i) bodyBlank();
+    drawFooter("[any key] Back");
+    _lastClock = fmtClock(st.uptimeSec);
+}
+
+void Tui::onKeyOperatorCard(Key k, unsigned char ch)
+{
+    (void)ch;
+    _cmdMode = false; _cmdBuf.clear();
+    if (k == Key::CtrlL) { gotoScreen(Screen::OperatorCard); return; }
+    gotoScreen(Screen::Hub);
 }

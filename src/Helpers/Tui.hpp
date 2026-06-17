@@ -438,7 +438,11 @@ public:
         // TRUNK + first-run:
         //   PbxTrunkEdit — [3]/TRUNK [E] editor modal (never-echoed secret)
         //   FirstRun     — unprovisioned banner routes here: numbered setup steps
-        PbxTrunkEdit, FirstRun
+        PbxTrunkEdit, FirstRun,
+        // Easter eggs (Tier-2, pull-only, summoned from the : command palette at the hub):
+        //   DrawbridgeEgg — :drawbridge → portcullis ASCII + commissioning facts
+        //   OperatorCard  — :operator   → night-shift switchboard card
+        DrawbridgeEgg, OperatorCard
     };
 
     // The active PBX tab (tui-style §2.5 tab strip). Public so host tests can assert
@@ -613,6 +617,11 @@ private:
     void onKeyPbxIvrEdit(Key k, unsigned char ch);
     void onKeyPbxTrunkEdit(Key k, unsigned char ch);
     void onKeyFirstRun(Key k, unsigned char ch);
+    // Easter egg screens.
+    void renderDrawbridgeEgg();
+    void onKeyDrawbridgeEgg(Key k, unsigned char ch);
+    void renderOperatorCard();
+    void onKeyOperatorCard(Key k, unsigned char ch);
 
     void gotoScreen(Screen s);
     void toggleTheme();
@@ -675,6 +684,11 @@ private:
 
     // Which hub item the placeholder is standing in for (1-6), for its title.
     int      _placeholderItem = 0;
+
+    // : command palette (hub only). When _cmdMode is true the hub prompt slot
+    // shows ":[_cmdBuf]_"; Enter routes known verbs to easter egg screens; Esc cancels.
+    bool        _cmdMode = false;
+    std::string _cmdBuf;
 
     // The screen Help/placeholder was entered FROM, so Esc returns to the origin
     // (tui-ia §3: "context help, scoped to current screen; Esc never leaves the
