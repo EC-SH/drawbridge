@@ -373,6 +373,18 @@ public:
     // re-fits the new geometry. Safe on any screen, including modals.
     void redraw();
 
+    // ── Nav sections (the persistent section bar replaces the Hub menu) ────────
+    // Six top-level sections; 1-6 keys and Tab cycle them from any non-entry screen.
+    enum class Section { System=0, Network, Pbx, Security, Reports, About };
+
+    // Set the SSH username before begin() — determines whether the operator
+    // lands on the GuidedHub (owner@) or directly on Monitor (sysop/default).
+    void setUsername(const std::string& u) { _username = u; }
+
+    // STATIC/screen-reader mode: disables 1 Hz live repaints; only Ctrl-L forces
+    // a full redraw. Set by the SSH layer when the client reports TERM=dumb.
+    void setStaticMode(bool on) { _staticMode = on; }
+
     // Rendering tiers (renderer contract, tui-style §6.1):
     //   unicode=true  → box-drawing + status glyphs;  false → ASCII fallback map.
     //   color=true    → 16-color SGR;                 false → no SGR (mono).
@@ -439,6 +451,9 @@ public:
         //   PbxTrunkEdit — [3]/TRUNK [E] editor modal (never-echoed secret)
         //   FirstRun     — unprovisioned banner routes here: numbered setup steps
         PbxTrunkEdit, FirstRun,
+        // Guided Mode: simplified 4-verb launcher for owner@ logins.
+        // Reached from begin() when _username == "owner"; [4] exits to Monitor.
+        GuidedHub,
         // Easter eggs (Tier-2, pull-only, summoned from the : command palette at the hub):
         //   DrawbridgeEgg — :drawbridge → portcullis ASCII + commissioning facts
         //   OperatorCard  — :operator   → night-shift switchboard card
@@ -477,9 +492,9 @@ private:
         if (r > 50) r = 50;
         return r;
     }
-    // The body-row budget between the 3-row title spine and the 3-row footer.
-    // 18 at the 80×24 floor; grows row-for-row with a taller terminal.
-    int bodyRows() const { return frows() - 6; }
+    // The body-row budget between the 4-row title spine (top + title + section-bar +
+    // separator) and the 3-row footer.  17 at the 80×24 floor; grows row-for-row.
+    int bodyRows() const { return frows() - 7; }
 
     // ── ANSI primitives (emit through _write; honor _color) ──────────────────
     void put(const char* s);
@@ -617,6 +632,10 @@ private:
     void onKeyPbxIvrEdit(Key k, unsigned char ch);
     void onKeyPbxTrunkEdit(Key k, unsigned char ch);
     void onKeyFirstRun(Key k, unsigned char ch);
+    // Guided Mode screen (owner@ simplified launcher).
+    void renderGuidedHub();
+    void onKeyGuidedHub(Key k, unsigned char ch);
+
     // Easter egg screens.
     void renderDrawbridgeEgg();
     void onKeyDrawbridgeEgg(Key k, unsigned char ch);
@@ -624,6 +643,15 @@ private:
     void onKeyOperatorCard(Key k, unsigned char ch);
 
     void gotoScreen(Screen s);
+
+    // ── Nav helpers ──────────────────────────────────────────────────────────
+    // True for screens where 1-6/Tab global section keys should NOT fire
+    // (text-entry forms, confirmation dialogs, pickers, setup checklist).
+    bool isEntryScreen() const;
+    // Map a section to its root/landing screen.
+    static Screen sectionRoot(Section s);
+    // Map the current screen to its containing section (for the section bar highlight).
+    static Section screenSection(Screen s);
     void toggleTheme();
     LiveStats stats() const;              // call provider or return zeros
     MonitorSnapshot monitor() const;      // call provider or return an idle snapshot
@@ -674,13 +702,17 @@ private:
     // [3]/TRUNK wiring.
     TrunkFn        _trunk;
     TrunkSetFn     _trunkSet;
-    bool     _running   = false;
-    bool     _unicode   = true;
-    bool     _color     = true;
-    Theme    _theme     = Theme::Brass;
-    Screen   _screen    = Screen::Banner;
-    uint16_t _cols      = 80;
-    uint16_t _rows      = 24;
+    bool     _running     = false;
+    bool     _unicode     = true;
+    bool     _color       = true;
+    bool     _staticMode  = false;   // STATIC/a11y: no 1 Hz repaints; Ctrl-L only
+    Theme    _theme       = Theme::Brass;
+    Screen   _screen      = Screen::Banner;
+    Section  _section     = Section::System;
+    uint16_t _cols        = 80;
+    uint16_t _rows        = 24;
+    std::string _username;           // SSH login name — routes owner@ to GuidedHub
+    bool     _guidedMode  = false;   // true while in the simplified owner@ launcher
 
     // Which hub item the placeholder is standing in for (1-6), for its title.
     int      _placeholderItem = 0;
@@ -696,11 +728,13 @@ private:
     Screen   _helpReturn = Screen::Hub;
 
     // Escape-sequence decoder state. A lone ESC is a logical Esc; ESC '[' 'A'..'D'
-    // is an arrow. We disambiguate by a tiny state machine (no timeout needed for
-    // a single feed() buffer; a bare trailing ESC is held and resolved on the next
-    // byte or flushed as Esc when feed() finishes — see flushPendingEsc()).
-    enum class Decode { Normal, GotEsc, GotCsi };
-    Decode   _decode    = Decode::Normal;
+    // is an arrow; ESC '[' '<' … M/m is an SGR mouse event. We disambiguate by a
+    // small state machine (no timeout; trailing ESC resolved on next byte or at end
+    // of feed() via flushPendingEsc()). GotCsiParams accumulates CSI numeric params
+    // for multi-byte sequences (mouse, DEC modes, etc.) before dispatching.
+    enum class Decode { Normal, GotEsc, GotCsi, GotCsiParams };
+    Decode      _decode    = Decode::Normal;
+    std::string _csiBuf;    // CSI param accumulator (cleared on dispatch)
 
     // Cached last-rendered live values so repaintHubLive() only rewrites cells
     // that changed (cursor-positioned overwrite, never a full clear — brief §6).
@@ -727,7 +761,7 @@ private:
     int  _cdrTop = 0;
     // CDR rows visible in the body at once: 8 at the 24-row floor, growing
     // row-for-row with a taller terminal (the body budget grows the same way).
-    int  cdrRows() const { return 8 + (frows() - 24); }
+    int  cdrRows() const { return 7 + (frows() - 24); }
 
     // ── [4] SECURITY · Change-PIN modal ([P]) state (§3.10.1) ────────────────
     // Three never-echoed fields (current / new / confirm). `_pinField` is the
@@ -755,7 +789,7 @@ private:
     int    _pbxTop = 0;
     // Table rows visible in the body at once: 8 at the 24-row floor, growing
     // with the terminal height like cdrRows().
-    int    pbxRows() const { return 8 + (frows() - 24); }
+    int    pbxRows() const { return 7 + (frows() - 24); }
     // The screen to return to after a modal closes (always PbxConfig today; kept
     // explicit so a future cross-link entry point can set a different origin).
     Screen _pbxReturn = Screen::PbxConfig;
@@ -822,7 +856,7 @@ private:
     // Device rows visible in the body at once: 7 at the 24-row floor (so the
     // always-reserved result row keeps renderDevices within the body budget),
     // growing with the terminal height like cdrRows().
-    int         devRows() const { return 7 + (frows() - 24); }
+    int         devRows() const { return 6 + (frows() - 24); }
     int         _regPickSel = 0;
     std::string _devForgetTarget;        // MAC pinned at [F] time
     std::string _devForgetExt;           // its extension (for the confirm copy)

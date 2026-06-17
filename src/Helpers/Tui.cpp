@@ -361,21 +361,16 @@ void Tui::drawSpineTop(const char* mode, const LiveStats& st)
     }
 
     // Title row:  │ DRAWBRIDGE v3.0   [ MODE ]                     HH:MM:SS │
-    // Build the inner content with exact spacing then frame it.
-    // The locked vMAJOR.MINOR human form regardless of patch in st.fw:
-    std::string brand = "DRAWBRIDGE v3.0";
+    std::string brand   = "DRAWBRIDGE v3.0";
     std::string modeTag = std::string("[ ") + mode + " ]";
     std::string clock   = fmtClock(st.uptimeSec);
 
-    // Inner width = 78 (cols 2..79). Layout: " " + brand + gap + modeTag + gap +
-    // clock + " ". We compute the two gaps so the clock ends flush at col 79.
     const int inner = fcols() - 2;                 // 78
-    int used = 1 /*lead sp*/ + (int)brand.size() + 3 /*sep*/ + (int)modeTag.size()
-             + (int)clock.size() + 1 /*trail sp*/;
+    int used = 1 + (int)brand.size() + 3 + (int)modeTag.size()
+             + (int)clock.size() + 1;
     int fill = inner - used;
     if (fill < 1) fill = 1;
 
-    // Emit framed, colored title row piece by piece.
     roled(Role::Border, v);
     put(" ");
     roled(Role::Text, brand);
@@ -386,6 +381,52 @@ void Tui::drawSpineTop(const char* mode, const LiveStats& st)
     put(" ");
     roled(Role::Border, v);
     put("\r\n");
+
+    // Section bar:  │  [1]SYSTEM  [2]NETWORK  [3]PBX  [4]SECURITY  [5]REPORTS  [6]ABOUT  │
+    // Current section is reverse-video / header; others are dim.
+    {
+        // Section labels with their key numbers.
+        static const char* const kLabels[6] = {
+            "SYSTEM", "NETWORK", "PBX", "SECURITY", "REPORTS", "ABOUT"
+        };
+        const Section cur = screenSection(_screen);
+
+        roled(Role::Border, v);
+        put(" ");   // 1 lead
+        int emitted = 1;
+        for (int i = 0; i < 6; ++i)
+        {
+            // Separator between items.
+            if (i > 0) { put("  "); emitted += 2; }
+
+            // "[N]" key hint.
+            char kbuf[4]; std::snprintf(kbuf, sizeof(kbuf), "[%d]", i + 1);
+            const Section sec = static_cast<Section>(i);
+            if (sec == cur)
+            {
+                // Active section: header role highlights it.
+                if (_color) put(std::string("\x1b[") + sgrFor(Role::Header) + "m");
+                put(kbuf);
+                put(kLabels[i]);
+                if (_color) put("\x1b[0m");
+            }
+            else
+            {
+                if (_color) put(std::string("\x1b[") + sgrFor(Role::Dim) + "m");
+                put(kbuf);
+                put(kLabels[i]);
+                if (_color) put("\x1b[0m");
+            }
+            emitted += 3 + (int)std::strlen(kLabels[i]);
+        }
+        // Pad to the right border.
+        int pad = (fcols() - 2) - emitted - 1;
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        put(" ");
+        roled(Role::Border, v);
+        put("\r\n");
+    }
 
     // Separator rule:  ├──…──┤
     {
@@ -2344,8 +2385,12 @@ void Tui::renderAbout()
         bodyRow(col(Role::Border, r));
         ++bodyUsed;
     }
+#if defined(POCKETDIAL_BOARD_NAME)
     leader("Hardware", col(Role::Text, std::string("ESP32-S3 ") + dot +
-            " Guition JC3248W535 " + dot + " 8 MB PSRAM " + dot + " 16 MB flash")); ++bodyUsed;
+           " " POCKETDIAL_BOARD_NAME " " + dot + " 8 MB PSRAM " + dot + " 16 MB flash")); ++bodyUsed;
+#else
+    leader("Hardware", col(Role::Text, "host build")); ++bodyUsed;
+#endif
     leader("Firmware", col(Role::Text, std::string("DRAWBRIDGE ") + st.fw +
             "   " + dot + "   build " + __DATE__)); ++bodyUsed;
     leader("Host", col(Role::Text, st.host + "   " + dot + "   " + st.mac)); ++bodyUsed;
@@ -2640,6 +2685,96 @@ void Tui::renderChangePin()
     drawFooter("[Tab] Field  [Enter] Apply  [Esc] Cancel  [?] Help");
 }
 
+// ── Nav helpers ──────────────────────────────────────────────────────────────
+
+bool Tui::isEntryScreen() const
+{
+    switch (_screen)
+    {
+        case Screen::ChangePin:
+        case Screen::SecretEntry:
+        case Screen::PbxTrunkEdit:
+        case Screen::PbxAddSingle:
+        case Screen::PbxAddRange:
+        case Screen::PbxGroupEdit:
+        case Screen::PbxForwardEdit:
+        case Screen::PbxForwardPick:
+        case Screen::PbxIvrEdit:
+        case Screen::ModeConfirm:
+        case Screen::FactoryConfirm:
+        case Screen::RebootConfirm:
+        case Screen::PbxGroupDelete:
+        case Screen::DeviceForget:
+        case Screen::CdrDetail:
+        case Screen::FirstRun:
+        case Screen::PbxAddMenu:
+            return true;
+        default:
+            return false;
+    }
+}
+
+Tui::Screen Tui::sectionRoot(Section s)
+{
+    switch (s)
+    {
+        case Section::System:   return Screen::Monitor;
+        case Section::Network:  return Screen::Network;
+        case Section::Pbx:      return Screen::PbxConfig;
+        case Section::Security: return Screen::Security;
+        case Section::Reports:  return Screen::Reports;
+        case Section::About:    return Screen::About;
+    }
+    return Screen::Monitor;
+}
+
+Tui::Section Tui::screenSection(Screen s)
+{
+    switch (s)
+    {
+        case Screen::Monitor:
+        case Screen::Hub:
+        case Screen::Banner:
+        case Screen::GuidedHub:
+        case Screen::DrawbridgeEgg:
+        case Screen::OperatorCard:
+        case Screen::RebootConfirm:
+        case Screen::Placeholder:
+        case Screen::Help:
+            return Section::System;
+        case Screen::Network:
+        case Screen::ModeConfirm:
+            return Section::Network;
+        case Screen::PbxConfig:
+        case Screen::PbxAddMenu:
+        case Screen::PbxAddSingle:
+        case Screen::PbxAddRange:
+        case Screen::PbxGroupEdit:
+        case Screen::PbxGroupDelete:
+        case Screen::PbxForwardEdit:
+        case Screen::PbxForwardPick:
+        case Screen::PbxIvrEdit:
+        case Screen::PbxTrunkEdit:
+            return Section::Pbx;
+        case Screen::Security:
+        case Screen::FactoryConfirm:
+        case Screen::ChangePin:
+        case Screen::Devices:
+        case Screen::RegModePick:
+        case Screen::SecretEntry:
+        case Screen::DeviceForget:
+            return Section::Security;
+        case Screen::Reports:
+        case Screen::CdrDetail:
+            return Section::Reports;
+        case Screen::About:
+            return Section::About;
+        case Screen::FirstRun:
+            return Section::System;
+    }
+    return Section::System;
+}
+
 // ── Screen router ──
 // Set the active screen and draw it. Entering the monitor clears any stale freeze
 // so [1] always opens live; leaving it is handled by the keys.
@@ -2647,16 +2782,19 @@ void Tui::gotoScreen(Screen s)
 {
     if (s == Screen::Monitor && _screen != Screen::Monitor)
         _monFrozen = false;            // fresh entry -> always live (un-freeze)
-    // Remember where Help was opened FROM so its Esc returns to the origin screen,
-    // not always the hub (tui-ia §3: context help never leaves the current screen).
+    // Remember where Help was opened FROM so its Esc returns to the origin screen.
     // Guard against Help→Help (Ctrl-L redraw) clobbering the saved origin.
     if (s == Screen::Help && _screen != Screen::Help)
         _helpReturn = _screen;
+
+    // Track the active section whenever navigating to a section root.
+    _section = screenSection(s);
+
     _screen = s;
     switch (s)
     {
         case Screen::Banner:         renderBanner();         break;
-        case Screen::Hub:            renderHub();            break;
+        case Screen::Hub:            renderHub();            break;   // unreachable via redirect above
         case Screen::Help:           renderHelp();           break;
         case Screen::RebootConfirm:  renderRebootConfirm();  break;
         case Screen::Placeholder:    renderPlaceholder();    break;
@@ -2684,6 +2822,7 @@ void Tui::gotoScreen(Screen s)
         case Screen::DeviceForget:   renderDeviceForget();   break;
         case Screen::PbxTrunkEdit:   renderPbxTrunkEdit();   break;
         case Screen::FirstRun:       renderFirstRun();       break;
+        case Screen::GuidedHub:      renderGuidedHub();      break;
         case Screen::DrawbridgeEgg:  renderDrawbridgeEgg();  break;
         case Screen::OperatorCard:   renderOperatorCard();   break;
     }
@@ -2704,13 +2843,36 @@ void Tui::toggleTheme()
 
 void Tui::begin()
 {
-    _running = true;
-    _screen  = Screen::Banner;
-    gotoScreen(Screen::Banner);
+    _running  = true;
+    _section  = Section::System;
+    _guidedMode = (_username == "owner" || _username == "Owner");
+
+    LiveStats st = stats();
+    if (!st.provisioned)
+    {
+        // Unprovisioned: always go to the first-run setup checklist.
+        _screen = Screen::FirstRun;
+        gotoScreen(Screen::FirstRun);
+    }
+    else if (_guidedMode)
+    {
+        // owner@ login: simplified 4-verb Guided launcher.
+        _screen = Screen::GuidedHub;
+        gotoScreen(Screen::GuidedHub);
+    }
+    else
+    {
+        // Expert path (sysop@ or any other username): land directly on System Monitor.
+        _screen = Screen::Monitor;
+        gotoScreen(Screen::Monitor);
+    }
 }
 
 void Tui::tickLive()
 {
+    // STATIC/a11y mode: no autonomous repaints; operator drives refreshes via Ctrl-L.
+    if (_staticMode) return;
+
     // Drive whichever live screen is active. Each is a no-op off its own screen,
     // so this is safe to call unconditionally ~1 Hz from the session loop.
     repaintHubLive();
@@ -2762,6 +2924,7 @@ bool Tui::feed(const char* data, size_t len)
             case Screen::DeviceForget:   onKeyDeviceForget(Key::Esc, 0); break;
             case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(Key::Esc, 0); break;
             case Screen::FirstRun:       onKeyFirstRun(Key::Esc, 0); break;
+            case Screen::GuidedHub:      onKeyGuidedHub(Key::Esc, 0); break;
             case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(Key::Esc, 0); break;
             case Screen::OperatorCard:   onKeyOperatorCard(Key::Esc, 0); break;
             case Screen::Banner:
@@ -2816,6 +2979,7 @@ bool Tui::feedByte(unsigned char c)
             case Screen::DeviceForget:   onKeyDeviceForget(esc, 0); break;
             case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(esc, 0); break;
             case Screen::FirstRun:       onKeyFirstRun(esc, 0); break;
+            case Screen::GuidedHub:      onKeyGuidedHub(esc, 0); break;
             case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(esc, 0); break;
             case Screen::OperatorCard:   onKeyOperatorCard(esc, 0); break;
             case Screen::Hub:            onKeyHub(esc, 0); break;
@@ -2827,6 +2991,15 @@ bool Tui::feedByte(unsigned char c)
     }
     else if (_decode == Decode::GotCsi)
     {
+        // '<' enters SGR mouse param accumulation (ESC[<Cb;Cx;CyM/m).
+        // Digits/semicolons accumulate into _csiBuf; letter finalises.
+        if (c == '<' || (c >= '0' && c <= '9') || c == ';')
+        {
+            _decode = Decode::GotCsiParams;
+            _csiBuf.clear();
+            if (c != '<') _csiBuf += static_cast<char>(c);   // '<' is the SGR mouse intro, don't store
+            return _running;
+        }
         _decode = Decode::Normal;
         Key k = Key::None;
         switch (c)
@@ -2835,10 +3008,18 @@ bool Tui::feedByte(unsigned char c)
             case 'B': k = Key::Down;  break;
             case 'C': k = Key::Right; break;
             case 'D': k = Key::Left;  break;
-            default:  k = Key::None;  break;   // ignore unhandled CSI finals
+            case 'Z': k = Key::Tab;   break;   // Shift-Tab (backtab) — treat as Tab
+            default:  k = Key::None;  break;
         }
         if (k != Key::None)
         {
+            // Tab from CSI: route through global nav just like a normal Tab.
+            if (k == Key::Tab && !isEntryScreen())
+            {
+                _section = static_cast<Section>((static_cast<int>(_section) + 1) % 6);
+                gotoScreen(sectionRoot(_section));
+                return _running;
+            }
             switch (_screen)
             {
                 case Screen::Hub:            onKeyHub(k, 0); break;
@@ -2869,11 +3050,32 @@ bool Tui::feedByte(unsigned char c)
                 case Screen::DeviceForget:   onKeyDeviceForget(k, 0); break;
                 case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(k, 0); break;
                 case Screen::FirstRun:       onKeyFirstRun(k, 0); break;
+                case Screen::GuidedHub:      onKeyGuidedHub(k, 0); break;
                 case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(k, 0); break;
                 case Screen::OperatorCard:   onKeyOperatorCard(k, 0); break;
                 case Screen::Banner:         break;
             }
         }
+        return _running;
+    }
+    else if (_decode == Decode::GotCsiParams)
+    {
+        // Accumulate CSI numeric params until we hit the final byte (alpha or M/m).
+        if ((c >= '0' && c <= '9') || c == ';')
+        {
+            if (_csiBuf.size() < 32) _csiBuf += static_cast<char>(c);
+            return _running;
+        }
+        // Final byte — dispatch. Currently only SGR mouse events are handled;
+        // other multi-param CSI sequences are silently ignored (not arrows, which
+        // have no params and are handled in GotCsi above).
+        _decode = Decode::Normal;
+        // SGR mouse: ESC[<Cb;Cx;CyM (press) / m (release).
+        // Format: "button;col;row" in _csiBuf. Mouse support is additive — when
+        // mouse reporting is not enabled (default), no ESC[<… sequences arrive.
+        // (Mouse enable/disable via `m` key is wired once the feature is complete.)
+        (void)c;   // future: parse _csiBuf for button/col/row and hit-test section bar
+        _csiBuf.clear();
         return _running;
     }
 
@@ -2886,12 +3088,29 @@ bool Tui::feedByte(unsigned char c)
     else if (c == 0x0c) k = Key::CtrlL;     // Ctrl-L → redraw
     else if (c == '\t') k = Key::Tab;
 
-    // Banner: any key advances into the hub — or, on an UNPROVISIONED box, into
-    // the first-run setup checklist (README Reconciled #4: first session = setup).
+    // Banner: any key advances into Monitor (provisioned) or FirstRun (not).
+    // No Hub detour — landing is now the live dashboard directly.
     if (_screen == Screen::Banner)
     {
-        gotoScreen(stats().provisioned ? Screen::Hub : Screen::FirstRun);
+        LiveStats st = stats();
+        if (!st.provisioned)       gotoScreen(Screen::FirstRun);
+        else if (_guidedMode)      gotoScreen(Screen::GuidedHub);
+        else                       gotoScreen(Screen::Monitor);
         return _running;
+    }
+
+    // ── Global section navigation — intercepts 1-6 and Tab on non-entry screens ──
+    // These keys jump to section roots from ANY screen where text entry is not
+    // active (isEntryScreen guards PINs, editors, pickers, dialogs).
+    if (!isEntryScreen())
+    {
+        if (k == Key::Char && c >= '1' && c <= '6')
+        {
+            Section s = static_cast<Section>(c - '1');
+            _section = s;
+            gotoScreen(sectionRoot(s));
+            return _running;
+        }
     }
 
     switch (_screen)
@@ -2924,6 +3143,7 @@ bool Tui::feedByte(unsigned char c)
         case Screen::DeviceForget:   onKeyDeviceForget(k, c); break;
         case Screen::PbxTrunkEdit:   onKeyPbxTrunkEdit(k, c); break;
         case Screen::FirstRun:       onKeyFirstRun(k, c); break;
+        case Screen::GuidedHub:      onKeyGuidedHub(k, c); break;
         case Screen::DrawbridgeEgg:  onKeyDrawbridgeEgg(k, c); break;
         case Screen::OperatorCard:   onKeyOperatorCard(k, c); break;
         case Screen::Banner:         break;   // handled above
@@ -6192,6 +6412,115 @@ void Tui::onKeyFirstRun(Key k, unsigned char ch)
             case '3':
                 _pbxTab = PbxTab::Trunk; _pbxSel = 0; _pbxTop = 0;
                 gotoScreen(Screen::PbxConfig);
+                return;
+            case '?':
+                gotoScreen(Screen::Help);
+                return;
+            default:
+                return;
+        }
+    }
+}
+
+// ── Guided Mode hub (owner@ login) ───────────────────────────────────────────
+// A simplified 4-verb launcher shown when the SSH session authenticates as
+// "owner".  Non-owner logins land directly on Monitor.  Esc returns to Monitor.
+// ═══════════════════════════════════════════════════════════════════════════════
+void Tui::renderGuidedHub()
+{
+    LiveStats st = stats();
+    clearScreen();
+    hideCursor();
+    drawSpineTop("owner setup", st);
+
+    const std::string v = glyph(Glyph::BoxV);
+    const std::string h = glyph(Glyph::BoxH);
+
+    auto col = [&](Role r, const std::string& s) -> std::string {
+        if (!_color) return s;
+        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
+    };
+    auto bodyBlank = [&]() {
+        roled(Role::Border, v);
+        put(std::string((size_t)(fcols() - 2), ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+    auto bodyRow = [&](const std::string& body) {
+        roled(Role::Border, v);
+        put(" ");
+        put(body);
+        int pad = (fcols() - 2) - 1 - dispWidth(body);
+        if (pad < 0) pad = 0;
+        put(std::string((size_t)pad, ' '));
+        roled(Role::Border, v);
+        put("\r\n");
+    };
+
+    struct Action { const char* key; const char* label; const char* desc; };
+    static const Action kActions[4] = {
+        { "[1]", "Configure Extensions",  "Add / remove / group extensions, call forwarding, ring groups" },
+        { "[2]", "Change Admin PIN",       "Update the owner credential used at SSH login"                },
+        { "[3]", "View Reports",           "Call history and traffic summary"                             },
+        { "[4]", "System Monitor",         "Live dashboard — registrations, calls, and vitals"            },
+    };
+
+    int bodyUsed = 0;
+    const int body = bodyRows();
+
+    bodyBlank(); ++bodyUsed;
+
+    for (int i = 0; i < 4 && bodyUsed < body; ++i)
+    {
+        std::string line;
+        line += col(Role::Header, std::string(kActions[i].key));
+        line += " ";
+        line += col(Role::Header, kActions[i].label);
+        bodyRow(line); ++bodyUsed;
+        if (bodyUsed < body)
+        {
+            bodyRow(col(Role::Dim, std::string("      ") + kActions[i].desc));
+            ++bodyUsed;
+        }
+        if (bodyUsed < body && i < 3) { bodyBlank(); ++bodyUsed; }
+    }
+
+    while (bodyUsed < body) { bodyBlank(); ++bodyUsed; }
+
+    {
+        std::string line = glyph(Glyph::BoxBL);
+        for (int i = 0; i < fcols() - 2; ++i) line += h;
+        line += glyph(Glyph::BoxBR);
+        roled(Role::Border, line);
+    }
+    drawFooter("[1-4] action  [?] help  [Esc] monitor");
+}
+
+void Tui::onKeyGuidedHub(Key k, unsigned char ch)
+{
+    if (k == Key::CtrlL) { gotoScreen(Screen::GuidedHub); return; }
+    if (k == Key::Esc)   { _section = Section::System; gotoScreen(Screen::Monitor); return; }
+    if (k == Key::Char)
+    {
+        switch (ch)
+        {
+            case '1':
+                _pbxTab = PbxTab::Extensions; _pbxSel = 0; _pbxTop = 0;
+                gotoScreen(Screen::PbxConfig);
+                return;
+            case '2':
+                _pinCur.clear(); _pinNew.clear(); _pinConf.clear();
+                _pinField = 0; _pinMsg.clear();
+                _pinReturn = Screen::GuidedHub;
+                gotoScreen(Screen::ChangePin);
+                return;
+            case '3':
+                _section = Section::Reports;
+                gotoScreen(Screen::Reports);
+                return;
+            case '4':
+                _section = Section::System;
+                gotoScreen(Screen::Monitor);
                 return;
             case '?':
                 gotoScreen(Screen::Help);

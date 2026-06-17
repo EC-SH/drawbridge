@@ -139,6 +139,28 @@ if(SIP_TRANSPORT STREQUAL "eth")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE ${ETH_BOARD_DEF})
 endif()
 
+# Board name string shown on the About screen — detected from transport + board vars
+# so the UI is honest about the specific hardware without hardcoding in Tui.cpp.
+if(SIP_TRANSPORT STREQUAL "eth")
+    if(PD_ETH_BOARD STREQUAL "elite" OR NOT DEFINED PD_ETH_BOARD)
+        set(_PD_BOARD_NAME "LilyGO T-ETH-ELITE PoE")
+    elseif(PD_ETH_BOARD STREQUAL "waveshare")
+        set(_PD_BOARD_NAME "Waveshare PoE-ETH-S3")
+    else()
+        set(_PD_BOARD_NAME "W5500 Ethernet")
+    endif()
+elseif(SIP_TRANSPORT STREQUAL "lan8720")
+    set(_PD_BOARD_NAME "ESP32 LAN8720")
+elseif(SIP_TRANSPORT STREQUAL "display")
+    set(_PD_BOARD_NAME "Guition JC3248W535")
+elseif(SIP_TRANSPORT STREQUAL "wifi")
+    set(_PD_BOARD_NAME "ESP32-S3 Wi-Fi")
+else()
+    set(_PD_BOARD_NAME "ESP32-S3")
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    "POCKETDIAL_BOARD_NAME=\"${_PD_BOARD_NAME}\"")
+
 # Re-apply the wolfSSL ESP-IDF-v6.0.1 compatibility patches to the freshly fetched
 # (git-ignored) managed component. The wolfssl/wolfssh deps in idf_component.yml are
 # fetched for EVERY transport (the component manager's rules: can't gate on the custom

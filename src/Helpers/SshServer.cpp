@@ -487,12 +487,21 @@ void SshServer::setNetInfo(const char* ip, uint8_t wifiMode, const char* ssid)
 // ── wolfSSH auth + command dispatch ───────────────────────────────────────────
 #ifdef POCKETDIAL_HAS_WOLFSSH
 
+static char g_ws_user[32] = {};   // last authenticated username (for TUI Guided Mode)
+
 // User authentication. Onboarding model "up usable, secure later": SSH is OPEN while the
 // device is unsecured (no admin PIN set) and requires the admin PIN as the SSH password
-// once a PIN exists (AdminAuth::isProvisioned()). The username is not checked.
+// once a PIN exists (AdminAuth::isProvisioned()). Username is captured for Guided Mode.
 static int wsUserAuth(byte authType, WS_UserAuthData* authData, void* ctx)
 {
     (void)ctx;
+    if (authData && authData->username && authData->usernameSz > 0)
+    {
+        size_t n = authData->usernameSz < sizeof(g_ws_user) - 1 ? authData->usernameSz
+                                                                 : sizeof(g_ws_user) - 1;
+        std::memcpy(g_ws_user, authData->username, n);
+        g_ws_user[n] = '\0';
+    }
     if (!AdminAuth::isProvisioned())
         return WOLFSSH_USERAUTH_SUCCESS;            // unsecured: allow anyone (onboarding)
     if (authType == WOLFSSH_USERAUTH_PASSWORD && authData != nullptr)
@@ -608,7 +617,7 @@ static Tui::LiveStats buildLiveStats()
                  m[0], m[1], m[2], m[3], m[4], m[5]);
         st.mac = mac;
     }
-    st.host = "pocketdial.local";
+    st.host = "drawbridge.local";
     st.fw   = "v3.0.0";
 
     // Real heap used % for the [6] ABOUT vitals line — same basis as the monitor's
@@ -1028,8 +1037,9 @@ static void runTuiSession(WOLFSSH* ssh)
     // Size from the captured pty-req geometry (defaults 80x24 — see accept path).
     SshServer& self = SshServer::instance();
     tui.setSize(self.terminalCols(), self.terminalRows());
+    tui.setUsername(g_ws_user);
 
-    tui.begin();   // banner → hub
+    tui.begin();   // banner → Monitor / GuidedHub / FirstRun
 
     // The session loop must wake ~1 Hz to drive the live monitor's repaint even when
     // the operator is not typing. We keep wolfSSH in BLOCKING mode and gate it behind

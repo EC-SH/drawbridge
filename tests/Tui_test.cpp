@@ -179,10 +179,11 @@ struct Harness {
     int  trkCalls = 0;
 
     void clear() { out.clear(); }
-    // Drive the banner past its "press any key" greeting into the hub.
+    // Navigate to Hub: begin() lands on Monitor; bare Esc routes Monitor → Hub.
     void toHub() {
-        tui.begin();          // banner
-        tui.feedByte(' ');    // any key → hub
+        tui.begin();          // provisioned → Monitor
+        tui.feedByte(0x1b);   // start bare-Esc
+        tui.feed("", 0);      // flush → onKeyMonitor(Esc) → Hub
     }
 };
 
@@ -228,28 +229,21 @@ std::string stripSgr(const std::string& s) {
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 
-TEST(Tui, BannerContainsNameplateAndDescriptor) {
+TEST(Tui, BeginLandsOnMonitorForProvisionedSysop) {
     Harness h;
-    h.tui.begin();   // draws the banner
-    // The DRAWBRIDGE FIGlet nameplate's last art row is unmistakable, and the
-    // descriptor block carries SYSOP TERMINAL + the brand tagline.
-    EXPECT_NE(h.out.find("|____/|_| \\_\\/_/"), std::string::npos);
-    EXPECT_NE(h.out.find("S Y S O P   T E R M I N A L"), std::string::npos);
-    EXPECT_NE(h.out.find("single-board SIP PBX"), std::string::npos);
-    EXPECT_NE(h.out.find("an ENGAGE product"), std::string::npos);
-    EXPECT_NE(h.out.find("Authorized sysops only"), std::string::npos);
-    // The old brand is gone from the banner.
+    h.tui.begin();   // provisioned non-owner → Monitor directly (no Banner/Hub gate)
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Monitor);
+    EXPECT_NE(h.out.find("LIVE CALLS"), std::string::npos);
+    EXPECT_NE(h.out.find("ROSTER"), std::string::npos);
     EXPECT_EQ(h.out.find("POCKET-DIAL"), std::string::npos);
 }
 
-TEST(Tui, BannerMonoTierEmitsNoColor) {
+TEST(Tui, BeginMonoTierEmitsNoColor) {
     Harness h(/*unicode=*/false, /*color=*/false);
     h.tui.begin();
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Monitor);
     EXPECT_FALSE(hasColorSgr(h.out));
-    // The ASCII fallback frame uses '+'/'='/'|' for the box (brand §3.3).
-    EXPECT_NE(h.out.find("+="), std::string::npos);
-    // Meaning is preserved without colour: the descriptor word still reads.
-    EXPECT_NE(h.out.find("S Y S O P   T E R M I N A L"), std::string::npos);
+    EXPECT_NE(h.out.find("LIVE CALLS"), std::string::npos);
 }
 
 // ── Hub ───────────────────────────────────────────────────────────────────────
@@ -1105,11 +1099,9 @@ struct UnprovHarness : Harness {
     }
 };
 
-TEST(Tui, UnprovisionedBannerRoutesToFirstRun) {
+TEST(Tui, UnprovisionedBeginLandsOnFirstRun) {
     UnprovHarness h;
-    h.tui.begin();
-    h.clear();
-    h.tui.feedByte(' ');                      // any key
+    h.tui.begin();   // unprovisioned → FirstRun directly (no Banner gate)
     EXPECT_EQ(h.tui.screen(), Tui::Screen::FirstRun);
     const std::string vis = stripSgr(h.out);
     EXPECT_NE(vis.find("FIRST RUN"), std::string::npos);
@@ -1122,11 +1114,10 @@ TEST(Tui, UnprovisionedBannerRoutesToFirstRun) {
     EXPECT_NE(vis.find("Disconnecting is safe"), std::string::npos);
 }
 
-TEST(Tui, ProvisionedBannerStillRoutesToHub) {
+TEST(Tui, ProvisionedBeginLandsOnMonitor) {
     Harness h;                                // provisioned fixture
     h.tui.begin();
-    h.tui.feedByte(' ');
-    EXPECT_EQ(h.tui.screen(), Tui::Screen::Hub);
+    EXPECT_EQ(h.tui.screen(), Tui::Screen::Monitor);
 }
 
 TEST(Tui, FirstRunEscIsANoOp) {
@@ -1187,9 +1178,7 @@ TEST(Tui, FirstRunMonoTierEmitsNoColor) {
     UnprovHarness h;
     h.tui.setUnicode(false);
     h.tui.setColor(false);
-    h.tui.begin();
-    h.clear();
-    h.tui.feedByte(' ');
+    h.tui.begin();   // unprovisioned → FirstRun
     EXPECT_FALSE(hasColorSgr(h.out));
     EXPECT_NE(h.out.find("FIRST RUN"), std::string::npos);
 }
