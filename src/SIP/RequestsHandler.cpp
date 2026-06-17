@@ -17,6 +17,7 @@
 #include "SipDigest.hpp"
 #include "SipSecretStore.hpp"
 #include "ArpLookup.hpp"
+#include "UrlEncode.hpp"
 
 #if defined(ESP_PLATFORM) || defined(ESP32)
 	// PBX config (call-forward / ring groups) and the persistent CDR ring live in
@@ -1526,6 +1527,42 @@ void RequestsHandler::onBye(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	// Attended-transfer bridge BYE: one party hangs up → relay BYE to the other.
+	// Uses getDialogFrom/To() from the peer session for RFC-3261-correct tags.
+	if (session.has_value() && session.value()->isTransferBridge() &&
+		!session.value()->getPeerCallID().empty())
+	{
+		const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		auto response = getMessageFromPool(data->toString(), data->getSource());
+		response->setHeader(SipMessageTypes::OK);
+		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		_outbox.emplace_back(data->getSource(), std::move(response));
+
+		const std::string peerId = session.value()->getPeerCallID();
+		if (auto peer = getSession(peerId); peer.has_value())
+		{
+			auto peerSess = peer.value();
+			auto peerDest = peerSess->getDest();
+			if (peerDest && !peerSess->getDialogFrom().empty())
+			{
+				// Impersonate the original caller (A) in the peer dialog — A's
+				// From/To tags are exactly what the peer phone expects in a BYE.
+				auto bye = buildServerBye(
+					peerDest->getNumber(), peerDest->getAddress(),
+					stripHeaderName(peerId),
+					peerSess->getDialogFrom(),
+					peerSess->getDialogTo());
+				if (bye) _outbox.emplace_back(peerDest->getAddress(), std::move(bye));
+			}
+			endCall(peerId,
+			        peerDest ? peerDest->getNumber() : std::string(),
+			        std::string(data->getFromNumber()),
+			        "transfer bridge peer BYE");
+		}
+		endCall(data->getCallID(), data->getFromNumber(), destNumber, "transfer bridge BYE");
+		return;
+	}
+
 	// Call parking: a BYE whose To is an orbit ("70x"), or any leg linked to a
 	// bridged peer. Always 200 OK the BYE; if the leg has a retrieved/rung-back
 	// peer, relay a server BYE to that phone too, then end both dialogs. A still-
@@ -1703,6 +1740,11 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 	{
 		return;
 	}
+	// Attended-transfer re-INVITE ACKs (same intercept-before-session-lookup pattern).
+	if (handleTransferOk(data))
+	{
+		return;
+	}
 
 	auto session = getSession(data->getCallID());
 	if (session.has_value())
@@ -1746,6 +1788,10 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 						}
 						else if (sameAddress(data->getSource(), legDest->getAddress()))
 						{
+							// Callee answered re-INVITE — update stored remote SDP so an
+							// attended transfer can use the latest negotiated media address.
+							if (!data->getBody().empty())
+								session.value()->setRemoteSdp(std::string(data->getBody()));
 							peer = legSrc;
 						}
 						if (peer)
@@ -1856,6 +1902,11 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 			session->get()->setDest(client.value());
 			session->get()->setState(Session::State::Connected);
 			session->get()->clearRingTimer();   // answered: disarm any CFNA timeout
+			// Always capture dialog From/To and callee SDP so attended transfer can
+			// cross-connect two live sessions without querying stored invite messages.
+			session->get()->setDialogHeaders(std::string(data->getFrom()),
+			                                std::string(data->getTo()));
+			session->get()->setRemoteSdp(std::string(data->getBody()));
 			armSessionTimer(session->get(), data);
 			auto response = getMessageFromPool(data->toString(), data->getSource());
 			response->setContact(buildContact(data->getToNumber()));
@@ -1968,12 +2019,11 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 
 void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 {
-	// Blind (unattended) transfer, RFC 3515. The transferor (the party that holds
-	// the call and pressed "transfer") sends REFER with a Refer-To header naming the
-	// new target. We ack 202 Accepted, then drive a fresh INVITE from the transferor
-	// to the target, and report progress with a NOTIFY (Event: refer + sipfrag body).
-	// Attended transfer (Refer-To carrying a Replaces= dialog) is OUT OF SCOPE — see
-	// the summary; such a REFER is treated as a blind transfer to the named target.
+	// RFC 3515 REFER handler — blind transfer and attended transfer (RFC 3891 Replaces).
+	// The transferor sends REFER with a Refer-To header. When the Refer-To carries a
+	// ?Replaces=callid URI parameter the REFER is attended: two existing sessions (A↔B
+	// and A↔C) are spliced so that B and C talk directly once A drops out. When there
+	// is no Replaces parameter the REFER is a blind transfer.
 	auto transferorOpt = findClient(data->getFromNumber());
 	if (!transferorOpt.has_value())
 	{
@@ -1988,11 +2038,12 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 	}
 	auto transferor = transferorOpt.value();
 
-	// Pull the Refer-To header value out of the raw message and extract the target.
+	// Scan the Refer-To header and extract the target extension AND any Replaces=
+	// URI parameter (RFC 3891 attended transfer).
 	std::string target;
+	std::string replacesCallIdBare; // bare call-id from ?Replaces= (URL-decoded)
 	{
 		const std::string& raw = data->toString();
-		// Case-insensitive scan for a "Refer-To:" header line (no compact form in 3515).
 		size_t pos = 0;
 		while (pos < raw.size())
 		{
@@ -2008,12 +2059,33 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 					size_t valEnd = (lineEnd == std::string::npos) ? raw.size() : lineEnd;
 					std::string value = raw.substr(pos + 9, valEnd - (pos + 9));
 					target = pbx::parseReferToTarget(value);
+
+					// Parse ?Replaces=callid;from-tag=X;to-tag=Y from the URI params.
+					// parseReferToTarget() stops at '?', so the params are still intact.
+					size_t qmark = value.find('?');
+					if (qmark != std::string::npos)
+					{
+						std::string uriParams = value.substr(qmark + 1);
+						size_t rp = uriParams.find("Replaces=");
+						if (rp != std::string::npos)
+						{
+							std::string repVal = uriParams.substr(rp + 9);
+							size_t semi = repVal.find_first_of(";&>\r");
+							replacesCallIdBare = urlDecode(
+								repVal.substr(0, (semi == std::string::npos) ? repVal.size() : semi));
+							// After URL-decode, strip any ;from-tag= / ;to-tag= params
+							// (they may have been encoded as %3B in the Refer-To URI).
+							size_t semiDecoded = replacesCallIdBare.find(';');
+							if (semiDecoded != std::string::npos)
+								replacesCallIdBare.resize(semiDecoded);
+						}
+					}
 					break;
 				}
 			}
 			else if (raw[pos] == '\r' || raw[pos] == '\n')
 			{
-				break; // header/body boundary
+				break;
 			}
 			pos = next;
 		}
@@ -2030,6 +2102,173 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	const std::string callID(data->getCallID()); // full "Call-ID: ..." line
+
+	// ── Attended transfer (RFC 3891 Replaces) ─────────────────────────────────────
+	// A (transferor) has two active calls: A↔B (this REFER's dialog = callID) and
+	// A↔C (the consult session = replacesCallIdBare). Splice B↔C via SDP re-INVITEs
+	// so they talk directly, then BYE A from both dialogs.
+	if (!replacesCallIdBare.empty())
+	{
+		const std::string replacesCallIdKey = "Call-ID: " + replacesCallIdBare;
+		auto sessionAB = getSession(callID);
+		auto sessionAC = getSession(replacesCallIdKey);
+
+		// Both sessions must be live and P2P (non-anchored). Verify A is in both.
+		bool canSplice = sessionAB.has_value() && sessionAC.has_value();
+		if (canSplice)
+		{
+			const std::string aNum = transferor->getNumber();
+			auto ab = sessionAB.value();
+			auto ac = sessionAC.value();
+			bool aInAB = (ab->getSrc() && ab->getSrc()->getNumber() == aNum) ||
+			             (ab->getDest() && ab->getDest()->getNumber() == aNum);
+			bool aInAC = (ac->getSrc() && ac->getSrc()->getNumber() == aNum) ||
+			             (ac->getDest() && ac->getDest()->getNumber() == aNum);
+			if (!aInAB || !aInAC)
+			{
+				queueLog("REFER: attended transfer invariant violated (A not common to both dialogs)", true);
+				canSplice = false;
+			}
+			if (ab->isAnchor() || ab->isAnchorInbound() || ac->isAnchor() || ac->isAnchorInbound())
+			{
+				queueLog("REFER: attended transfer declined — anchored session", true);
+				canSplice = false;
+			}
+		}
+
+		if (!canSplice)
+		{
+			// Decline with 603: the preconditions for a local splice are not met.
+			auto declined = getMessageFromPool(data->toString(), data->getSource());
+			declined->setHeader("SIP/2.0 603 Decline");
+			declined->clearBody();
+			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+			declined->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+			_outbox.emplace_back(data->getSource(), std::move(declined));
+			return;
+		}
+
+		auto ab = sessionAB.value();
+		auto ac = sessionAC.value();
+		auto bClient = ab->getDest(); // B = callee in A↔B
+		auto cClient = ac->getDest(); // C = callee in A↔C
+		const std::string bSdp = ab->getRemoteSdp();
+		const std::string cSdp = ac->getRemoteSdp();
+		const std::string dFromAB = ab->getDialogFrom(); // A's From in AB dialog
+		const std::string dToAB   = ab->getDialogTo();   // B's To with B's tag
+		const std::string dFromAC = ac->getDialogFrom(); // A's From in AC dialog
+		const std::string dToAC   = ac->getDialogTo();   // C's To with C's tag
+
+		if (!bClient || !cClient || bSdp.empty() || cSdp.empty() ||
+			dFromAB.empty() || dFromAC.empty())
+		{
+			// SDP or dialog state missing (call too new / session timers not used).
+			auto declined = getMessageFromPool(data->toString(), data->getSource());
+			declined->setHeader("SIP/2.0 603 Decline");
+			declined->clearBody();
+			std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+			declined->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+			_outbox.emplace_back(data->getSource(), std::move(declined));
+			return;
+		}
+
+		const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+
+		// 202 Accepted to A.
+		{
+			auto accepted = getMessageFromPool(data->toString(), data->getSource());
+			accepted->setHeader(SipMessageTypes::ACCEPTED);
+			accepted->clearBody();
+			accepted->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+			accepted->setTo(std::string(data->getTo()) + ";tag=" + IDGen::GenerateID(9));
+			_outbox.emplace_back(data->getSource(), std::move(accepted));
+		}
+
+		// BYE A from session AB (server impersonates B — From=B's To, To=A's From).
+		if (!dFromAB.empty())
+		{
+			auto bye = buildServerBye(transferor->getNumber(), transferor->getAddress(),
+			                         stripHeaderName(callID), dToAB, dFromAB);
+			if (bye) _outbox.emplace_back(transferor->getAddress(), std::move(bye));
+		}
+		// BYE A from session AC (server impersonates C — From=C's To, To=A's From).
+		if (!dFromAC.empty())
+		{
+			auto bye = buildServerBye(transferor->getNumber(), transferor->getAddress(),
+			                         replacesCallIdBare, dToAC, dFromAC);
+			if (bye) _outbox.emplace_back(transferor->getAddress(), std::move(bye));
+		}
+
+		// Re-INVITE B (AB dialog) with C's SDP → B points media at C.
+		{
+			char ipBuf[INET_ADDRSTRLEN]{};
+			inet_ntop(AF_INET, &bClient->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
+			const std::string bIpPort = std::string(ipBuf) + ":" +
+			                            std::to_string(ntohs(bClient->getAddress().sin_port));
+			std::ostringstream ss;
+			ss << "INVITE sip:" << bClient->getNumber() << "@" << bIpPort << " SIP/2.0\r\n"
+			   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=z9hG4bK" << IDGen::GenerateID(12) << "\r\n"
+			   << "From: " << stripHeaderName(dFromAB) << "\r\n"
+			   << "To: " << stripHeaderName(dToAB) << "\r\n"
+			   << callID << "\r\n"
+			   << "CSeq: 100 INVITE\r\n"
+			   << "Max-Forwards: 70\r\n"
+			   << "Contact: <sip:" << bClient->getNumber() << "@" << srcIpPort << ">\r\n"
+			   << "User-Agent: pocket-dial\r\n"
+			   << "Content-Type: application/sdp\r\n"
+			   << "Content-Length: " << cSdp.size() << "\r\n\r\n"
+			   << cSdp;
+			auto inv = getMessageFromPool(ss.str(), bClient->getAddress());
+			inv->enforceG711();
+			inv->syncContentLength();
+			_outbox.emplace_back(bClient->getAddress(), std::move(inv));
+			_transferPendingAcks.push_back(callID);
+		}
+
+		// Re-INVITE C (AC dialog) with B's SDP → C points media at B.
+		{
+			char ipBuf[INET_ADDRSTRLEN]{};
+			inet_ntop(AF_INET, &cClient->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
+			const std::string cIpPort = std::string(ipBuf) + ":" +
+			                            std::to_string(ntohs(cClient->getAddress().sin_port));
+			std::ostringstream ss;
+			ss << "INVITE sip:" << cClient->getNumber() << "@" << cIpPort << " SIP/2.0\r\n"
+			   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=z9hG4bK" << IDGen::GenerateID(12) << "\r\n"
+			   << "From: " << stripHeaderName(dFromAC) << "\r\n"
+			   << "To: " << stripHeaderName(dToAC) << "\r\n"
+			   << "Call-ID: " << replacesCallIdBare << "\r\n"
+			   << "CSeq: 100 INVITE\r\n"
+			   << "Max-Forwards: 70\r\n"
+			   << "Contact: <sip:" << cClient->getNumber() << "@" << srcIpPort << ">\r\n"
+			   << "User-Agent: pocket-dial\r\n"
+			   << "Content-Type: application/sdp\r\n"
+			   << "Content-Length: " << bSdp.size() << "\r\n\r\n"
+			   << bSdp;
+			auto inv = getMessageFromPool(ss.str(), cClient->getAddress());
+			inv->enforceG711();
+			inv->syncContentLength();
+			_outbox.emplace_back(cClient->getAddress(), std::move(inv));
+			_transferPendingAcks.push_back(replacesCallIdKey);
+		}
+
+		// Link sessions as a transfer bridge: BYE from either party relays to the other.
+		ab->setPeerCallID(replacesCallIdKey);
+		ab->setTransferBridge(true);
+		ac->setPeerCallID(callID);
+		ac->setTransferBridge(true);
+
+		// NOTIFY A with success sipfrag.
+		auto notify = buildReferNotify(data, transferor, "SIP/2.0 200 OK", /*terminated=*/true);
+		if (notify) _outbox.emplace_back(transferor->getAddress(), std::move(notify));
+
+		queueLog("REFER: attended transfer " + transferor->getNumber() +
+		         " → " + bClient->getNumber() + " ↔ " + cClient->getNumber());
+		return;
+	}
+
+	// ── Blind transfer ─────────────────────────────────────────────────────────────
 	// 202 Accepted to the transferor (RFC 3515 §2.4.4).
 	{
 		auto accepted = getMessageFromPool(data->toString(), data->getSource());
@@ -2048,7 +2287,6 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 	// matched no session and the transfer silently never completed. onBusy()/tick()
 	// (CFB/CFNA) end-then-redirect for exactly this reason. CDR is recorded as the
 	// original leg tears down; redirectInvite() then allocates a clean session.
-	std::string callID(data->getCallID());
 	auto targetClient = findClient(target);
 
 	endCall(callID, transferor->getNumber(), std::string(data->getToNumber()), "blind transfer");
@@ -5025,6 +5263,40 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 		}
 	}
 	return false;
+}
+
+bool RequestsHandler::handleTransferOk(const std::shared_ptr<SipMessage>& data)
+{
+	// Intercepts 200 OKs for the re-INVITEs issued during attended transfer (same
+	// Call-ID + CSeq: 100 INVITE). ACKs the phone and removes the entry so the
+	// normal session relay in onOk() does not forward the 200 to A (who is gone).
+	const std::string cseq(data->getCSeq());
+	const std::string callID(data->getCallID());
+	if (cseq.find(SipMessageTypes::INVITE) == std::string::npos) return false;
+
+	auto it = std::find(_transferPendingAcks.begin(), _transferPendingAcks.end(), callID);
+	if (it == _transferPendingAcks.end()) return false;
+
+	const std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	const std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+	const sockaddr_in src = data->getSource();
+	char ipBuf[INET_ADDRSTRLEN]{};
+	inet_ntop(AF_INET, &src.sin_addr, ipBuf, sizeof(ipBuf));
+	const std::string destIpPort = std::string(ipBuf) + ":" +
+	                               std::to_string(ntohs(src.sin_port));
+
+	std::ostringstream ss;
+	ss << "ACK sip:" << data->getToNumber() << "@" << destIpPort << " SIP/2.0\r\n"
+	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=z9hG4bK" << IDGen::GenerateID(12) << "\r\n"
+	   << "From: " << stripHeaderName(data->getFrom()) << "\r\n"
+	   << "To: " << stripHeaderName(data->getTo()) << "\r\n"
+	   << callID << "\r\n"
+	   << "CSeq: 100 ACK\r\n"
+	   << "Max-Forwards: 70\r\n"
+	   << "Content-Length: 0\r\n\r\n";
+	_outbox.emplace_back(data->getSource(), getMessageFromPool(ss.str(), data->getSource()));
+	_transferPendingAcks.erase(it);
+	return true;
 }
 
 void RequestsHandler::parkSweep(std::chrono::steady_clock::time_point now)

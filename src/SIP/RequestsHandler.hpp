@@ -517,6 +517,9 @@ private:
 	// ring-back media re-point) and still owe an ACK for, once the parked party
 	// 200s it. Bounded by the orbit table (one entry per in-flight retrieve).
 	std::vector<std::string> _parkPendingAcks;
+	// Call-IDs of attended-transfer re-INVITEs pending ACK (same pattern as above).
+	// At most two entries live: one for the B leg and one for the C leg.
+	std::vector<std::string> _transferPendingAcks;
 
 	// Orbit index for an AOR ("700".."70N" → 0..N-1), or -1 if not an orbit.
 	int parkOrbitIndex(std::string_view ext) const;
@@ -534,6 +537,8 @@ private:
 	// 200 OK hook (called from onOk before the session lookup, like the beep table).
 	// Returns true when the OK belonged to a park dialog and was consumed.
 	bool handleParkOk(const std::shared_ptr<SipMessage>& data);
+	// Same pattern for attended-transfer re-INVITE ACKs.
+	bool handleTransferOk(const std::shared_ptr<SipMessage>& data);
 	// Timed-out park sweep, polled from tick().
 	void parkSweep(std::chrono::steady_clock::time_point now);
 	// Free any slot owned by `callID` (parked or ring-back leg); endCall() hook.

@@ -141,6 +141,17 @@ public:
 		_dialogTo   = std::move(to);
 	}
 
+	// The callee's most recent SDP (from its 200 OK to the initial INVITE or any
+	// re-INVITE). Used by attended transfer to cross-connect two live dialogs.
+	const std::string& getRemoteSdp() const { return _remoteSdp; }
+	void setRemoteSdp(std::string s) { _remoteSdp = std::move(s); }
+
+	// Marks a session as one half of an attended-transfer bridge. The BYE relay
+	// uses getPeerCallID() to reach the other half and getDialogFrom/To() for
+	// correct in-dialog headers (rather than the park-bridge logic).
+	bool isTransferBridge() const { return _isTransferBridge; }
+	void setTransferBridge(bool v) { _isTransferBridge = v; }
+
 	void release();
 
 private:
@@ -185,6 +196,9 @@ private:
 	// the call — used to build server-originated BYEs on session timer expiry.
 	std::string _dialogFrom;
 	std::string _dialogTo;
+
+	std::string _remoteSdp;       // callee's most recent SDP (for transfer SDP swap)
+	bool _isTransferBridge = false; // true for attended-transfer bridge halves
 };
 
 #endif

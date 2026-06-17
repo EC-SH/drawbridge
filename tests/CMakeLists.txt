@@ -112,6 +112,9 @@ add_executable(sip_parser_tests
     SessionTimer_test.cpp
     # RFC 3311 UPDATE: bodiless keep-alive, 481 on unknown dialog, SDP relay to peer.
     Update_test.cpp
+    # RFC 3515 REFER + RFC 3891 Replaces: attended transfer (SDP splice), re-INVITE
+    # ACK intercept, transfer bridge BYE relay, blind transfer unchanged.
+    Refer_test.cpp
     ../src/SIP/MediaBridge.cpp
     ../src/SIP/LoopbackAnchorClient.cpp
     ../src/SIP/ThreeCxAnchorClient.cpp
