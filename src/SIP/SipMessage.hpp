@@ -70,6 +70,10 @@ public:
 	std::string_view getCSeq() const;
 	std::string_view getViaBranch() const;   // branch= param extracted from Via header
 	std::string_view getCSeqMethod() const;  // method token extracted from CSeq header
+	// RFC 4028 session timer headers (0 / empty when header absent).
+	uint32_t         getSessionExpiresSecs() const;
+	std::string_view getSessionExpiresRefresher() const; // "uac", "uas", or empty
+	uint32_t         getMinSESecs() const;
 	std::string_view getContact() const;
 	std::string_view getContactNumber() const;
 	std::string_view getContentLength() const;

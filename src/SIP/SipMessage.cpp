@@ -635,6 +635,57 @@ std::string_view SipMessage::getCSeqMethod() const
 	return method;
 }
 
+uint32_t SipMessage::getSessionExpiresSecs() const
+{
+	size_t sep = _messageStr.find("\r\n\r\n");
+	size_t limit = (sep != std::string::npos) ? sep : _messageStr.size();
+	std::string_view hdrs(_messageStr.data(), limit);
+	size_t pos = hdrs.find("Session-Expires:");
+	if (pos == std::string_view::npos) pos = hdrs.find("session-expires:");
+	if (pos == std::string_view::npos) return 0;
+	pos += 16; // len("Session-Expires:")
+	while (pos < limit && (hdrs[pos] == ' ' || hdrs[pos] == '\t')) ++pos;
+	uint32_t v = 0;
+	while (pos < limit && hdrs[pos] >= '0' && hdrs[pos] <= '9')
+		v = v * 10 + static_cast<uint32_t>(hdrs[pos++] - '0');
+	return v;
+}
+
+std::string_view SipMessage::getSessionExpiresRefresher() const
+{
+	size_t sep = _messageStr.find("\r\n\r\n");
+	size_t limit = (sep != std::string::npos) ? sep : _messageStr.size();
+	std::string_view hdrs(_messageStr.data(), limit);
+	size_t pos = hdrs.find("Session-Expires:");
+	if (pos == std::string_view::npos) pos = hdrs.find("session-expires:");
+	if (pos == std::string_view::npos) return {};
+	size_t eol = hdrs.find("\r\n", pos);
+	if (eol == std::string_view::npos) eol = limit;
+	std::string_view line = hdrs.substr(pos, eol - pos);
+	size_t rp = line.find("refresher=");
+	if (rp == std::string_view::npos) return {};
+	size_t vs = rp + 10;
+	size_t ve = line.find_first_of("; \t\r\n", vs);
+	if (ve == std::string_view::npos) ve = line.size();
+	return line.substr(vs, ve - vs);
+}
+
+uint32_t SipMessage::getMinSESecs() const
+{
+	size_t sep = _messageStr.find("\r\n\r\n");
+	size_t limit = (sep != std::string::npos) ? sep : _messageStr.size();
+	std::string_view hdrs(_messageStr.data(), limit);
+	size_t pos = hdrs.find("Min-SE:");
+	if (pos == std::string_view::npos) pos = hdrs.find("min-se:");
+	if (pos == std::string_view::npos) return 0;
+	pos += 7; // len("Min-SE:")
+	while (pos < limit && (hdrs[pos] == ' ' || hdrs[pos] == '\t')) ++pos;
+	uint32_t v = 0;
+	while (pos < limit && hdrs[pos] >= '0' && hdrs[pos] <= '9')
+		v = v * 10 + static_cast<uint32_t>(hdrs[pos++] - '0');
+	return v;
+}
+
 std::string_view SipMessage::getContact() const
 {
 	return _contact;

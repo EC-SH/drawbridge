@@ -1758,6 +1758,7 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 			session->get()->setDest(client.value());
 			session->get()->setState(Session::State::Connected);
 			session->get()->clearRingTimer();   // answered: disarm any CFNA timeout
+			armSessionTimer(session->get(), data);
 			auto response = getMessageFromPool(data->toString(), data->getSource());
 			response->setContact(buildContact(data->getToNumber()));
 			endHandle(data->getFromNumber(), std::move(response));
@@ -2331,6 +2332,7 @@ void RequestsHandler::buildInviteFork(const std::shared_ptr<SipMessage>& invite,
 		inviteFork->addHeader("Alert-Info", "intercom=true");
 		inviteFork->addHeader("P-Auto-Answer", "normal");
 	}
+	inviteFork->addHeader("Supported", "timer");
 	inviteFork->enforceG711();
 	_outbox.emplace_back(target->getAddress(), std::move(inviteFork));
 }
@@ -2687,6 +2689,120 @@ void RequestsHandler::freeTxsForCallId(std::string_view callId)
 		{
 			tx.type = SipTransaction::Type::None;
 		}
+	}
+}
+
+void RequestsHandler::armSessionTimer(Session* session,
+                                       const std::shared_ptr<SipMessage>& ok200)
+{
+	uint32_t secs = ok200->getSessionExpiresSecs();
+	if (secs == 0) return;
+	auto ref = ok200->getSessionExpiresRefresher();
+	// "uas" → server is UAS → we are the refresher; "uac" or absent → phone refreshes.
+	bool weRefresh = (ref == "uas");
+	session->armSessionTimer(secs, weRefresh, std::chrono::steady_clock::now());
+	session->setDialogHeaders(std::string(ok200->getFrom()), std::string(ok200->getTo()));
+}
+
+void RequestsHandler::sweepSessionTimers(std::chrono::steady_clock::time_point now)
+{
+	// Collect expired sessions first — endCall() modifies _sessions.
+	std::vector<std::string> toExpire;
+	for (const auto& [callID, session] : _sessions)
+	{
+		if (session->getSessionExpiresSeconds() == 0) continue;
+		const auto st = session->getState();
+		if (st != Session::State::Connected && st != Session::State::Held) continue;
+
+		if (now >= session->getSessionExpiry())
+		{
+			toExpire.push_back(callID);
+			continue;
+		}
+
+		if (session->isRefresher() && now >= session->getNextRefresh())
+		{
+			// Disarm before re-arming so repeated tick() calls don't re-fire immediately.
+			session->setNextRefresh(now + std::chrono::seconds(
+				session->getSessionExpiresSeconds() / 2));
+			// Build a refresh re-INVITE to both legs using the stored invite as template.
+			auto inv = session->getInviteMessage();
+			auto src = session->getSrc();
+			auto dest = session->getDest();
+			if (inv && src && dest)
+			{
+				std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+				char ipBuf[INET_ADDRSTRLEN]{};
+
+				// Re-INVITE to src (caller)
+				inet_ntop(AF_INET, &src->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
+				auto riSrc = getMessageFromPool(inv->toString(), inv->getSource());
+				if (riSrc)
+				{
+					std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
+					std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+					riSrc->setHeader("INVITE sip:" + src->getNumber() + "@" +
+					                 std::string(ipBuf) + ":" +
+					                 std::to_string(ntohs(src->getAddress().sin_port)) + " SIP/2.0");
+					riSrc->setVia("SIP/2.0/UDP " + srcIpPort + ";branch=" + branch);
+					riSrc->setTo(session->getDialogTo());
+					riSrc->setFrom(session->getDialogFrom());
+					riSrc->addHeader("Supported", "timer");
+					riSrc->enforceG711();
+					_outbox.emplace_back(src->getAddress(), std::move(riSrc));
+				}
+
+				// Re-INVITE to dest (callee)
+				inet_ntop(AF_INET, &dest->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
+				auto riDest = getMessageFromPool(inv->toString(), inv->getSource());
+				if (riDest)
+				{
+					std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
+					std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
+					riDest->setHeader("INVITE sip:" + dest->getNumber() + "@" +
+					                  std::string(ipBuf) + ":" +
+					                  std::to_string(ntohs(dest->getAddress().sin_port)) + " SIP/2.0");
+					riDest->setVia("SIP/2.0/UDP " + srcIpPort + ";branch=" + branch);
+					riDest->setTo(session->getDialogTo());
+					riDest->setFrom(session->getDialogFrom());
+					riDest->addHeader("Supported", "timer");
+					riDest->enforceG711();
+					_outbox.emplace_back(dest->getAddress(), std::move(riDest));
+				}
+				queueLog("[session timer] sent refresh re-INVITE for " + callID);
+			}
+		}
+	}
+
+	// BYE both legs for expired sessions and free them.
+	for (const auto& callID : toExpire)
+	{
+		auto it = _sessions.find(callID);
+		if (it == _sessions.end()) continue;
+		auto session = it->second;
+		auto src  = session->getSrc();
+		auto dest = session->getDest();
+		const std::string& dFrom = session->getDialogFrom();
+		const std::string& dTo   = session->getDialogTo();
+
+		if (src && !dFrom.empty())
+		{
+			// BYE to src: server acts as callee side (From=dTo, To=dFrom).
+			auto b = buildServerBye(src->getNumber(), src->getAddress(),
+			                        callID, dTo, dFrom);
+			if (b) _outbox.emplace_back(src->getAddress(), std::move(b));
+		}
+		if (dest && !dFrom.empty())
+		{
+			auto b = buildServerBye(dest->getNumber(), dest->getAddress(),
+			                        callID, dFrom, dTo);
+			if (b) _outbox.emplace_back(dest->getAddress(), std::move(b));
+		}
+		queueLog("[session timer] expired — BYE sent for " + callID, true);
+		endCall(callID,
+		        src  ? src->getNumber()  : "",
+		        dest ? dest->getNumber() : "",
+		        "session timer expired");
 	}
 }
 
@@ -4153,6 +4269,10 @@ void RequestsHandler::tick()
 		// RFC 3261 §17: retransmit in-flight INVITE forks past their Timer A deadline;
 		// free slots whose Timer B (32 s) or absorb window (Timer L, RFC 6026) elapsed.
 		sweepTransactions(now);
+
+		// RFC 4028: send refresh re-INVITEs when we are the refresher; BYE sessions
+		// whose timer expired without a refresh (belt-and-suspenders zombie cleanup).
+		sweepSessionTimers(now);
 
 		// Build snapshot under registrar mutex lock, then save it under snapshot mutex lock
 		RegistrarSnapshot nextSnapshot;

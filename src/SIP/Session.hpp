@@ -121,6 +121,26 @@ public:
 	const std::string& getGroupExt() const { return _groupExt; }
 	void setGroupExt(const std::string& g) { _groupExt = g; }
 
+	// RFC 4028 session timers.
+	uint32_t getSessionExpiresSeconds() const { return _sessionExpiresSeconds; }
+	bool isRefresher() const { return _isRefresher; }
+	std::chrono::steady_clock::time_point getNextRefresh() const { return _nextRefresh; }
+	std::chrono::steady_clock::time_point getSessionExpiry() const { return _sessionExpiry; }
+	void armSessionTimer(uint32_t secs, bool weAreRefresher,
+	                     std::chrono::steady_clock::time_point now) {
+		_sessionExpiresSeconds = secs;
+		_isRefresher = weAreRefresher;
+		_sessionExpiry = now + std::chrono::seconds(secs);
+		_nextRefresh   = now + std::chrono::seconds(secs / 2);
+	}
+	void setNextRefresh(std::chrono::steady_clock::time_point t) { _nextRefresh = t; }
+	const std::string& getDialogFrom() const { return _dialogFrom; }
+	const std::string& getDialogTo()   const { return _dialogTo;   }
+	void setDialogHeaders(std::string from, std::string to) {
+		_dialogFrom = std::move(from);
+		_dialogTo   = std::move(to);
+	}
+
 	void release();
 
 private:
@@ -155,6 +175,16 @@ private:
 	// server-minted To-tag for BYE-bridging is the pre-existing _localTag above.
 	std::string _peerCallID;
 	bool _parkUac = false;
+
+	// RFC 4028 session timers. 0 = not negotiated.
+	uint32_t _sessionExpiresSeconds = 0;
+	bool _isRefresher = false;
+	std::chrono::steady_clock::time_point _nextRefresh{};
+	std::chrono::steady_clock::time_point _sessionExpiry{};
+	// From/To dialog headers (with tags) captured from the 200 OK that established
+	// the call — used to build server-originated BYEs on session timer expiry.
+	std::string _dialogFrom;
+	std::string _dialogTo;
 };
 
 #endif

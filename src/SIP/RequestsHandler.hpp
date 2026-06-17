@@ -565,6 +565,9 @@ private:
 	int parseRequestedExpires(const std::shared_ptr<SipMessage>& data) const;
 	void sweepExpired();   // evict expired bindings; caller must hold _mutex
 	void maybeSweep();     // throttled sweep; caller must hold _mutex
+	// RFC 4028 session timers: arm from 200 OK, sweep for expiry/refresh.
+	void armSessionTimer(Session* session, const std::shared_ptr<SipMessage>& ok200);
+	void sweepSessionTimers(std::chrono::steady_clock::time_point now);
 
 	std::optional<std::shared_ptr<SipClient>> findClient(std::string_view number);
 	std::optional<std::shared_ptr<SipClient>> findClientByAddress(const sockaddr_in& addr);

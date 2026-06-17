@@ -108,6 +108,8 @@ add_executable(sip_parser_tests
     # RFC 3261 §17 transaction retransmit layer: Timer A/B INVITE client, ghost-ring
     # regression (cancel-before-response must stop retransmit), 1xx stops retransmit.
     Transaction_test.cpp
+    # RFC 4028 session timers: header parsing + arm-from-200-OK + BYE-on-expiry sweep.
+    SessionTimer_test.cpp
     ../src/SIP/MediaBridge.cpp
     ../src/SIP/LoopbackAnchorClient.cpp
     ../src/SIP/ThreeCxAnchorClient.cpp

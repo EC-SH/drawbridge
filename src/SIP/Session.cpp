@@ -36,6 +36,12 @@ void Session::reset(std::string callID, std::shared_ptr<SipClient> src)
 	_peerCallID.clear();
 	_parkUac = false;
 	_localTag.clear();
+	_sessionExpiresSeconds = 0;
+	_isRefresher = false;
+	_nextRefresh  = {};
+	_sessionExpiry = {};
+	_dialogFrom.clear();
+	_dialogTo.clear();
 }
 
 void Session::setState(State state)
@@ -127,4 +133,10 @@ void Session::release()
 	_peerCallID.clear();
 	_parkUac = false;
 	_localTag.clear();
+	_sessionExpiresSeconds = 0;
+	_isRefresher = false;
+	_nextRefresh  = {};
+	_sessionExpiry = {};
+	_dialogFrom.clear();
+	_dialogTo.clear();
 }
