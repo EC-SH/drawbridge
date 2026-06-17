@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include "esp_log.h"
 #include "esp_random.h"
+#include "PsramTask.hpp"   // #100: PSRAM-backed task stack (off the scarce internal-RAM heap)
 #else
 #include <cstdlib>   // std::rand on host (only for SSRC/seq seeding in stubbed start)
 #endif
@@ -223,18 +224,22 @@ bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::s
 	// the udp_receiver/SIP task at 5) so pacing is not starved by signaling bursts.
 	// Handle is nullptr: the task self-manages its lifecycle via _stopRequested /
 	// _taskRunning, so we never store (and race on) a TaskHandle_t.
-	BaseType_t ok = xTaskCreatePinnedToCore(
+	// #100: stack in PSRAM (WithCaps) so N concurrent bridges' tx tasks don't exhaust internal RAM.
+	// The task does lwIP sendto + µ-law encode / tone synth only (no flash writes) — PSRAM-safe.
+	// Must self-delete WithCaps.
+	BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
 		&RtpSender::taskTrampoline,
 		"rtp_media_tx",
 		6144,   // headroom for lwIP sendto() + tone synth (4KB was marginal)
 		this,
 		6,
 		nullptr,
-		0 /* Core 0 */);
+		0 /* Core 0 */,
+		PD_TASK_STACK_CAPS);
 
 	if (ok != pdPASS)
 	{
-		ESP_LOGE("RtpSender", "xTaskCreatePinnedToCore failed");
+		ESP_LOGE("RtpSender", "xTaskCreatePinnedToCoreWithCaps failed");
 		close(_sock);
 		_sock = -1;
 		_callID.clear();
@@ -282,7 +287,7 @@ void RtpSender::taskTrampoline(void* arg)
 	// Clearing _taskRunning is the LAST access to `self`: after this the destructor may
 	// observe the task as gone and allow the object to be destroyed.
 	self->_taskRunning.store(false, std::memory_order_release);
-	vTaskDelete(nullptr);
+	vTaskDeleteWithCaps(nullptr);   // #100: created WithCaps(PSRAM) — reclaim the PSRAM stack/TCB
 }
 
 void RtpSender::runLoop()

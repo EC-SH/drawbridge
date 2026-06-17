@@ -66,11 +66,11 @@ public:
 	bool start() override { return false; }            // not implemented yet
 	void stop() override {}
 	bool isConnected() const override { return false; }
-	bool makeCall(const std::string&) override { return false; }
+	bool makeCall(const std::string&, std::string* ownLegOut = nullptr) override { if (ownLegOut) ownLegOut->clear(); return false; }
 	bool answerCall(const std::string&) override { return false; }
 	bool dropCall(const std::string&) override { return false; }
 	void setEventCallback(EventCallback) override {}   // no events will ever fire
-	bool writeAudio(const int16_t*, size_t) override { return false; }
+	bool writeAudio(const std::string&, const int16_t*, size_t) override { return false; }
 	void registerAudioRxCallback(AudioRxCallback) override {}
 	void tick() override {}                            // no periodic maintenance
 

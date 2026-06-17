@@ -170,7 +170,7 @@ TEST(LoopbackAnchorClientTest, SimEventsAndAudioLoop)
 	std::atomic<bool> audioReceived{false};
 	int16_t txAudio[10] = { 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000 };
 
-	client.registerAudioRxCallback([&](const int16_t* samples, size_t count) {
+	client.registerAudioRxCallback([&](const std::string& /*participantId*/, const int16_t* samples, size_t count) {
 		EXPECT_EQ(count, 10);
 		for (size_t i = 0; i < count; ++i)
 		{
@@ -179,7 +179,7 @@ TEST(LoopbackAnchorClientTest, SimEventsAndAudioLoop)
 		audioReceived = true;
 	});
 
-	EXPECT_TRUE(client.writeAudio(txAudio, 10));
+	EXPECT_TRUE(client.writeAudio("mock-part-123", txAudio, 10));
 	EXPECT_TRUE(audioReceived);
 
 	// Tear down call — Dropped event fires async; stop() joins the sim thread

@@ -43,6 +43,23 @@
 #define POCKETDIAL_MAX_SESSIONS 8
 #endif
 
+// #100 — maximum number of SIMULTANEOUS WAN-anchor (PSTN) calls bridged through the trunk
+// anchor. Each concurrent anchor call costs its own GET+POST TLS audio stream to the upstream
+// (2 of the CONFIG_LWIP_MAX_SOCKETS pool) plus a MediaBridge instance (RtpReceiver+RtpSender
+// UDP port pair + PlayoutBuffer + transcode).
+//
+// HARD-CAPPED AT 4 — the hardware-validated clean edge. Not a socket/RAM limit (those were lifted:
+// PSRAM task stacks, LWIP pool 48) but the ESP32-S3's SOFTWARE ECDHE: the chip has no ECC accel, so
+// each TLS handshake is ~1s of CPU, and a cold-start burst opens 2 per call (GET + POST). At ~5+
+// the simultaneous handshakes saturate both cores (idle starves → task-WDT) and the extra calls
+// open too late to bridge. 4 is the number that bridges reliably with 0 playout glitches; the 5th
+// is cleanly refused with 503 (routeAnchorCall/allBridgesBusy) rather than attempted-and-dropped.
+// Raising this needs ECC-accel silicon (the P4 platform) or per-handle GET resumption (the GET
+// stream's shutdown-teardown currently defeats keep-alive — see prewarmAllSlots). See issue #100.
+#ifndef POCKETDIAL_MAX_ANCHOR_CALLS
+#define POCKETDIAL_MAX_ANCHOR_CALLS 4
+#endif
+
 // Maximum number of concurrent BLF/presence dialog subscriptions (RFC 6665
 // SUBSCRIBE/NOTIFY with the RFC 4235 "dialog" event package). Each slot is a small
 // fixed record in a std::array — no heap. A SUBSCRIBE arriving with every slot in

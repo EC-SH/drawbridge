@@ -128,7 +128,14 @@ CONFIG_ESP_WOLFSSL_NO_STACK_SIZE_BUILD_WARNING=y
 # and mbedTLS create_ssl_handle failing — the audio stream can't reconnect and the
 # participant-drop POST can't open, so the PSTN leg lingers. Bump the pool (cheap:
 # a few hundred bytes of internal RAM per slot, and there is ~300 KB free).
-CONFIG_LWIP_MAX_SOCKETS=16
+# #100 multi-call: sized for up to ~8 concurrent anchor calls. Each bridged call draws FOUR
+# sockets — GET + POST TLS audio streams (WAN) AND its own RtpReceiver + RtpSender (LAN UDP),
+# i.e. 4N — plus the shared control WS (+1) and ctrl (+1), plus transient makecall/resolve/
+# getLegStatus GETs during setup, on top of SIP/dashboard/SSH/OPTIONS. 4*8 + ~8 baseline ≈ 40,
+# +setup transients, so 48 is the N=8 envelope (hardware ramp finds the real edge; symmetric RTP
+# would later fold the LAN pair into one socket). Hardware-confirmed: socket() FAILED at the
+# 3rd-4th call with the old 16/24 pool. Past ~8 is the P4 platform, not a config bump.
+CONFIG_LWIP_MAX_SOCKETS=48
 
 # ── mbedTLS internal-RAM relief (#94) ────────────────────────────────────────
 # The hard wall on hangup was not just sockets: a 4th TLS context (the drop POST)

@@ -20,7 +20,7 @@ void MediaBridge::init(RtpReceiver* receiver, RtpSender* sender, AnchorClient* a
 	_anchor   = anchor;
 }
 
-bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort, const std::string& callID)
+bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort, const std::string& callID, const std::string& participantId)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
 
@@ -36,15 +36,13 @@ bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort
 
 	_playoutBuffer.clear();
 	_callID = callID;
+	_participantId = participantId;
 	_active.store(true, std::memory_order_release);
 
-	// Register audio rx callback with the WAN anchor client (inbound HTTP GET stream)
-	_anchor->registerAudioRxCallback([this](const int16_t* samples, size_t count) {
-		if (_active.load(std::memory_order_acquire))
-		{
-			_playoutBuffer.write(samples, count);
-		}
-	});
+	// #100: the anchor's inbound (GET stream) audio is delivered through RequestsHandler's single
+	// rx callback, which fans out to feedRx() on the bridge owning the participant — so N bridges
+	// each receive only THEIR call's audio. This bridge no longer registers the anchor callback
+	// (doing so per-bridge would let the last bridge to start steal every call's audio).
 
 	// Start the LAN RTP receiver (dynamic ephemeral port)
 	bool receiverStarted = _receiver->start(0, [this](const uint8_t* mulaw, size_t n, uint32_t /*timestamp*/, uint16_t /*seq*/) {
@@ -61,14 +59,14 @@ bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort
 		// Write the PCM16 samples to the WAN anchor POST stream
 		if (decodedCount > 0 && _anchor)
 		{
-			_anchor->writeAudio(decoded, decodedCount);
+			_anchor->writeAudio(_participantId, decoded, decodedCount);
 		}
 	});
 
 	if (!receiverStarted)
 	{
-		_anchor->registerAudioRxCallback(nullptr);
 		_callID.clear();
+		_participantId.clear();
 		_active.store(false, std::memory_order_release);
 		return false;
 	}
@@ -96,13 +94,50 @@ bool MediaBridge::startBridge(const std::string& handsetIp, uint16_t handsetPort
 	if (!senderStarted)
 	{
 		_receiver->stop();
-		_anchor->registerAudioRxCallback(nullptr);
 		_callID.clear();
+		_participantId.clear();
 		_active.store(false, std::memory_order_release);
 		return false;
 	}
 
 	return true;
+}
+
+bool MediaBridge::feedRx(const std::string& participantId, const int16_t* samples, size_t count)
+{
+	// Hot path (anchor rx task, ~50 pps per call). The lock is uncontended except against
+	// start/stopBridge; PlayoutBuffer is itself internally synchronized for the sender's reads.
+	std::lock_guard<std::mutex> lock(_mutex);
+	if (!_active.load(std::memory_order_acquire) || _participantId != participantId)
+	{
+		return false;
+	}
+	_playoutBuffer.write(samples, count);
+	return true;
+}
+
+bool MediaBridge::isFor(const std::string& participantId) const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _active.load(std::memory_order_acquire) && !participantId.empty() && _participantId == participantId;
+}
+
+bool MediaBridge::isForCallId(const std::string& callID) const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _active.load(std::memory_order_acquire) && !callID.empty() && _callID == callID;
+}
+
+std::string MediaBridge::participantId() const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _active.load(std::memory_order_acquire) ? _participantId : std::string();
+}
+
+std::string MediaBridge::callId() const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	return _active.load(std::memory_order_acquire) ? _callID : std::string();
 }
 
 void MediaBridge::stopBridge()
@@ -124,11 +159,10 @@ void MediaBridge::stopBridge()
 	{
 		_sender->stop(_callID);
 	}
-	if (_anchor)
-	{
-		_anchor->registerAudioRxCallback(nullptr);
-	}
+	// #100: the anchor rx callback is owned by RequestsHandler (one for all bridges) — a bridge
+	// must NOT clear it on teardown, or it would silence every other live call's inbound audio.
 
 	_playoutBuffer.clear();
 	_callID.clear();
+	_participantId.clear();
 }

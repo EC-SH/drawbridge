@@ -72,12 +72,16 @@ bool LoopbackAnchorClient::isConnected() const
 	return _connected;
 }
 
-bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/)
+bool LoopbackAnchorClient::makeCall(const std::string& /*destination*/, std::string* ownLegOut)
 {
 	if (!_connected)
 	{
 		return false;
 	}
+
+	// The loopback resolves its own leg synchronously (fixed mock id), so the engine can bind the
+	// session immediately — mirrors the real anchor handing back makecall result.id (#100).
+	if (ownLegOut) *ownLegOut = "mock-part-123";
 
 	_stopSimThread = true;
 	uint64_t myCallId = ++g_activeCallId;
@@ -235,7 +239,7 @@ void LoopbackAnchorClient::setEventCallback(EventCallback cb)
 	_eventCb = cb;
 }
 
-bool LoopbackAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
+bool LoopbackAnchorClient::writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count)
 {
 	if (!_connected)
 	{
@@ -243,14 +247,16 @@ bool LoopbackAnchorClient::writeAudio(const int16_t* pcmSamples, size_t count)
 	}
 
 	AudioRxCallback audioCb;
+	std::string partId;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		audioCb = _audioCb;
+		partId = participantId.empty() ? _activeParticipantId : participantId;
 	}
 
 	if (audioCb && pcmSamples != nullptr && count > 0)
 	{
-		audioCb(pcmSamples, count);
+		audioCb(partId, pcmSamples, count);   // loopback: echo this participant's audio back
 	}
 
 	return true;

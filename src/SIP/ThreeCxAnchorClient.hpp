@@ -16,6 +16,8 @@
 #include "freertos/semphr.h"  // #43: worker-pool done semaphore (+ existing _rxDoneSem)
 #endif
 
+#include "PoolConfig.hpp"     // #100: POCKETDIAL_MAX_ANCHOR_CALLS (per-call slot count)
+
 class ThreeCxAnchorClient : public AnchorClient
 {
 public:
@@ -31,11 +33,11 @@ public:
 	void stop() override;
 	bool isConnected() const override;
 	bool isStreaming() const;
-	bool makeCall(const std::string& destination) override;
+	bool makeCall(const std::string& destination, std::string* ownLegOut = nullptr) override;
 	bool answerCall(const std::string& participantId) override;
 	bool dropCall(const std::string& participantId) override;
 	void setEventCallback(EventCallback cb) override;
-	bool writeAudio(const int16_t* pcmSamples, size_t count) override;
+	bool writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count) override;
 	void registerAudioRxCallback(AudioRxCallback cb) override;
 	void tick() override;   // non-blocking; runs the _outboundActive reconcile watchdog (ESP only)
 	void setRewarmIntervalSec(uint32_t sec) override;  // #107: idle TLS re-warm cadence (s); 0 = off
@@ -57,29 +59,21 @@ private:
 	std::atomic<bool> _running{false};
 	std::atomic<bool> _connected{false};
 	std::string       _accessToken;
-	std::string       _activeParticipantId;
+	// #100: count of outbound makeCall()s in flight whose own leg is NOT yet resolved (the window
+	// between the makecall POST and resolveOutboundLeg keying the slot). While > 0, the WS
+	// classifier treats an UNmatched upset as a probable far-leg of an in-flight outbound call
+	// rather than a new inbound — so an early upset can't false-ring the extensions. This is the
+	// per-slot successor to the old single pre-POST _outboundActive flag.
+	std::atomic<int>  _outboundPending{0};
 
-	// Inbound disambiguation. A participant upsert on _sourceDn is OURS (outbound) when
-	// _outboundActive is set by makeCall; otherwise it is the upstream delivering a PSTN
-	// call to the monitored DN. _inboundSignaledPartId records the participant we have
-	// already announced via CallEvent::Incoming so the ~750 ms upsert repeats fire it
-	// only once. Both guarded by _mutex.
-	std::atomic<bool> _outboundActive{false};
-	// One-shot: has CallEvent::Answered already fired for the current outbound leg? Media is
-	// now pre-warmed during dialing (so audio cuts through at connect), which makes the leg
-	// "streaming" BEFORE it is Connected — so isStreaming() can no longer stand in for
-	// "answered." This flag fires Answered exactly once when the leg first reaches Connected.
-	// Reset by makeCall (new call) and stopMediaStreams (teardown); unused on the inbound path.
-	std::atomic<bool> _outboundAnswered{false};
+	// #100: outbound/inbound disambiguation, the answer-once one-shot, the makecall-wedge timestamp
+	// and the inbound announce-once id all moved ONTO the per-call CallSlot (see the struct below),
+	// since each concurrent call needs its own. The shared globals here are only the aggregate TLS
+	// handshake telemetry and the watchdog/re-warm bookkeeping.
 	// Lifetime counts of POST media-stream opens by TLS handshake type (full ECDHE vs resumed).
 	// Surfaced in /api/status telemetry; cross-platform so the host build links the getter.
 	std::atomic<uint32_t> _postFullHandshakes{0};
 	std::atomic<uint32_t> _postResumedHandshakes{0};
-	std::string       _inboundSignaledPartId;
-	// Monotonic (esp_timer) timestamp of the last _outboundActive=true, guarded by _mutex.
-	// The tick() watchdog uses it to detect an outbound makecall that 3CX accepted but that
-	// never produced a participant — the flag would otherwise wedge inbound ringing forever.
-	int64_t           _outboundActiveSetUs = 0;
 	// One-shot guard: the watchdog spawns at most one reconcile worker at a time.
 	std::atomic<bool> _reconcileInFlight{false};
 	// Monotonic (esp_timer) timestamp of the last reconcile spawn. #94: the reconcile GET
@@ -111,8 +105,9 @@ private:
 	AudioRxCallback _audioCb;
 
 	mutable std::mutex _mutex;
-	mutable std::mutex _postMutex; // guards _postClient across writeAudio / stopMediaStreams; mutable for isStreaming() const
-	std::mutex         _getMutex;  // guards _getClient lifecycle across runRxLoop / stopMediaStreams
+	// #100: the POST/GET handle mutexes are now per-CallSlot (postMutex/getMutex in the struct
+	// below) — one media stream per concurrent call. _mutex still guards slot alloc/free + the
+	// shared credential/token fields.
 
 	// Token lifetime measured against the monotonic timer (not wall clock, so no
 	// SNTP dependency). Derived from the JWT's own exp/iat claims, NOT from the
@@ -123,14 +118,41 @@ private:
 
 #if defined(ESP_PLATFORM) || defined(ESP32)
 	esp_websocket_client_handle_t _wsClient   = nullptr;
-	// PERSISTENT POST audio handle. Kept alive across calls so its saved TLS session RESUMES
-	// on the next open (abbreviated handshake, ~1 RTT) instead of re-paying the ~1s software
-	// ECDHE the S3 has no hardware for — that cold handshake at connect was the outbound
-	// "dead air before two-way audio." So handle!=null no longer means "a call is streaming";
-	// _postLive does. Freed only in full teardown (closePostClient), not per call.
-	esp_http_client_handle_t      _postClient = nullptr;
-	std::atomic<bool>             _postLive{false};   // a call's POST stream is actively open (guarded by _postMutex)
-	esp_http_client_handle_t      _getClient  = nullptr;
+	// ── #100: per-call media slot ────────────────────────────────────────────────
+	// The anchor shares ONE control plane (WS + ctrl HTTPS + token) but bridges up to
+	// POCKETDIAL_MAX_ANCHOR_CALLS concurrent calls, each with its OWN media streams. Every
+	// field here is exactly what the old single-call anchor held, now replicated per call and
+	// keyed by the participant id (the leg WE control). participantId=="" means a free slot.
+	// Alloc/free + participantId + the outbound flags are guarded by _mutex; the media handles
+	// by the slot's own postMutex/getMutex (same discipline as the old single _post/_getMutex).
+	// The persistent warm postClient is kept alive across calls on this slot for TLS-session
+	// resumption (handle!=null no longer means "streaming"; postLive does).
+	struct CallSlot
+	{
+		std::string              participantId;          // "" = free (guarded by _mutex)
+		std::atomic<bool>        outboundActive{false};
+		std::atomic<bool>        outboundAnswered{false};
+		int64_t                  outboundActiveSetUs = 0; // guarded by _mutex
+		std::string              inboundSignaledPartId;   // Incoming fired once (guarded by _mutex)
+		std::string              farPartId;               // far-leg participant id — populated at Connected so Remove can match it (guarded by _mutex)
+		esp_http_client_handle_t postClient = nullptr;
+		std::atomic<bool>        postLive{false};         // guarded by postMutex
+		esp_http_client_handle_t getClient  = nullptr;
+		TaskHandle_t             rxTaskHandle = nullptr;
+		SemaphoreHandle_t        rxDoneSem    = nullptr;
+		std::atomic<bool>        tearingDown{false};      // single-entry gate for stopMediaStreams(slot)
+		mutable std::mutex       postMutex;               // guards postClient (writeAudio/stop)
+		std::mutex               getMutex;                // guards getClient (runRxLoop/stop)
+	};
+	CallSlot _calls[POCKETDIAL_MAX_ANCHOR_CALLS];
+	// Slot lookup/alloc (caller holds _mutex). slotForLocked returns the slot whose
+	// participantId matches (nullptr if none); allocSlotLocked claims a free slot for a new
+	// participant (nullptr if all busy). freeSlotLocked clears a slot back to free.
+	CallSlot* slotForLocked(const std::string& participantId);
+	CallSlot* allocSlotLocked(const std::string& participantId);
+	void      freeSlotLocked(CallSlot& slot);
+	// Heap arg handed to a slot's rx task so the static trampoline knows its slot.
+	struct RxTaskArg { ThreeCxAnchorClient* self; CallSlot* slot; };
 
 	// Persistent control-plane HTTPS connection (makecall / participant drop).
 	// Kept open across requests so each command is one RTT instead of a fresh
@@ -139,15 +161,13 @@ private:
 	esp_http_client_handle_t      _ctrlClient = nullptr;
 	std::mutex                    _ctrlMutex;
 
-	TaskHandle_t      _rxTaskHandle = nullptr;
-	SemaphoreHandle_t _rxDoneSem    = nullptr; // signalled by rx task before it deletes itself
-	// Single-entry gate for stopMediaStreams(): a concurrent caller (WS-disconnect vs stop())
-	// loses the CAS and returns immediately, so only the winner frees _getClient.
-	std::atomic<bool> _tearingDown{false};
+	// #100: the rx task handle, its done-sem, and the stopMediaStreams() single-entry gate are now
+	// per-CallSlot (rxTaskHandle / rxDoneSem / tearingDown in the struct above) — one rx pump per
+	// concurrent call, each torn down independently.
 
 	// Issue #65 (L-1): on the rare 2 s join-timeout path stopMediaStreams() force-kills
-	// the rx task with vTaskDelete; if that task was holding _getMutex it is permanently
-	// poisoned and we deliberately LEAK _getClient (closing it under a poisoned mutex
+	// the rx task with vTaskDelete; if that task was holding the slot's getMutex it is permanently
+	// poisoned and we deliberately LEAK its getClient (closing it under a poisoned mutex
 	// could deadlock/double-free). Each leak burns one of the 16 LWIP sockets, so we
 	// count them and, once kLeakRestartThreshold accumulate, request a full anchor
 	// stop()/start() cycle to reclaim the socket pool. The restart runs OFF the SIP
@@ -182,7 +202,7 @@ private:
 		std::string partId;       // the participant 3CX surfaced in the event entity path
 		std::string callerId;     // inbound From display name (best-effort)
 	};
-	static constexpr int kWsWorkers    = 1;    // bump for multi-call setup concurrency (#100)
+	static constexpr int kWsWorkers    = POCKETDIAL_MAX_ANCHOR_CALLS; // one worker per concurrent call slot
 	static constexpr int kWsQueueDepth = 16;
 	QueueHandle_t     _wsWorkQueue = nullptr;
 	TaskHandle_t      _wsWorkerHandles[kWsWorkers] = {};
@@ -205,11 +225,14 @@ private:
 	// getParticipantStatus() removed (chore #75): the specific-id GET 403s for a
 	// non-controlled leg (issue #40). Use getLegStatus() (list-based) instead.
 
-	static void rxTaskTrampoline(void* arg);
-	void runRxLoop();
+	static void rxTaskTrampoline(void* arg);   // arg is a heap RxTaskArg{self, slot}
+	void runRxLoop(CallSlot* slot);
 
 	bool startMediaStreams(const std::string& participantId);
-	void stopMediaStreams();
+	void stopMediaStreams(const std::string& participantId);
+	// Tear down EVERY active call slot (shutdown + WS-disconnect). Snapshots the active
+	// participant ids under _mutex, then stopMediaStreams() each (can't hold _mutex across them).
+	void stopAllMediaStreams();
 	// Non-virtual teardown shared by stop() and the destructor so ~ThreeCxAnchorClient()
 	// never makes a virtual call (cppcheck virtualCallInConstructor; dynamic binding is
 	// not used in a destructor anyway).
@@ -258,6 +281,14 @@ private:
 	// persistent POST handle to perform a resumed handshake and refresh its session ticket.
 	static void rewarmTaskTrampoline(void* arg);
 	void rewarmPostSession();   // the blocking re-warm body; runs off the SIP task
+	// #100: one-shot (spawned after connect) that cold-primes EVERY slot's POST TLS session (via HTTP
+	// keep-alive) so a cold-start concurrent burst RESUMES each per-call POST open (~1 RTT) instead
+	// of the S3's ~1s software ECDHE. Per-handle keep-alive only (the warm handle's own connection);
+	// NOT a separate session-key cache. POST only: the GET stream's fast teardown shuts the socket to
+	// unblock its long-poll read, killing keep-alive, so GET can't stay warm without a timeout-based
+	// rx teardown (follow-up). Runs off the SIP task (8 cold handshakes, background, at idle).
+	static void prewarmTaskTrampoline(void* arg);
+	void prewarmAllSlots();
 #endif
 };
 
