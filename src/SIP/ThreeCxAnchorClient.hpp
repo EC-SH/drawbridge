@@ -134,6 +134,7 @@ private:
 		std::atomic<bool>        outboundAnswered{false};
 		int64_t                  outboundActiveSetUs = 0; // guarded by _mutex
 		std::string              inboundSignaledPartId;   // Incoming fired once (guarded by _mutex)
+		std::string              farPartId;               // far-leg participant id — populated at Connected so Remove can match it (guarded by _mutex)
 		esp_http_client_handle_t postClient = nullptr;
 		std::atomic<bool>        postLive{false};         // guarded by postMutex
 		esp_http_client_handle_t getClient  = nullptr;
@@ -201,7 +202,7 @@ private:
 		std::string partId;       // the participant 3CX surfaced in the event entity path
 		std::string callerId;     // inbound From display name (best-effort)
 	};
-	static constexpr int kWsWorkers    = 3;    // #100: parallelize concurrent media setups (PSRAM stacks)
+	static constexpr int kWsWorkers    = POCKETDIAL_MAX_ANCHOR_CALLS; // one worker per concurrent call slot
 	static constexpr int kWsQueueDepth = 16;
 	QueueHandle_t     _wsWorkQueue = nullptr;
 	TaskHandle_t      _wsWorkerHandles[kWsWorkers] = {};

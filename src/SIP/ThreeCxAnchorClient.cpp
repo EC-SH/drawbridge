@@ -680,6 +680,7 @@ void ThreeCxAnchorClient::freeSlotLocked(CallSlot& slot)
 {
 	slot.participantId.clear();
 	slot.inboundSignaledPartId.clear();
+	slot.farPartId.clear();
 	slot.outboundActive.store(false, std::memory_order_release);
 	slot.outboundAnswered.store(false, std::memory_order_release);
 	slot.outboundActiveSetUs = 0;
@@ -2089,6 +2090,13 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
 			CallSlot* s = slotForLocked(w.partId);
+			if (!s)
+			{
+				// Far-leg Remove: 3CX names the external party's participant id, not ours.
+				// Match against each slot's recorded far-leg id so N-call teardown works.
+				for (auto& c : _calls)
+					if (!c.participantId.empty() && c.farPartId == w.partId) { s = &c; break; }
+			}
 			if (s)
 			{
 				dropLeg = s->participantId;
@@ -2111,9 +2119,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		}
 		else
 		{
-			// Unmatched far-leg Remove with >=2 calls up: can't safely pick one. Our own leg's
-			// Remove (which DOES id-match) drives that call's teardown; this is just a no-op log.
-			ESP_LOGW(TAG, "WS Remove for %s matched no slot (ambiguous) — relying on own-leg Remove", w.partId.c_str());
+			ESP_LOGW(TAG, "WS Remove for %s matched no slot", w.partId.c_str());
 		}
 		return;
 	}
@@ -2221,7 +2227,13 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 			{
 				std::lock_guard<std::mutex> lock(_mutex);
 				CallSlot* s = slotForLocked(controlLeg);
-				if (s) fire = !s->outboundAnswered.exchange(true, std::memory_order_acq_rel);
+				if (s)
+				{
+					fire = !s->outboundAnswered.exchange(true, std::memory_order_acq_rel);
+					// Record far-leg id so a Remove naming the external party maps back to us.
+					if (s->farPartId.empty() && w.partId != controlLeg)
+						s->farPartId = w.partId;
+				}
 			}
 			if (fire && evCb)
 			{
