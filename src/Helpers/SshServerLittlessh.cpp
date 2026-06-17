@@ -67,7 +67,7 @@ static Tui::LiveStats buildLiveStats()
                  m[0], m[1], m[2], m[3], m[4], m[5]);
         st.mac = mac;
     }
-    st.host = "pocketdial.local";
+    st.host = "drawbridge.local";
     st.fw   = "v3.0.0";
 
     // Real heap used % for the [6] ABOUT vitals line — same basis as the monitor's
@@ -492,7 +492,8 @@ static void flush_frame(lssh_session_t* s)
 }
 
 // Onboarding model (mirrors wolfSSH wsUserAuth): SSH is OPEN until an admin PIN
-// is provisioned, then the admin PIN is the SSH password. Username is ignored.
+// is provisioned, then the admin PIN is the SSH password. Username is ignored
+// at auth time — lssh_username(s) is used in ll_on_open() for Guided Mode.
 static bool ll_password_auth(void* u, const char* user, const char* pass)
 {
     (void)u; (void)user;
@@ -524,6 +525,8 @@ static void ll_on_open(void* u, lssh_session_t* s, const char* exec_cmd)
     const uint64_t up = static_cast<uint64_t>(esp_timer_get_time() / 1000000LL);
     configureTui(tui, "?", up);     // littlessh doesn't expose the peer fd → "?"
     tui.setSize(g_cols, g_rows);
+    const char* uname = lssh_username(s);
+    tui.setUsername(uname ? uname : "");
     tui.begin();
 }
 
