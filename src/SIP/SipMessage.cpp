@@ -615,6 +615,26 @@ std::string_view SipMessage::getCSeq() const
 	return _cSeq;
 }
 
+std::string_view SipMessage::getViaBranch() const
+{
+	auto pos = _via.find("branch=");
+	if (pos == std::string_view::npos) return {};
+	pos += 7;
+	auto end = _via.find(';', pos);
+	if (end == std::string_view::npos) end = _via.size();
+	return _via.substr(pos, end - pos);
+}
+
+std::string_view SipMessage::getCSeqMethod() const
+{
+	auto sp = _cSeq.rfind(' ');
+	if (sp == std::string_view::npos) return {};
+	auto method = _cSeq.substr(sp + 1);
+	while (!method.empty() && (method.back() == ' ' || method.back() == '\r' || method.back() == '\n'))
+		method.remove_suffix(1);
+	return method;
+}
+
 std::string_view SipMessage::getContact() const
 {
 	return _contact;

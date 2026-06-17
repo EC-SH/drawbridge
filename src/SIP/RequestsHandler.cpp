@@ -272,6 +272,13 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 			}
 		}
 
+		// RFC 3261 §17 transaction layer: advance the state machine for any tracked
+		// InviteClient transaction before the TU handler runs.  A 1xx moves the tx
+		// from Calling to Proceeding (stops retransmitting); a 2xx/3xx–6xx moves it
+		// to Accepted/Completed (starts the absorb window).  Must run first so the
+		// TU never retransmits a fork after a provisional has already landed.
+		matchAndAdvanceTx(request);
+
 		// Task 2C: SIP INFO with DTMF relay body — handle before the handler table
 		// so it is never mistakenly forwarded by a catch-all entry.
 		if (handlerKey == "INFO")
@@ -333,6 +340,16 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 		// registration appear/disappear, session create/transition/teardown.
 		// NOTIFYs land in _outbox and ride out with this pass (after unlock).
 		refreshSubscriptions();
+
+		// RFC 3261 §17: register any new outgoing INVITE in _outbox for retransmit.
+		// Scan after BLF NOTIFYs are added so the full outbox is covered; classifyTxType
+		// filters to INVITE requests only so NOTIFYs and responses are ignored.
+		for (const auto& [addr, msg] : _outbox)
+		{
+			auto txType = classifyTxType(msg);
+			if (txType != SipTransaction::Type::None)
+				registerTx(txType, addr, msg);
+		}
 
 		localOutbox = std::move(_outbox);
 		_outbox.clear();
@@ -576,6 +593,10 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 		}
 	}
 
+	// Stop retransmitting any in-flight INVITE forks immediately: the caller has
+	// abandoned the call so there is no point delivering a late INVITE to a ringing
+	// phone (it would ring after the call is dead — the ghost-ring regression).
+	freeTxsForCallId(data->getCallID());
 	setCallState(data->getCallID(), Session::State::Cancel);
 	endHandle(data->getToNumber(), data);
 }
@@ -596,6 +617,7 @@ void RequestsHandler::onReqTerminated(std::shared_ptr<SipMessage> data)
 			auto ack = buildBeepAck(data);   // same INVITE branch, To-tag from the 487
 			if (ack) _outbox.emplace_back(bd->addr, std::move(ack));
 		}
+		freeTxsForCallId(bd->callID); // stop retransmitting the beep INVITE
 		*bd = BeepDialog{};   // INVITE transaction complete — now release the slot
 		return;
 	}
@@ -1571,6 +1593,7 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 		}
 		else if (cseq.find(SipMessageTypes::BYE) != std::string::npos)
 		{
+			freeTxsForCallId(bd->callID); // stop retransmitting (beep already answered)
 			*bd = BeepDialog{};   // BYE acknowledged: dialog fully torn down, free slot
 		}
 		return;
@@ -2511,11 +2534,173 @@ bool RequestsHandler::setCallState(std::string_view callID, Session::State state
 	return false;
 }
 
+// ── RFC 3261 §17 transaction layer ───────────────────────────────────────────
+
+RequestsHandler::SipTransaction::Type
+RequestsHandler::classifyTxType(const std::shared_ptr<SipMessage>& msg)
+{
+	if (!msg || msg->getStatusInfo().has_value()) return SipTransaction::Type::None;
+	if (msg->getType() == "INVITE") return SipTransaction::Type::InviteClient;
+	return SipTransaction::Type::None;
+}
+
+void RequestsHandler::registerTx(SipTransaction::Type type,
+                                  const sockaddr_in& peer,
+                                  const std::shared_ptr<SipMessage>& msg)
+{
+	SipTransaction* slot = nullptr;
+	for (auto& tx : _txPool)
+	{
+		if (tx.type == SipTransaction::Type::None) { slot = &tx; break; }
+	}
+	if (!slot)
+	{
+		queueLog("[tx] pool exhausted — INVITE sent without retransmit tracking", true);
+		return;
+	}
+
+	auto raw = msg->toString();
+	auto now = std::chrono::steady_clock::now();
+	constexpr uint32_t kT1ms     = 500;
+	constexpr uint32_t kTimerBms = 64 * kT1ms; // 32 s
+
+	slot->type          = type;
+	slot->state         = SipTransaction::State::Calling;
+	slot->peer          = peer;
+	slot->msgTruncated  = (raw.size() >= sizeof(slot->msg));
+	slot->msgLen        = raw.size() < sizeof(slot->msg) ? raw.size() : sizeof(slot->msg) - 1;
+	std::memcpy(slot->msg, raw.data(), slot->msgLen);
+	slot->msg[slot->msgLen] = '\0';
+
+	auto branch = msg->getViaBranch();
+	auto bLen   = branch.size() < sizeof(slot->viaBranch) ? branch.size() : sizeof(slot->viaBranch) - 1;
+	std::memcpy(slot->viaBranch, branch.data(), bLen);
+	slot->viaBranch[bLen] = '\0';
+
+	auto method = msg->getCSeqMethod();
+	auto mLen   = method.size() < sizeof(slot->cseqMethod) ? method.size() : sizeof(slot->cseqMethod) - 1;
+	std::memcpy(slot->cseqMethod, method.data(), mLen);
+	slot->cseqMethod[mLen] = '\0';
+
+	auto callId = msg->getCallID();
+	auto cLen   = callId.size() < sizeof(slot->callId) ? callId.size() : sizeof(slot->callId) - 1;
+	std::memcpy(slot->callId, callId.data(), cLen);
+	slot->callId[cLen] = '\0';
+
+	slot->nextRetransmit    = now + std::chrono::milliseconds(kT1ms);
+	slot->transactionTimeout = now + std::chrono::milliseconds(kTimerBms);
+	slot->absorbDeadline    = {};
+	slot->retransmitCount   = 0;
+	slot->currentIntervalMs = kT1ms;
+}
+
+bool RequestsHandler::matchAndAdvanceTx(const std::shared_ptr<SipMessage>& msg)
+{
+	if (!msg) return false;
+	auto viaBranch = msg->getViaBranch();
+	if (viaBranch.empty()) return false;
+	auto cseqMethod = msg->getCSeqMethod();
+
+	bool matched = false;
+	auto now = std::chrono::steady_clock::now();
+	constexpr uint32_t kTimerLms = 64 * 500; // RFC 6026: 32 s absorb after 2xx
+
+	for (auto& tx : _txPool)
+	{
+		if (tx.type == SipTransaction::Type::None) continue;
+		if (viaBranch != std::string_view(tx.viaBranch)) continue;
+		if (!cseqMethod.empty() && cseqMethod != std::string_view(tx.cseqMethod)) continue;
+
+		matched = true;
+		auto si = msg->getStatusInfo();
+		if (!si.has_value()) continue; // ACK or other request — no state change needed
+
+		using Cls = PocketDial::SipStatusClass;
+		switch (si->klass)
+		{
+			case Cls::Provisional:
+				if (tx.state == SipTransaction::State::Calling)
+					tx.state = SipTransaction::State::Proceeding;
+				break;
+			case Cls::Success:
+				tx.state = SipTransaction::State::Accepted;
+				tx.absorbDeadline = now + std::chrono::milliseconds(kTimerLms);
+				break;
+			default: // 3xx–6xx: stop retransmitting, but keep slot for a brief absorb
+				tx.state = SipTransaction::State::Completed;
+				tx.absorbDeadline = now + std::chrono::milliseconds(kTimerLms);
+				break;
+		}
+	}
+	return matched;
+}
+
+void RequestsHandler::sweepTransactions(std::chrono::steady_clock::time_point now)
+{
+	for (auto& tx : _txPool)
+	{
+		if (tx.type == SipTransaction::Type::None) continue;
+
+		// Free Completed/Accepted slots once the absorb window has elapsed.
+		if (tx.state == SipTransaction::State::Completed ||
+		    tx.state == SipTransaction::State::Accepted)
+		{
+			if (now >= tx.absorbDeadline)
+				tx.type = SipTransaction::Type::None;
+			continue;
+		}
+
+		// Timer B (RFC 3261): transaction timeout — fires only in Calling state.
+		if (tx.state == SipTransaction::State::Calling &&
+		    now >= tx.transactionTimeout)
+		{
+			queueLog(std::string("[tx] Timer B expired — INVITE for ") + tx.callId
+				+ " timed out (no provisional response)", true);
+			tx.type = SipTransaction::Type::None;
+			continue;
+		}
+
+		// Timer A (RFC 3261): retransmit INVITE while in Calling state only.
+		// Proceeding (got a 1xx) → stop retransmitting; the dialog is alive.
+		if (tx.state == SipTransaction::State::Calling &&
+		    now >= tx.nextRetransmit)
+		{
+			if (tx.msgLen > 0 && !tx.msgTruncated)
+			{
+				std::string retxStr(tx.msg, tx.msgLen);
+				auto retx = getMessageFromPool(retxStr, tx.peer);
+				if (retx) _outbox.emplace_back(tx.peer, std::move(retx));
+			}
+			tx.currentIntervalMs *= 2; // Timer A doubles each time, no cap (RFC 3261)
+			tx.nextRetransmit     = now + std::chrono::milliseconds(tx.currentIntervalMs);
+			tx.retransmitCount++;
+		}
+	}
+}
+
+void RequestsHandler::freeTxsForCallId(std::string_view callId)
+{
+	for (auto& tx : _txPool)
+	{
+		if (tx.type != SipTransaction::Type::None &&
+		    std::string_view(tx.callId) == callId)
+		{
+			tx.type = SipTransaction::Type::None;
+		}
+	}
+}
+
 void RequestsHandler::endCall(std::string_view callID, std::string_view srcNumber, std::string_view destNumber, std::string_view reason)
 {
 	// DTMF accumulators are keyed by Call-ID and share the dialog lifecycle; drop
 	// this dialog's entry so _dtmfState can't grow unbounded across calls (Fix #4).
 	_dtmfState.erase(std::string(callID));
+
+	// Stop retransmitting any in-flight INVITE forks for this dialog. This covers
+	// BYE teardown, anchor CANCEL, park teardown, and all other endCall() paths.
+	// The general extension CANCEL path (onCancel() fall-through) also calls
+	// freeTxsForCallId() directly before endCall() is reached via onAck().
+	freeTxsForCallId(callID);
 
 	// Reclaim any park-orbit slot owned by this dialog (parked leg torn down by any
 	// path: BYE, lease loss, force-disconnect). No-op when the dialog isn't parked.
@@ -3951,6 +4136,7 @@ void RequestsHandler::tick()
 			}
 			// AwaitingByeOk, or AwaitingCancelDone whose linger elapsed without a 487:
 			// the teardown is complete (or the phone went silent) — now safe to free.
+			freeTxsForCallId(bd.callID); // stop any residual INVITE retransmit
 			bd = BeepDialog{};
 		}
 
@@ -3963,6 +4149,10 @@ void RequestsHandler::tick()
 		// and are sent after release, like everything else in this pass.
 		sweepSubscriptions();
 		refreshSubscriptions();
+
+		// RFC 3261 §17: retransmit in-flight INVITE forks past their Timer A deadline;
+		// free slots whose Timer B (32 s) or absorb window (Timer L, RFC 6026) elapsed.
+		sweepTransactions(now);
 
 		// Build snapshot under registrar mutex lock, then save it under snapshot mutex lock
 		RegistrarSnapshot nextSnapshot;

@@ -149,4 +149,15 @@
 #define POCKETDIAL_ZONE_MEMBER_CAP 8
 #endif
 
+// Maximum concurrent RFC 3261 §17 transaction records tracked for retransmit
+// timers.  Each InviteClient slot tracks one outgoing INVITE fork (Timer A/B):
+// retransmit interval doubles from T1 until a provisional stops it, or Timer B
+// (32 s) fires.  Sized to cover MAX_SESSIONS concurrent INVITE dialogs plus
+// headroom for forks to hunt-group members.  Pool exhaustion → message still
+// sent once (graceful degradation, same behavior as pre-transaction-layer) —
+// it never crashes or blocks.
+#ifndef POCKETDIAL_MAX_TRANSACTIONS
+#define POCKETDIAL_MAX_TRANSACTIONS (POCKETDIAL_MAX_SESSIONS * 2 + 8)
+#endif
+
 #endif

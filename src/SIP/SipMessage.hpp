@@ -68,6 +68,8 @@ public:
 	std::string_view getToNumber() const;
 	std::string_view getCallID() const;
 	std::string_view getCSeq() const;
+	std::string_view getViaBranch() const;   // branch= param extracted from Via header
+	std::string_view getCSeqMethod() const;  // method token extracted from CSeq header
 	std::string_view getContact() const;
 	std::string_view getContactNumber() const;
 	std::string_view getContentLength() const;

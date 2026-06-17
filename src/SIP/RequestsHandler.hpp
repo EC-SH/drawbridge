@@ -368,6 +368,39 @@ private:
 	// Find the beep slot owning a Call-ID, or nullptr. Caller holds _mutex.
 	BeepDialog* findBeepByCallID(std::string_view callID);
 
+	// ── RFC 3261 §17 INVITE client transaction layer ──────────────────────────
+	// One slot per outgoing INVITE fork.  Retransmit interval (Timer A) doubles
+	// from T1=500 ms each tick until a provisional response advances the state to
+	// Proceeding (no more retransmits) or Timer B (32 s) fires.  See also:
+	// RFC 4320 (non-INVITE corrections) and RFC 6026 (Accepted state after 2xx).
+	// Pool exhaustion → message sent once with no retransmit (graceful degradation).
+	// All fields guarded by _mutex.
+	struct SipTransaction
+	{
+		enum class Type  : uint8_t { None, InviteClient };
+		enum class State : uint8_t { Calling, Proceeding, Completed, Accepted };
+
+		Type  type  = Type::None;
+		State state = State::Calling;
+
+		sockaddr_in peer{};
+		char msg[1500]{};       // serialized bytes ready for retransmit (Ethernet MTU safe)
+		size_t msgLen       = 0;
+		bool   msgTruncated = false;
+
+		char callId[128]{};    // Call-ID for freeTxsForCallId() lifecycle linkage
+		char viaBranch[72]{};  // z9hG4bK… branch param (primary matching key)
+		char cseqMethod[12]{}; // "INVITE" etc. — disambiguates CANCEL sharing the branch
+
+		std::chrono::steady_clock::time_point nextRetransmit{};     // next Timer A fire
+		std::chrono::steady_clock::time_point transactionTimeout{}; // Timer B (32 s)
+		std::chrono::steady_clock::time_point absorbDeadline{};     // Timer L (RFC 6026, 2xx)
+
+		uint32_t retransmitCount   = 0;
+		uint32_t currentIntervalMs = 500; // Timer A: starts at T1, doubles each retransmit
+	};
+	std::array<SipTransaction, POCKETDIAL_MAX_TRANSACTIONS> _txPool{};
+
 	bool setCallState(std::string_view callID, Session::State state);
 	void endCall(std::string_view callID, std::string_view srcNumber, std::string_view destNumber, std::string_view reason = "");
 
@@ -506,6 +539,24 @@ private:
 	void freeParkSlot(std::string_view callID);
 	// Mirror the orbit table into the dashboard snapshot (caller holds _mutex).
 	void refreshParkSnapshot();
+
+	// ── RFC 3261 §17 transaction helpers (all callers hold _mutex) ───────────
+	// Return InviteClient if `msg` is an outgoing INVITE request; None otherwise.
+	static SipTransaction::Type classifyTxType(const std::shared_ptr<SipMessage>& msg);
+	// Claim a free _txPool slot and populate it for retransmit of `msg` → `peer`.
+	// Graceful no-op on pool exhaustion (message already sent, just no retransmit).
+	void registerTx(SipTransaction::Type type, const sockaddr_in& peer,
+	                const std::shared_ptr<SipMessage>& msg);
+	// Match `msg` (an incoming response or ACK) against _txPool by Via branch +
+	// CSeq method; advance the matched slot's state machine.  Returns true on match.
+	bool matchAndAdvanceTx(const std::shared_ptr<SipMessage>& msg);
+	// Retransmit timers: resend Calling-state INVITEs past their nextRetransmit
+	// deadline and free Completed/Accepted slots past their absorbDeadline.
+	void sweepTransactions(std::chrono::steady_clock::time_point now);
+	// Free all _txPool slots whose callId matches `callId`.  Called from endCall()
+	// and from the general CANCEL path in onCancel() to stop retransmitting the
+	// instant a dialog is torn down.
+	void freeTxsForCallId(std::string_view callId);
 
 	bool registerClient(std::shared_ptr<SipClient> client);
 	void unregisterClient(std::string_view number);

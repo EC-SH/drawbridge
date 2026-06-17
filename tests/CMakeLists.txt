@@ -105,6 +105,9 @@ add_executable(sip_parser_tests
     # DRAWBRIDGE M0: Playout buffer, Media bridge, and Anchor Clients
     PlayoutBuffer_test.cpp
     ../src/SIP/PlayoutBuffer.cpp
+    # RFC 3261 §17 transaction retransmit layer: Timer A/B INVITE client, ghost-ring
+    # regression (cancel-before-response must stop retransmit), 1xx stops retransmit.
+    Transaction_test.cpp
     ../src/SIP/MediaBridge.cpp
     ../src/SIP/LoopbackAnchorClient.cpp
     ../src/SIP/ThreeCxAnchorClient.cpp
