@@ -42,6 +42,7 @@
 #include "esp_mac.h"     // esp_read_mac, ESP_MAC_ETH
 #include "esp_timer.h"   // esp_timer_get_time
 #include "ntp_time.h"    // ntp_time_start (minimal NIST SNTP client)
+#include "mdns.h"        // mDNS — drawbridge.local resolves pre-provisioning-gate
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -392,6 +393,21 @@ extern "C" void app_main(void)
     // No RTC battery on this board, so time()/CDR/log timestamps need this. Outbound
     // UDP only, single NIST host, socket released after each sync. Non-blocking.
     ntp_time_start();
+
+    // ── mDNS: advertise drawbridge.local BEFORE the provisioning gate ────────────
+    // Without this, the hostname doesn't resolve until SipServer constructs (after the
+    // gate), making "ssh owner@drawbridge.local" fail on a fresh/unprovisioned box.
+    // mdns_init() after IP-up is the earliest safe point (netif needs to be attached).
+    if (mdns_init() == ESP_OK)
+    {
+        mdns_hostname_set("drawbridge");
+        mdns_instance_name_set("drawbridge SIP PBX");
+        ESP_LOGI(TAG, "mDNS: drawbridge.local advertised");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "mDNS init failed — .local resolution unavailable");
+    }
 
     // ── Task 1D: INFRA mode — start DHCP server on loopback netif if requested
     {

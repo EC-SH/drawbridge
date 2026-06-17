@@ -476,6 +476,20 @@ static volatile bool g_stop = false;
 // repaint is dropped — acceptable, and only reachable when the 64 KB window is
 // momentarily exhausted (effectively never for a tiny-write TUI console).
 static bool g_tui_busy = false;
+// Frame buffer: Tui::put() calls accumulate here; one lssh_write() drains it per
+// feed()/tickLive() — 50-150 tiny TLS packets collapse to one. reserve(8192) at
+// session open keeps the steady-state allocation-free. ~20 KB worst case (132×50)
+// lives on the heap (PSRAM-friendly), outside the SIP zero-heap hot path.
+static std::string g_frame;
+
+static void flush_frame(lssh_session_t* s)
+{
+    if (!g_frame.empty())
+    {
+        lssh_write(s, reinterpret_cast<const uint8_t*>(g_frame.data()), g_frame.size());
+        g_frame.clear();
+    }
+}
 
 // Onboarding model (mirrors wolfSSH wsUserAuth): SSH is OPEN until an admin PIN
 // is provisioned, then the admin PIN is the SSH password. Username is ignored.
@@ -502,8 +516,10 @@ static void ll_on_open(void* u, lssh_session_t* s, const char* exec_cmd)
     if (exec_cmd) { lssh_printf(s, "interactive console only\r\n"); lssh_exit(s, 1); return; }
     static Tui tui;                 // single client → one persistent instance
     g_tui = &tui;
-    tui.setWriter([s](const char* d, size_t n) {
-        if (n) lssh_write(s, reinterpret_cast<const uint8_t*>(d), n);
+    g_frame.clear();
+    g_frame.reserve(8192);
+    tui.setWriter([](const char* d, size_t n) {
+        if (d && n) g_frame.append(d, n);
     });
     const uint64_t up = static_cast<uint64_t>(esp_timer_get_time() / 1000000LL);
     configureTui(tui, "?", up);     // littlessh doesn't expose the peer fd → "?"
@@ -517,6 +533,7 @@ static void ll_on_data(void* u, lssh_session_t* s, const uint8_t* data, size_t l
     if (!g_tui || g_tui_busy) return;   // drop input that arrives mid-render
     g_tui_busy = true;
     bool keep = g_tui->feed(reinterpret_cast<const char*>(data), len);
+    flush_frame(s);
     g_tui_busy = false;
     if (!keep) lssh_exit(s, 0);         // operator logged out ([L])
 }
@@ -530,6 +547,7 @@ static void ll_on_idle(void* u, lssh_session_t* s)
     if (!g_tui || g_tui_busy) return;
     g_tui_busy = true;
     g_tui->tickLive();
+    flush_frame(s);
     g_tui_busy = false;
 }
 

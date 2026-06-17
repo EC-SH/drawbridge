@@ -130,7 +130,7 @@ public:
     {
         RegMode                mode = RegMode::Open;
         std::vector<DeviceRow> devices;
-        std::string            realm = "pocketdial";  // digest realm (informational)
+        std::string            realm = "drawbridge";   // digest realm (informational)
     };
 
     // ── [3] PBX CONFIG snapshot (tui-style §3.5-§3.9) ─────────────────────────
@@ -220,7 +220,7 @@ public:
         // Rendered as the literal word STATION / AP / SETUP (never color-alone).
         uint8_t  netMode     = 2;     // default AP — matches apMode=true legacy
         bool     provisioned = false; // AdminAuth::isProvisioned() — banner branch
-        std::string host = "pocketdial.local"; // identity block
+        std::string host = "drawbridge.local";  // identity block
         std::string ip   = "0.0.0.0";
         std::string mac  = "00:00:00:00:00:00";
         std::string fw   = "v3.0.0";

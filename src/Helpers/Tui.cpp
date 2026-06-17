@@ -734,11 +734,13 @@ void Tui::renderBanner()
         if (_color) body += "\x1b[0m";
         if (_color) body += std::string("\x1b[") + sgrFor(Role::Text) + "m";
         body += _unicode ? " \xe2\x80\x94 " : " - ";   // — em dash
-        body += "UNPROVISIONED";
+        body += "fresh board";
         body += _unicode ? " \xc2\xb7 " : " . ";       // · mid-dot
-        body += "first SSH session starts setup";
+        body += "no PIN set";
+        body += _unicode ? " \xc2\xb7 " : " . ";       // · mid-dot
+        body += "first session starts setup";
         if (_color) body += "\x1b[0m";
-        const int lampVis = 3 + (_unicode ? 1 : 3) + 6 + 3 + 13 + 3 + 30;
+        const int lampVis = 3 + (_unicode ? 1 : 3) + 6 + 3 + 11 + 3 + 10 + 3 + 26;
         row(body, lampVis);
     }
     idLine("ADDR", st.ip + (st.mac.empty() ? "" : ("  " + (_unicode ?
@@ -900,7 +902,21 @@ void Tui::renderHub()
         if (_color) body += "\x1b[0m";
         bodyRow(body, vis);
     }
-    bodyBlank();
+    // Quiet-state summary (D2): shown when no active calls — silent for Rivera in live-monitoring mode.
+    if (st.activeCalls == 0 && st.online > 0)
+    {
+        std::string body; int vis = 0;
+        char qb[80];
+        std::snprintf(qb, sizeof(qb), "  Board quiet.  %d registered.  No calls in progress.", st.online);
+        if (_color) body += std::string("\x1b[") + sgrFor(Role::Dim) + "m";
+        body += qb; vis += (int)std::strlen(qb);
+        if (_color) body += "\x1b[0m";
+        bodyRow(body, vis);
+    }
+    else
+    {
+        bodyBlank();
+    }
 
     // Prompt sigil + select line (brand §3.4). (◉)─▶ Select an option: _
     {
@@ -1447,11 +1463,25 @@ void Tui::drawMonitorFrame()
         std::string left = col(Role::Header, " LIVE CALLS");
         char act[24];
         std::snprintf(act, sizeof(act), "%d/%d active", ms.activeCalls, ms.maxCalls);
-        std::string badge = _monFrozen
-            ? (_unicode ? "\xe2\x9d\x9a\xe2\x9d\x9a FROZEN" : "|| FROZEN")   // ❚❚
-            : (_unicode ? "\xe2\x9f\xb3 1 Hz" : "(*) 1 Hz");                 // ⟳
-        std::string right = col(_monFrozen ? Role::Dim : Role::Text,
-                                std::string(act) + "   " + dot + "  " + badge);
+        std::string right;
+        // Healthy-state badge (B1): all extensions reachable + zero active calls + uptime > 24h.
+        const bool boardClear = !_monFrozen && ms.activeCalls == 0
+                                && ms.unreachable == 0 && ms.online > 0
+                                && ms.uptimeSec >= 86400;
+        if (boardClear)
+        {
+            const char* spinn = _unicode ? "\xe2\x9f\xb3 1 Hz" : "(*) 1 Hz";   // ⟳
+            right = col(Role::Lamp, std::string(glyph(Glyph::Online)) + " all extensions reachable")
+                  + col(Role::Text, std::string("  ") + dot + "  board is clear  " + dot + "  " + spinn);
+        }
+        else
+        {
+            std::string badge = _monFrozen
+                ? (_unicode ? "\xe2\x9d\x9a\xe2\x9d\x9a FROZEN" : "|| FROZEN")   // ❚❚
+                : (_unicode ? "\xe2\x9f\xb3 1 Hz" : "(*) 1 Hz");                 // ⟳
+            right = col(_monFrozen ? Role::Dim : Role::Text,
+                        std::string(act) + "   " + dot + "  " + badge);
+        }
         int gap = (fcols() - 2) - 1 - dispWidth(left) - dispWidth(right) - 1;
         if (gap < 1) gap = 1;
         bodyRow(left + std::string((size_t)gap, ' ') + right);
@@ -2000,7 +2030,7 @@ void Tui::renderReports()
 
         if (total == 0)
         {
-            bodyRow(col(Role::Dim, " (no calls recorded yet \xe2\x80\x94 place a call to populate the CDR)"));
+            bodyRow(col(Role::Dim, " No calls recorded yet.  Make or receive a call to start the log."));
             ++bodyUsed;
             for (int i = 0; i < cdrRows() - 1; ++i) { bodyBlank(); ++bodyUsed; }
         }
@@ -2443,6 +2473,8 @@ void Tui::renderFactoryConfirm()
     clearScreen();
     hideCursor();
     drawSpineTop("SECURITY", st);
+    ReportsSnapshot rs = reports();
+    int cdrCount = (int)rs.cdr.size();
 
     std::vector<std::string> lines;
     const char* title;
@@ -2451,11 +2483,18 @@ void Tui::renderFactoryConfirm()
     {
         title = "Confirm factory reset (1 of 2)";
         alert = std::string(glyph(Glyph::Alert)) + " ALERT   FACTORY RESET";
-        lines = {
-            "Erase ALL config: extensions, PINs, Wi-Fi, CDR.",
-            "The board returns to first-run setup.",
-            "This cannot be undone."
-        };
+        {
+            char buf[80];
+            std::snprintf(buf, sizeof(buf), "  %d extension%s \xc2\xb7 admin PIN \xc2\xb7 %d CDR record%s",
+                st.extCount, st.extCount != 1 ? "s" : "",
+                cdrCount, cdrCount != 1 ? "s" : "");
+            lines = {
+                "Erase ALL config \xe2\x80\x94 you will lose:",
+                buf,
+                "The board returns to first-run setup.",
+                "This cannot be undone."
+            };
+        }
     }
     else
     {
