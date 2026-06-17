@@ -1041,6 +1041,16 @@ void RequestsHandler::onReinvite(std::shared_ptr<SipMessage> data)
 	// (a=sendonly/inactive) and its Content-Length reach the peer intact.
 	_outbox.emplace_back(peer->getAddress(), data);
 
+	// A re-INVITE from either leg is evidence the endpoint is alive — it counts
+	// as a session-timer refresh.  Reset expiry so sweepSessionTimers() doesn't
+	// BYE a healthy call whose phone refreshes via re-INVITE rather than UPDATE.
+	if (session->getSessionExpiresSeconds() > 0)
+	{
+		session->armSessionTimer(session->getSessionExpiresSeconds(),
+		                         session->isRefresher(),
+		                         std::chrono::steady_clock::now());
+	}
+
 	// Track hold state from the offered SDP direction. RFC 3264: an absent
 	// direction attribute implies sendrecv (an active call).
 	const auto dir = data->getSdpDirection();
@@ -1123,6 +1133,14 @@ void RequestsHandler::onUpdate(std::shared_ptr<SipMessage> data)
 
 	// Relay UNTOUCHED — peer 200 OKs it directly; hold direction is tracked here.
 	_outbox.emplace_back(peer->getAddress(), data);
+
+	// SDP UPDATE from a live endpoint is a session refresh — same logic as onReinvite().
+	if (session->getSessionExpiresSeconds() > 0)
+	{
+		session->armSessionTimer(session->getSessionExpiresSeconds(),
+		                         session->isRefresher(),
+		                         std::chrono::steady_clock::now());
+	}
 
 	const auto dir = data->getSdpDirection();
 	if (dir == SipMessage::SdpDirection::SendOnly ||
@@ -2798,59 +2816,6 @@ void RequestsHandler::sweepSessionTimers(std::chrono::steady_clock::time_point n
 		{
 			toExpire.push_back(callID);
 			continue;
-		}
-
-		if (session->isRefresher() && now >= session->getNextRefresh())
-		{
-			// Disarm before re-arming so repeated tick() calls don't re-fire immediately.
-			session->setNextRefresh(now + std::chrono::seconds(
-				session->getSessionExpiresSeconds() / 2));
-			// Build a refresh re-INVITE to both legs using the stored invite as template.
-			auto inv = session->getInviteMessage();
-			auto src = session->getSrc();
-			auto dest = session->getDest();
-			if (inv && src && dest)
-			{
-				std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-				char ipBuf[INET_ADDRSTRLEN]{};
-
-				// Re-INVITE to src (caller)
-				inet_ntop(AF_INET, &src->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
-				auto riSrc = getMessageFromPool(inv->toString(), inv->getSource());
-				if (riSrc)
-				{
-					std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
-					std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-					riSrc->setHeader("INVITE sip:" + src->getNumber() + "@" +
-					                 std::string(ipBuf) + ":" +
-					                 std::to_string(ntohs(src->getAddress().sin_port)) + " SIP/2.0");
-					riSrc->setVia("SIP/2.0/UDP " + srcIpPort + ";branch=" + branch);
-					riSrc->setTo(session->getDialogTo());
-					riSrc->setFrom(session->getDialogFrom());
-					riSrc->addHeader("Supported", "timer");
-					riSrc->enforceG711();
-					_outbox.emplace_back(src->getAddress(), std::move(riSrc));
-				}
-
-				// Re-INVITE to dest (callee)
-				inet_ntop(AF_INET, &dest->getAddress().sin_addr, ipBuf, sizeof(ipBuf));
-				auto riDest = getMessageFromPool(inv->toString(), inv->getSource());
-				if (riDest)
-				{
-					std::string branch = "z9hG4bK" + IDGen::GenerateID(12);
-					std::string srcIpPort = activeIp + ":" + std::to_string(_serverPort);
-					riDest->setHeader("INVITE sip:" + dest->getNumber() + "@" +
-					                  std::string(ipBuf) + ":" +
-					                  std::to_string(ntohs(dest->getAddress().sin_port)) + " SIP/2.0");
-					riDest->setVia("SIP/2.0/UDP " + srcIpPort + ";branch=" + branch);
-					riDest->setTo(session->getDialogTo());
-					riDest->setFrom(session->getDialogFrom());
-					riDest->addHeader("Supported", "timer");
-					riDest->enforceG711();
-					_outbox.emplace_back(dest->getAddress(), std::move(riDest));
-				}
-				queueLog("[session timer] sent refresh re-INVITE for " + callID);
-			}
 		}
 	}
 

@@ -238,4 +238,69 @@ TEST(SessionTimer, ExpiredSessionGetsBye) {
     EXPECT_TRUE(foundBye) << "sweepSessionTimers must send BYE when timer expires";
 }
 
+// Regression: a refresh re-INVITE from either leg must reset _sessionExpiry.
+// Without the fix, sweepSessionTimers() would BYE a healthy call at the original
+// expiry even though the phone just sent a refresh.
+TEST(SessionTimer, ReinviteRefreshExtendsTimer) {
+    TimerFixture f;
+    const std::string callID = "st-reinv-1";
+    const std::string branch = "z9hG4bKst3";
+    std::string body = sdpBody(f.callerIp);
+
+    // Establish a call with a 2-second session timer (refresher=uac).
+    std::string inv =
+        "INVITE sip:201@server SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP " + f.callerIp + ":5060;branch=" + branch + "\r\n"
+        "From: <sip:200@server>;tag=ftE\r\n"
+        "To: <sip:201@server>\r\n"
+        "Call-ID: " + callID + "\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Contact: <sip:200@" + f.callerIp + ":5060>\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    f.handler.handle(RequestsHandler::getMessageFromPool(inv, makeAddr(f.callerIp)));
+    f.out.clear();
+
+    std::string calleeBody = sdpBody(f.calleeIp);
+    std::string ok200 =
+        "SIP/2.0 200 OK\r\n"
+        "Via: SIP/2.0/UDP " + f.callerIp + ":5060;branch=" + branch + "\r\n"
+        "From: <sip:200@server>;tag=ftE\r\n"
+        "To: <sip:201@server>;tag=ttF\r\n"
+        "Call-ID: " + callID + "\r\n"
+        "CSeq: 1 INVITE\r\n"
+        "Contact: <sip:201@" + f.calleeIp + ":5060>\r\n"
+        "Session-Expires: 2;refresher=uac\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: " + std::to_string(calleeBody.size()) + "\r\n\r\n" + calleeBody;
+    f.handler.handle(RequestsHandler::getMessageFromPool(ok200, makeAddr(f.calleeIp)));
+    f.out.clear();
+
+    // Sleep past the half-interval (1 s) — the UAC sends a refresh re-INVITE.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    std::string rbody = sdpBody(f.callerIp);
+    std::string reinv =
+        "INVITE sip:201@server SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP " + f.callerIp + ":5060;branch=z9hG4bKst3r\r\n"
+        "From: <sip:200@server>;tag=ftE\r\n"
+        "To: <sip:201@server>;tag=ttF\r\n"
+        "Call-ID: " + callID + "\r\n"
+        "CSeq: 2 INVITE\r\n"
+        "Contact: <sip:200@" + f.callerIp + ":5060>\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: " + std::to_string(rbody.size()) + "\r\n\r\n" + rbody;
+    f.handler.handle(RequestsHandler::getMessageFromPool(reinv, makeAddr(f.callerIp)));
+    f.out.clear();
+
+    // Sleep past the ORIGINAL 2-second expiry (total ~2.3 s since arm).
+    // The refresh re-INVITE should have reset _sessionExpiry, so no BYE yet.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    f.handler.tick();
+
+    for (const auto& [addr, msg] : f.out) {
+        EXPECT_NE(msg->getType(), "BYE")
+            << "re-INVITE refresh must extend session timer — no BYE at original expiry";
+    }
+}
+
 } // namespace
