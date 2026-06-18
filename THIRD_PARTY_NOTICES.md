@@ -43,10 +43,10 @@ SOFTWARE.
 | littlessh (in-tree, `components/littlessh`) | Apache-2.0 (this project) | SSH sysop terminal server — **eth/wifi/lan8720 builds** | From-scratch SSH-2.0 server; crypto via ESP-IDF's bundled mbedTLS (below). No GPL obligation. |
 | mbedTLS (bundled in ESP-IDF) | Apache-2.0 | PSA crypto for littlessh (curve25519/ECDSA/AES-GCM) + esp-tls | Ships with ESP-IDF |
 | ESP-IDF (v5.1–v6.0.1) | Apache-2.0 | Firmware SDK | https://github.com/espressif/esp-idf |
-| espressif/cjson (cJSON) | MIT | 3CX API JSON parsing | Dave Gamble & contributors |
+| espressif/cjson (cJSON) | MIT | WAN anchor call-control API JSON parsing | Dave Gamble & contributors |
 | lvgl/lvgl `^8.3` | MIT | Touch-display dashboard | |
 | espressif/mdns | Apache-2.0 | `*.local` discovery | |
-| espressif/esp_websocket_client | Apache-2.0 | 3CX call-control WS | |
+| espressif/esp_websocket_client | Apache-2.0 | WAN anchor call-control WebSocket client | |
 | espressif/esp_lcd_touch | Apache-2.0 | AXS15231B touch | |
 | espressif/w5500, espressif/lan87xx | Apache-2.0 | Ethernet PHY drivers | |
 | cxxopts (vendored `src/Helpers/cxxopts.hpp`) | MIT | Host CLI parsing | Jarryd Beck |

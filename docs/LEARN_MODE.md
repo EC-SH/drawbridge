@@ -1,8 +1,8 @@
 # Learn Mode — Fleet-Cutover Runbook
 
-**Status:** Shipped — SIP digest auth + open/learn/secure registrar modes are in the tree (`SipDigest`, `SipSecretStore`, `RegistrarMode`). | **Audience:** Installers / field operators converting an existing phone deployment to pocket-dial. | **Scope:** Operational runbook, not implementation spec.
+**Status:** Shipped — SIP digest auth + open/learn/secure registrar modes are in the tree (`SipDigest`, `SipSecretStore`, `RegistrarMode`). | **Audience:** Installers / field operators converting an existing phone deployment to DRAWBRIDGE. | **Scope:** Operational runbook, not implementation spec.
 
-> **TL;DR.** Learn mode lets you drop pocket-dial into a *running* phone deployment and
+> **TL;DR.** Learn mode lets you drop DRAWBRIDGE into a *running* phone deployment and
 > adopt the handsets that are already there — without re-typing a SIP account into every
 > phone. The phones keep working on their current credentials (trust-on-first-use, keyed by
 > device **MAC**), you then issue new secure secrets per extension from the config panel and
@@ -17,7 +17,7 @@
 ## 1. The three registrar modes
 
 The registrar mode is a runtime setting (NVS-backed, chosen at onboarding and changeable
-from the Security screen). It controls how a REGISTER is treated.
+via the SSH TUI: `[4] SECURITY → [D] Devices → [M]`). It controls how a REGISTER is treated.
 
 | Mode | What it does | When to use it |
 |------|--------------|----------------|
@@ -34,18 +34,18 @@ Secure → Open/Learn re-opens the registrar and is logged; do it only deliberat
 ## 2. How a phone's MAC is obtained (read this first)
 
 Phones **do not put their MAC in SIP**. The SIP `User-Agent` header carries only a
-firmware/model string, and there is no MAC anywhere in the REGISTER. pocket-dial resolves
+firmware/model string, and there is no MAC anywhere in the REGISTER. DRAWBRIDGE resolves
 the phone's MAC by looking up the REGISTER's **source IP in the LAN ARP table**
 (IP → MAC, via the device's own network interface).
 
 Two consequences you must plan around:
 
 - **LAN-only.** ARP resolution works only for devices on the same L2 segment as
-  pocket-dial. A phone reaching the registrar through a router (different subnet) has no
+  DRAWBRIDGE. A phone reaching the registrar through a router (different subnet) has no
   ARP entry here and **cannot be MAC-adopted**. Keep the phones and the box on one flat
   segment during cutover.
 - **First-packet timing caveat.** The ARP entry for a phone may not exist yet on its
-  *very first* packet. pocket-dial resolves the MAC a beat later (after the initial
+  *very first* packet. DRAWBRIDGE resolves the MAC a beat later (after the initial
   exchange / keepalive `OPTIONS`) and retries; a phone can therefore show up momentarily as
   adopted-without-MAC and resolve on the next registration cycle. If a device's MAC reads
   blank on the roster, wait one registration interval and re-check before acting.
@@ -63,19 +63,19 @@ plainly in [THREAT_MODEL.md](THREAT_MODEL.md) §9.
 > with the box's admin PIN already set. Keep the adoption window short.
 
 ### Step 0 — Prepare
-- [ ] pocket-dial powered, on the **same L2 segment** as the existing phones.
+- [ ] DRAWBRIDGE powered, on the **same L2 segment** as the existing phones.
 - [ ] Admin PIN set (first onboarding step — see [ONBOARDING.md](ONBOARDING.md)).
 - [ ] You know the current extension list and which phone is which (you will verify MACs).
 - [ ] Link is trusted: WPA2 SoftAP or a segmented/trusted wired LAN. Avoid an open AP for
       the window if you can ([THREAT_MODEL.md](THREAT_MODEL.md) §9, TOFU-window risk).
 
 ### Step 1 — Drop in and choose Learn
-Bring pocket-dial up as the registrar the phones point at (point the phones' SIP server at
+Bring DRAWBRIDGE up as the registrar the phones point at (point the phones' SIP server at
 the box, or take over the address the old registrar held). At onboarding, choose **Learn**
 as the registrar mode (writes `registrar_mode = 1`).
 
 ### Step 2 — Phones adopt on first REGISTER (TOFU)
-As each phone's registration refreshes, it REGISTERs to pocket-dial. In Learn mode an
+As each phone's registration refreshes, it REGISTERs to DRAWBRIDGE. In Learn mode an
 **unknown MAC** is accepted **without credential verification** and recorded as
 `{MAC, extension, state = LEARNED}`. The phone keeps working on whatever credentials it
 already had — you have not changed the handset yet. This is the trust-on-first-use step:
@@ -85,8 +85,7 @@ the box trusts the first device to claim an extension on the LAN.
 > "re-register") to adopt it immediately rather than waiting for its lease to lapse.
 
 ### Step 3 — Verify the adopted roster
-Open the **devices / registrar screen** (SSH sysop terminal → Security/Registrar, or the
-config panel). Confirm every expected phone appears with the right **MAC · extension ·
+Open the **devices / registrar screen** via the SSH TUI (`[4] SECURITY → [D] Devices`). Confirm every expected phone appears with the right **MAC · extension ·
 state** (`LEARNED` / `ONLINE`). **This is the trust-on-first-use checkpoint — verify it
 before you secure anything.** If a MAC is blank, see §2 (first-packet caveat); wait one
 cycle. If an *unexpected* MAC adopted an extension, you have a rogue/duplicate device on
@@ -127,7 +126,7 @@ whole box challenges every REGISTER and no new unverified phone can be adopted.
 ```mermaid
 sequenceDiagram
     participant P as Existing phone (ext 106)
-    participant PD as pocket-dial registrar
+    participant PD as DRAWBRIDGE registrar
     participant A as ARP table (LAN)
     participant OP as Installer (admin)
 
@@ -153,7 +152,7 @@ sequenceDiagram
 ASCII fallback:
 
 ```
- PHONE (ext 106)            pocket-dial (LEARN)            INSTALLER
+ PHONE (ext 106)            DRAWBRIDGE (LEARN)             INSTALLER
      |  REGISTER (current creds)  |                            |
      |--------------------------->| src-IP -> ARP -> MAC        |
      |                            | unknown MAC: TOFU accept    |
@@ -235,7 +234,7 @@ extension — so re-adoption is a deliberate admin action, by design.
 | Learn-mode TOFU adoption keyed by MAC | **M1 (now)** | Unknown MAC adopted; recorded `{MAC, ext}`. |
 | Extension ↔ MAC lock (anti-spoof) | **M1 (now)** | Different MAC for a secured ext → reject. |
 | Set / rotate per-extension secret in config panel | **M1 (now)** | Manual entry on the handset; box stores HA1. |
-| **Auto-reprovision** (push new creds to the phone) | **M2 (later)** | Zero-touch cutover via the provisioning HTTP path (`/provision/{mac}.cfg`) + `check-sync`. Out of scope for M1 — see [PROVISIONING.md](PROVISIONING.md). |
+| **Auto-reprovision** (push new creds to the phone) | **M2 (later)** | Zero-touch cutover via the provisioning HTTP path (`/provision/{mac}.cfg`) + `check-sync`. Out of scope for M1 — see PROVISIONING.md. |
 
 For M1, **the operator types the rotated secret into each handset.** M2 removes that step by
 auto-reprovisioning the phone over HTTP; until then, plan for a touch on each phone's web UI
@@ -260,5 +259,5 @@ to deliver the new secret.
 ## See also
 - [THREAT_MODEL.md](THREAT_MODEL.md) §9 — the auth-surface analysis (digest, TOFU window, MAC-lock, secret-at-rest, mode transitions).
 - [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md) §3.3 — SIP digest auth and WPA2 priorities.
-- [PROVISIONING.md](PROVISIONING.md) — the per-MAC secret store and the M2 auto-reprovision path.
+- PROVISIONING.md — the per-MAC secret store and the M2 auto-reprovision path.
 - [ONBOARDING.md](ONBOARDING.md) — first-boot setup and admin-PIN provisioning.

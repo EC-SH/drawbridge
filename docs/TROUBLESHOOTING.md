@@ -16,7 +16,7 @@ Quick references: [SETUP_GUIDE.md](SETUP_GUIDE.md) ·
 | Cause | Fix |
 | :--- | :--- |
 | Device not powered / still booting | Confirm power (USB-C or PoE). Watch the serial monitor (`idf.py monitor`) for `wifi_init_softap finished. SSID:esp32-sipserver` (`main/esp_main.cpp`). |
-| This is a **wired Ethernet** build | `SIP_TRANSPORT=eth` boards have **no SoftAP** — they join your wired LAN. Reach the dashboard at the device's LAN IP / `pocketdial.local` (see [HARDWARE_SELECTION.md](HARDWARE_SELECTION.md)). |
+| This is a **wired Ethernet** build | `SIP_TRANSPORT=eth` boards have **no SoftAP** — they join your wired LAN. Reach the dashboard at the device's LAN IP / `drawbridge.local` (see [HARDWARE_SELECTION.md](HARDWARE_SELECTION.md)). |
 | Device is in **Station mode** | If Wi-Fi was configured to join an existing network (`/api/wifi/connect`), it is a client, not an AP. Factory-reset to return to AP/onboarding (see [Forgot the admin PIN](#forgot-the-admin-pin)). |
 | Display build sitting in onboarding | The display variant's onboarding AP is **`My-Ap`**, not `esp32-sipserver` (`ONBOARDING_SSID`, `main/esp_main_display.cpp`). Look for `My-Ap`. |
 | 2.4 GHz only | The ESP32 SoftAP is 2.4 GHz, channel 1. Ensure your client shows 2.4 GHz networks. |
@@ -42,19 +42,23 @@ Quick references: [SETUP_GUIDE.md](SETUP_GUIDE.md) ·
 
 | Cause | Fix |
 | :--- | :--- |
-| Wrong server/port/transport | Server `192.168.4.1`, port `5060`, transport **UDP** (the engine is UDP-only). See [PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md). |
+| Wrong server/port/transport | Server `drawbridge.local` (or the device's DHCP IP), port `5060`, transport **UDP** (the engine is UDP-only). See [PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md). |
 | Not on the device's network | Confirm the phone has a `192.168.4.x` lease (SoftAP) or can reach the device's LAN IP (wired). |
 | TCP/TLS selected | Switch the client to **UDP**. There is no TCP/TLS listener. |
 | Using extension `777`/`999` | These are reserved virtual extensions; pick another (e.g. `1001`). |
 | `503 Service Unavailable` on REGISTER | The client pool is full. `allocateClient()` evicts the oldest *expired* binding, else returns `503`; the phone retries on its refresh timer. Raise the tier ([SCALING.md §4](SCALING.md)). |
 | Client pruned after registering | The registrar prunes a client after ~15 s of silence if it ignores the `OPTIONS` keepalive sent every 5 s (`RequestsHandler.cpp`). Enable the phone's keep-alive / answer-OPTIONS option. |
-| Rate-limited (packets dropped) | The SIP UDP path uses a per-source-IP token bucket (burst 40, 20 pkt/s sustained). A flooding or misconfigured client gets packets dropped; watch `packetsDropped` on `/api/status` ([ARCHITECTURE.md §5](ARCHITECTURE.md)). |
+| Rate-limited (packets dropped) | The SIP UDP path uses a per-source-IP token bucket (burst 40, 20 pkt/s sustained). A flooding or misconfigured client gets packets dropped; watch `packetsDropped` on `/api/status`. |
 
 > [!NOTE]
-> A `401` here is **not** SIP auth — pocket-dial has **no SIP digest authentication**
-> today (any extension registers on the open link, see [THREAT_MODEL.md](THREAT_MODEL.md)
-> S-3). A `401` you see is almost always the phone's own account dialog or, separately,
-> the **HTTP admin** gate (`/api/admin/*`) — a different subsystem.
+> DRAWBRIDGE supports **SIP digest authentication** in three registrar modes — Open
+> (default), Learn, and Secure (see [LEARN_MODE.md](LEARN_MODE.md)).
+> In **Open mode**, any extension registers without credentials, so a `401` during
+> REGISTER is almost always the phone's own account validation error or the **HTTP
+> admin** gate (`/api/admin/*`) — a different subsystem entirely.
+> In **Learn** or **Secure** mode, a `401` during REGISTER is the expected SIP digest
+> challenge; enter the per-extension credentials configured via the SSH TUI
+> ([3] PBX CONFIG → Extensions → [S]) or the API.
 
 ---
 
@@ -65,9 +69,9 @@ hears audio.
 
 | Cause | Fix |
 | :--- | :--- |
-| **Codec mismatch (most common)** | pocket-dial does not transcode; it rewrites SDP to `0 8 101` (`enforceG711()`). If a phone offers only Opus/G.722/G.729, there is no common codec → no audio. **Restrict every client to G.711 µ-law + a-law** ([PHONE_COMPATIBILITY.md §1](PHONE_COMPATIBILITY.md)). |
+| **Codec mismatch (most common)** | DRAWBRIDGE does not transcode; it rewrites SDP to `0 8 101` (`enforceG711()`). If a phone offers only Opus/G.722/G.729, there is no common codec → no audio. **Restrict every client to G.711 µ-law + a-law** ([PHONE_COMPATIBILITY.md §1](PHONE_COMPATIBILITY.md)). |
 | NAT/STUN/ICE enabled on the phone | Media is **peer-to-peer on one L2 segment**. NAT traversal rewrites the SDP connection address and breaks direct RTP. Turn STUN/ICE/rport **off**. |
-| Client isolation on the AP | RTP is phone-to-phone; if SoftAP client isolation were enabled, stations couldn't reach each other and audio would fail (see [PROVISIONING.md §4.4](PROVISIONING.md) caveat). |
+| Client isolation on the AP | RTP is phone-to-phone; if SoftAP client isolation were enabled, stations couldn't reach each other and audio would fail (see PROVISIONING.md §4.4 caveat). |
 | Firewall between phones (wired) | On a wired LAN, ensure the segment allows station-to-station UDP for the RTP port range. |
 | Verify with `777` | Dial **`777`** (echo): if echo works but a two-party call does not, the problem is between the two phones (NAT/isolation/firewall), not the codec. If `777` itself is silent, it is the codec/RTP on that one phone. |
 
@@ -89,14 +93,14 @@ hears audio.
 
 ## Dashboard unreachable
 
-**Symptom:** `http://192.168.4.1` (or `pocketdial.local`) does not load.
+**Symptom:** `http://192.168.4.1` (or `drawbridge.local`) does not load.
 
 | Cause | Fix |
 | :--- | :--- |
 | Wrong scheme | Use **`http://`**, not `https://` — the dashboard is plain HTTP ([API.md §1](API.md)). |
 | mDNS not resolving | Browse to the raw IP `192.168.4.1` (SoftAP) or the device's LAN IP (wired). |
 | Not joined to the device network | Re-check Wi-Fi association / DHCP lease. |
-| Slow-client / Slowloris timeout | The HTTP worker enforces a 5 s `SO_RCVTIMEO` and closes idle sockets ([ARCHITECTURE.md §4](ARCHITECTURE.md)); reload the page. |
+| Slow-client / Slowloris timeout | The HTTP worker enforces a 5 s `SO_RCVTIMEO` and closes idle sockets; reload the page. |
 | `413 Payload Too Large` | A request body over **16 KB** is rejected ([API.md §1](API.md)). Don't paste oversized Wi-Fi passwords. |
 | `403 cross-origin request rejected` | A state-changing POST whose `Origin` host ≠ `Host` is blocked (CSRF guard). Use the dashboard directly, or send a matching `Origin` from CLI ([API.md §2](API.md)). |
 | `401` on a control action | A PIN is provisioned and you have no valid `pd_session`. Log in via `/api/admin/login` first ([SETUP_GUIDE.md §3](SETUP_GUIDE.md)). |

@@ -1,6 +1,6 @@
 # Issue Tracking & Architectural Roadmap
 
-This document serves as the active issue tracker and architectural roadmap for **pocket-dial**. It tracks high-impact concurrency, performance, and hardware-specific issues identified during production deployments, along with their resolution status.
+This document serves as the active issue tracker and architectural roadmap for **DRAWBRIDGE**. It tracks high-impact concurrency, performance, and hardware-specific issues identified during production deployments, along with their resolution status.
 
 ---
 
@@ -8,7 +8,7 @@ This document serves as the active issue tracker and architectural roadmap for *
 
 This backlog is prioritized by architectural dependency and deployment urgency.
 
-### 🔴 Critical Priority: Commercial-Softswitch (3CX) Call Control & Media Loopback (WAN Bridge)
+### 🔴 Critical Priority: Commercial-Softswitch Call Control & Media Loopback (WAN Bridge)
 
 > **Status (2026-06-15):** The core WAN-anchor capability — RTP receive/decode (#61), the
 > call-control client (#63), and bridge orchestration (#64) — **shipped via PR #39** and is
@@ -111,12 +111,12 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 
 ## API Integration: WAN-Anchor Call-Control Connector (Epic Reference)
 
-> **Goal**: let a pocket-dial / tincan handset place calls to **upstream extensions** over WAN by bridging pocket-dial's SIP/RTP world to a commercial softswitch's HTTP-based **call-control API**.
+> **Goal**: let a DRAWBRIDGE handset place calls to **upstream extensions** over WAN by bridging its SIP/RTP world to a commercial softswitch's HTTP-based **call-control API**.
 >
 > **Why no SBC / NAT / STUN / TURN / ICE is needed**: the connector *terminates the handset's RTP locally* (one SIP hop, on-box) and re-originates the call into the softswitch over **HTTPS, not SIP/RTP** — so there is no second SIP/RTP peer for ICE to traverse. Both legs are 8 kHz, so media is a pure companding swap (G.711 ⇄ PCM16) with **no resampling and no media server**. Over WAN this only requires a flat L3 (WireGuard/overlay or public IP) so the connector's advertised SDP address is directly reachable.
 
 ### Architecture Decision
-The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocketdial-desktop as an ordinary extension (e.g. `3000`, or a dialing prefix). pocket-dial's **existing** `onInvite` forward path (`RequestsHandler.cpp`) delivers the INVITE to it with **zero changes to the signaling-only server** — the registrar keeps sourcing no media. The connector mirrors the **`440` `RtpSender` beachhead**, except it:
+The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocketdial-desktop as an ordinary extension (e.g. `3000`, or a dialing prefix). DRAWBRIDGE's **existing** `onInvite` forward path (`RequestsHandler.cpp`) delivers the INVITE to it with **zero changes to the signaling-only server** — the registrar keeps sourcing no media. The connector mirrors the **`440` `RtpSender` beachhead**, except it:
 * answers `200 OK` with its **own** SDP carrying a real media address and `a=sendrecv` (the `440` path uses the server media port but is send-only/tone),
 * bridges audio to the softswitch instead of synthesizing a tone,
 * maps SIP `BYE`/`CANCEL` ↔ upstream participant `drop`.

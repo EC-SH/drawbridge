@@ -1,8 +1,8 @@
-# Threat Model: pocket-dial ESP32 SIP PBX
+# Threat Model: DRAWBRIDGE ESP32 SIP PBX
 
 **Date**: 2026-06-04 | **Version**: 1.0 | **Author**: Security Engineering | **Phase**: 1 (production hardening)
 
-This document is a STRIDE-structured threat model for the **pocket-dial** ESP32 SIP PBX
+This document is a STRIDE-structured threat model for the **DRAWBRIDGE** ESP32 SIP PBX
 and its HTTP dashboard. It focuses on the locally-reachable attack surface of a small
 appliance that, by default, **runs its own open WiFi access point**. It complements the
 broader `docs/SECURITY_AUDIT.md` (which tracks CVSS-scored findings) and records the
@@ -209,7 +209,7 @@ listed as a *documented optional* future enhancement, not the headline fix.
 
 **Why self-signed HTTPS on this device has real downsides:**
 1. **Browser trust UX is bad on a LAN appliance.** There is no public CA for `192.168.4.1`
-   / `pocketdial.local`, so every visit throws a full-page certificate warning. On a
+   / `drawbridge.local`, so every visit throws a full-page certificate warning. On a
    no-screen appliance users are trained to "click through" warnings — which *erodes* the
    very trust signal TLS is supposed to provide and habituates users to ignore real warnings.
 2. **Constrained-MCU cost.** TLS handshakes (RSA/ECC + the record layer) cost notable RAM and
@@ -292,7 +292,7 @@ firmware-supply-chain risks are durably addressed by **Secure Boot v2 + flash en
 > It extends the STRIDE analysis above with the new IDs `S-4`, `D-5`, `I-6`, `T-6`, `E-3`
 > and continues the residual-risk convention. Cross-refs: [FEATURE_ROADMAP.md](FEATURE_ROADMAP.md)
 > §3.3 (SIP digest auth, WPA2), the operator runbook [LEARN_MODE.md](LEARN_MODE.md), and
-> [PROVISIONING.md](PROVISIONING.md) §7.3 (the shared per-extension secret store).
+> PROVISIONING.md §7.3 (the shared per-extension secret store).
 
 The registrar is **fully open today** (`POCKETDIAL_OPEN_REGISTRAR`); §4 records this as the
 S-3/D-2 SIP-layer gap, explicitly out of scope for the HTTP-auth change. This phase closes
@@ -323,7 +323,7 @@ MD5 is the wire algorithm, matching the installed-phone fleet — SHA-256 is a h
 
 | ID | Threat | Mitigation | Residual risk |
 |----|--------|-----------|---------------|
-| I-6 | **Per-extension digest secret recoverable from flash.** Unlike the admin PIN (one-way salted/iterated SHA-256, I-5), digest auth requires the server to **recompute** the response, so the secret store holds **HA1 = MD5(ext:realm:secret)** — a *recoverable-equivalent bearer credential*, not a one-way hash. Anyone who can read HA1 can authenticate as that extension (HA1 is directly usable in the digest computation; the cleartext secret is not even required). | HA1 is never returned over HTTP and never logged. It lives in a **separate NVS store** from `AdminAuth` (mirrors the `prov` per-MAC layout, [PROVISIONING.md](PROVISIONING.md) §5). Offline recovery requires a **physical NVS read** (same precondition as I-3/I-5). | **HA1 is a bearer credential at rest — weaker at-rest than the one-way admin hash by necessity of the protocol.** This *pairs directly with the existing flash-encryption / Secure Boot v2 item* (§7 P2, T-4/I-3/I-5): encrypting NVS at rest is the durable fix and the secret store inherits it. Until flash encryption lands, a physical attacker who reads NVS obtains usable extension credentials. Note for the trunk track ([FEATURE_ROADMAP.md](FEATURE_ROADMAP.md) §7): upstream trunk secrets land in the same store and inherit the same at-rest exposure. |
+| I-6 | **Per-extension digest secret recoverable from flash.** Unlike the admin PIN (one-way salted/iterated SHA-256, I-5), digest auth requires the server to **recompute** the response, so the secret store holds **HA1 = MD5(ext:realm:secret)** — a *recoverable-equivalent bearer credential*, not a one-way hash. Anyone who can read HA1 can authenticate as that extension (HA1 is directly usable in the digest computation; the cleartext secret is not even required). | HA1 is never returned over HTTP and never logged. It lives in a **separate NVS store** from `AdminAuth` (mirrors the `prov` per-MAC layout, PROVISIONING.md §5). Offline recovery requires a **physical NVS read** (same precondition as I-3/I-5). | **HA1 is a bearer credential at rest — weaker at-rest than the one-way admin hash by necessity of the protocol.** This *pairs directly with the existing flash-encryption / Secure Boot v2 item* (§7 P2, T-4/I-3/I-5): encrypting NVS at rest is the durable fix and the secret store inherits it. Until flash encryption lands, a physical attacker who reads NVS obtains usable extension credentials. Note for the trunk track ([FEATURE_ROADMAP.md](FEATURE_ROADMAP.md) §7): upstream trunk secrets land in the same store and inherit the same at-rest exposure. |
 
 ### 9.4 Registrar-mode transitions
 

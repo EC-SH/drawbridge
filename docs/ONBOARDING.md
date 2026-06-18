@@ -1,7 +1,7 @@
-# Pocket-Dial Firmware Onboarding Guide
+# DRAWBRIDGE Firmware Onboarding Guide
 ### ⏱ Zero-to-Flashing in Under 30 Minutes
 
-Welcome to the pocket-dial ESP32 firmware project! This guide will take you from a clean machine to a fully compiled and flashed firmware, with a functioning HTTP dashboard running on your target development board.
+Welcome to the DRAWBRIDGE ESP32 firmware project! This guide will take you from a clean machine to a fully compiled and flashed firmware, with a functioning HTTP dashboard running on your target development board.
 
 ---
 

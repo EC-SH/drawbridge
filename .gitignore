@@ -97,3 +97,16 @@ dist/
 # Hyphenated local build dirs (build-verify, build-host, ...) — the build_*/ glob
 # above misses these; without this, a stray `git add -A` swept the whole tree in.
 build-*/
+
+# Sensitive business strategy, sales, and vendor-specific files — NEVER commit
+BUYER_VALIDATION.md
+MONETIZATION_STRATEGY.md
+PITCH_SHEET.md
+PRICING_MODEL.md
+SOAK_TEST_CHECKLIST.md
+ntp_verify.txt
+reference/
+components/3cx-callcontrol-xapi.yaml
+
+# Internal engineering docs (security findings, audit reports, design specs for unbuilt features)
+docs/internal/

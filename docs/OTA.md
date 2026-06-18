@@ -1,6 +1,6 @@
 # Over-The-Air (OTA) Firmware Updates
 
-Phase-1 production hardening adds OTA firmware updates to pocket-dial on the
+Phase-1 production hardening adds OTA firmware updates to DRAWBRIDGE on the
 ESP32-S3. This document covers the partition layout, how to build and push an
 update, the rollback strategy, the one-time migration from the old single-app
 layout, and the security posture.
@@ -109,6 +109,10 @@ to write, so the host cannot perform a real update (see §3.4).
 | `GET  /api/ota/status`  | none (read-only, no secrets)           | JSON: running / boot / next partition, pending-verify flag, `otaSupported`. |
 | `POST /api/ota/reboot`  | same-origin **and** (provisioned ⇒ session) | Reboots into the staged image (device) / no-op simulation (host). |
 
+**OTA is gated by the admin PIN.** Before uploading, you must log in via
+`POST /api/admin/login` to obtain a `pd_session` session cookie; the upload and
+reboot endpoints will return `401` without it (once a PIN is provisioned).
+
 The two mutating endpoints use the **exact same gate** as the existing mutating
 endpoints (`/api/kill`, `/api/wifi/*`, `/api/factory-reset`): the request must
 be same-origin, and once an admin PIN is provisioned it must also carry a valid
@@ -119,7 +123,7 @@ image is >1.5 MB).
 ### 3.2 Curl walk-through (PIN provisioned)
 
 ```bash
-DEVICE=http://192.168.4.1          # or http://pocketdial.local
+DEVICE=http://192.168.4.1          # or http://drawbridge.local
 JAR=cookies.txt
 
 # 1) Log in with the admin PIN to obtain a pd_session cookie.

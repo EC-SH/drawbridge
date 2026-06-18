@@ -1,248 +1,284 @@
-# First-Time Setup Guide
+# DRAWBRIDGE Setup Guide
 
-This guide takes a freshly flashed **pocket-dial** device from power-on to a working
-test call. It assumes a Wi-Fi SoftAP build (the default standalone Access Point mode);
-notes call out where the wired-Ethernet and touch-display variants differ.
+This guide covers the first-time configuration of a DRAWBRIDGE unit after firmware is
+already on the board. It assumes **wired PoE Ethernet** on a LilyGO T-ETH-ELITE S3 — the
+commercial reference hardware. There is no Wi-Fi or SoftAP on this board.
 
-If you have not flashed firmware yet, do that first — see the build instructions in
-[../README.md](../README.md#building) and, for updating an already-flashed device,
-[OTA.md](OTA.md). This document picks up **after** the firmware is on the board.
+If you are looking for the abbreviated 10-minute path, see [QUICKSTART.md](QUICKSTART.md).
+For firmware installation from scratch, see [FLASHING.md](FLASHING.md) or
+[OTA.md](OTA.md) for over-the-air updates on an already-running unit.
 
 **What you will do:**
 
-1. [Power on and join the device's Wi-Fi](#1-power-on-and-join-the-device)
-2. [Open the dashboard](#2-open-the-dashboard) — the web UI; an **SSH "sysop terminal"** (TCP 22, an 80×24 ANSI TUI) is also available as a config surface on builds that link an SSH backend
-3. [Set the admin PIN (do this first)](#3-set-the-admin-pin-first)
-4. [Register a softphone or IP phone](#4-register-a-phone)
-5. [Make a test call (777 echo, then 999 all-page)](#5-make-a-test-call)
-6. [Quick-start checklist](#6-quick-start-checklist)
+1. [Power on and connect over Ethernet](#1-power-on-and-connect)
+2. [Open the SSH TUI — the primary config surface](#2-access-the-ssh-tui)
+3. [Set the admin PIN — mandatory first step](#3-set-the-admin-pin)
+4. [Choose a registrar security mode](#4-configure-the-registrar-mode)
+5. [Add extensions](#5-add-extensions)
+6. [Register phones](#6-register-phones)
+7. [Test calls](#7-test-calls)
+8. [Site-handoff checklist](#8-site-handoff-checklist)
 
 ---
 
-## 1. Power on and join the device
+## 1. Power on and connect
 
-When a standalone Wi-Fi build boots, it spawns its own **open** access point and runs an
-internal DHCP server. The SIP registrar binds to `192.168.4.1:5060` and the HTTP
-dashboard to `192.168.4.1:80`.
+1. Plug the board's Ethernet port into an **802.3af PoE switch port** or a **PoE injector**
+   connected to your LAN. The board draws power from the Ethernet cable — no separate power
+   supply is required.
+2. The device obtains a DHCP address from your LAN automatically.
+3. Wait approximately 15 seconds for boot to complete.
+4. The device advertises itself via mDNS as **`drawbridge.local`**.
 
-| Setting | Value | Source |
-| :--- | :--- | :--- |
-| SoftAP SSID | `esp32-sipserver` | `main/esp_main.cpp` (`EXAMPLE_ESP_WIFI_SSID`) |
-| Security | Open — no password | `WIFI_AUTH_OPEN` (`main/esp_main.cpp`) |
-| Channel | 1 | `EXAMPLE_ESP_WIFI_CHANNEL` |
-| Max associated stations | 10 | `EXAMPLE_MAX_STA_CONN` |
-| Gateway / server IP | `192.168.4.1` | DHCP server default |
-| Hostname (mDNS) | `pocketdial.local` | `mdns_hostname_set("pocketdial")` |
+> If mDNS does not resolve on your network, find the device's IP address from your DHCP
+> server's lease table, or check TUI [6] ABOUT after connecting on the same LAN.
+> Use that IP address wherever this guide shows `drawbridge.local`.
 
-**Steps:**
+The SIP registrar listens on **UDP port 5060**. The SSH config surface is on **TCP port 22**.
+A read-only web status page is available at `http://drawbridge.local` (port 80).
 
-1. Power the board over USB-C (or PoE on a wired board).
-2. On your laptop or phone, open Wi-Fi settings and join **`esp32-sipserver`**. No
-   password is required.
-3. Wait for your client to receive a DHCP lease (an address in the `192.168.4.x` range).
+### Network placement note
 
-> [!IMPORTANT]
-> The SoftAP is **open** by default — anyone in radio range can join. Treat the device
-> as exposed to everyone on its link and set the admin PIN immediately (step 3). See
-> [THREAT_MODEL.md](THREAT_MODEL.md) for the full security posture and the recommended
-> WPA2 hardening.
-
-### Variant: captive-portal onboarding (touch-display build)
-
-The Guition JC3248W535 display build can boot into a **captive-portal onboarding** mode
-that brings up a separate setup AP named **`My-Ap`** (`ONBOARDING_SSID` in
-`main/esp_main_display.cpp`) and shows a join QR code on screen. When you join, the
-device redirects all web traffic to its setup page so you can either join an existing
-Wi-Fi network (Station mode) or stay in Standalone AP mode.
-
-> [!NOTE]
-> The onboarding portal has a **5-minute decay watchdog** (`CAPTIVE_DECAY_SECONDS = 300`
-> in `main/esp_main_display.cpp`): if no configuration is confirmed within five minutes,
-> the device reboots into Standalone AP mode (`esp32-sipserver`) on its own. If your
-> portal disappears, just re-join `esp32-sipserver` and continue from step 2.
-
-### Variant: wired Ethernet / PoE
-
-W5500/LAN8720 builds (`SIP_TRANSPORT=eth`) are nodes on your wired LAN and obtain an
-address via DHCP (with static fallback). There is no SoftAP; reach the dashboard at the
-device's LAN IP or at `pocketdial.local`. See [HARDWARE_SELECTION.md](HARDWARE_SELECTION.md)
-for board specifics.
+Deploy the board on a **trusted, physically controlled LAN segment**. DRAWBRIDGE is not
+designed for direct Internet exposure. SIP signaling and RTP media are cleartext on the
+wire; physical switch-port discipline and LAN segmentation (e.g., a dedicated voice VLAN)
+are the appropriate controls for wired deployments. If the phones and the DRAWBRIDGE unit
+are on the same L2 segment, RTP flows peer-to-peer between phones — the device handles
+signaling only for LAN extension-to-extension calls.
 
 ---
 
-## 2. Open the dashboard
+## 2. Access the SSH TUI
 
-Open a browser on the joined client and navigate to:
+The SSH terminal is the **primary configuration surface** for DRAWBRIDGE. All security
+settings, extension management, and system configuration are done here.
 
-```
-http://192.168.4.1
-```
-
-or, where mDNS resolves:
+Connect from any host on the same LAN:
 
 ```
-http://pocketdial.local
+ssh sysop@drawbridge.local
 ```
 
-You should see the retro CGA dashboard. It renders live data from
-[`GET /api/status`](API.md#get-apistatus): the server IP/port, uptime, processed/dropped
-packet counters, the list of registered extensions, and any active call sessions.
+If mDNS does not resolve:
 
-If the page does not load, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#dashboard-unreachable).
+```
+ssh sysop@<device-ip>
+```
+
+> Any SSH username is accepted — the username field is not validated until the
+> owner/sysop privilege model is fully implemented. `sysop` is the conventional label.
+
+**On first boot: no password is required.** The TUI opens immediately to the **FirstRun**
+setup screen. This is by design — DRAWBRIDGE is open for initial provisioning until you
+set an admin PIN. Anyone who can reach the device on the LAN can connect unauthenticated
+until the PIN is set. **Set the PIN before doing anything else.**
+
+After the PIN is set, the SSH password is the admin PIN.
+
+> The web dashboard at `http://drawbridge.local` is available for read-only status and OTA
+> updates, but it is not the configuration path for field deployments.
 
 ---
 
-## 3. Set the admin PIN (first)
+## 3. Set the admin PIN
 
-> [!IMPORTANT]
-> **Set the admin PIN before doing anything else.** A factory-fresh device is
-> *unprovisioned*: its state-changing endpoints are protected only by a same-origin/CSRF
-> check, so any peer on the open AP could disconnect calls, rewrite Wi-Fi credentials,
-> switch modes, or factory-reset the device. The instant a PIN is set, those endpoints
-> require an authenticated session. This is the **first-run onboarding step**
-> (see [THREAT_MODEL.md](THREAT_MODEL.md) §5.1).
+> **Do this first.** Until a PIN is provisioned, anyone on the LAN can reach the SSH TUI
+> and change device configuration. A PIN engages the authentication gate immediately.
 
-Once a PIN is set, the following state-changing endpoints require a valid `pd_session`
-cookie (else they return `401`): `/api/kill`, `/api/wifi/connect`, `/api/wifi/mode_ap`,
-`/api/factory-reset`, and the OTA endpoints (`/api/ota/upload`, `/api/ota/reboot`).
+### From the FirstRun screen
 
-### Set the PIN from the dashboard
+The FirstRun screen prompts you to set a PIN on first boot. Follow the on-screen
+instructions.
 
-Use the admin/security control on the dashboard to set your PIN. Under the hood this
-POSTs to `/api/admin/set-pin`.
+### From the TUI at any time
 
-### Set the PIN from the command line
+Navigate to **[4] SECURITY → [P] Set PIN** and follow the prompt.
 
-```bash
-DEVICE=http://192.168.4.1     # or http://pocketdial.local
+**PIN requirements:**
 
-curl -s -H "Origin: $DEVICE" \
-     -X POST --data "pin=YOUR_PIN" \
-     "$DEVICE/api/admin/set-pin"
-# -> {"status":"ok","provisioned":true}
-```
-
-PIN rules and behavior, from `src/Helpers/AdminAuth.{hpp,cpp}` and the threat model:
-
-| Property | Value |
+| Property | Requirement |
 | :--- | :--- |
-| Minimum length | 4 characters (`kMinPinLength`); a too-short PIN returns `400` |
-| Storage | Salted, iterated SHA-256 — 50,000 rounds, 128-bit random salt (NVS keys `admin_salt` / `admin_hash`) |
-| Brute-force lockout | 5 consecutive failed logins → 60-second lockout (`429`); auto-clears |
-| Session token | ≥128-bit opaque, `HttpOnly` + `SameSite=Strict` cookie, 30-minute absolute expiry |
+| Minimum length | 4 characters |
+| Recommended | 6 or more alphanumeric characters |
+| Recovery | None — a lost PIN requires a factory reset (reflash) |
 
-> [!TIP]
-> The hash is salted and iterated, but a short numeric PIN is still trivially crackable
-> if an attacker ever obtains the flash contents physically. **Use ≥6 alphanumeric
-> characters** (THREAT_MODEL.md §5.2, P0 guidance).
-
-### Log in
-
-After the PIN is set, obtain a session before calling any gated endpoint:
-
-```bash
-curl -s -c cookies.txt -H "Origin: $DEVICE" \
-     -X POST --data "pin=YOUR_PIN" \
-     "$DEVICE/api/admin/login"
-# -> {"status":"ok","authenticated":true}   (sets a pd_session cookie)
-```
-
-You can verify provisioning state any time with the read-only endpoint
-`GET /api/admin/status`, which returns only booleans (`provisioned`, `authenticated`).
+After the PIN is set:
+- SSH authentication uses the PIN as the password.
+- The PIN protects all configuration actions in the TUI.
+- A 4-digit numeric PIN is technically accepted but trivially guessable. Use at least 6
+  alphanumeric characters and record it in the site's secure credentials log.
 
 ---
 
-## 4. Register a phone
+## 4. Configure the registrar mode
 
-pocket-dial is a SIP registrar. Any SIP client — a softphone app or a hardware IP phone —
-registers against it with these settings:
+The registrar mode controls how phones are permitted to register. This is a security
+decision — choose deliberately.
 
-| Field | Value | Notes |
+Navigate to **[4] SECURITY → [D] Registrar → [M] Mode** to select a mode.
+
+### The three modes
+
+| Mode | Behavior | When to use |
 | :--- | :--- | :--- |
-| SIP server / registrar / proxy | `192.168.4.1` | Or the device's LAN IP on wired builds; `pocketdial.local` where mDNS resolves |
-| Port | `5060` | UDP signaling port |
-| Transport | **UDP** | The engine only speaks UDP |
-| Username / Auth ID / extension | your choice, e.g. `1001` | The registrar keys clients by this extension (AOR) |
-| Password | (any / blank in the default **Open** mode) | SIP digest authentication **is** shipped — the registrar has **Open / Learn / Secure** modes and simply *defaults to Open*. In Learn/Secure modes the REGISTER is challenged against the per-extension secret store. See [LEARN_MODE.md](LEARN_MODE.md) and [THREAT_MODEL.md](THREAT_MODEL.md) S-3 |
-| Codec | **G.711 only** — µ-law (PCMU, payload 0) and a-law (PCMA, payload 8), plus telephone-event (101) | The server rewrites SDP to `0 8 101` via `enforceG711()` |
-| Registration expiry | up to `3600` s | `DEFAULT_EXPIRES`/`MAX_EXPIRES`; higher requests are capped to 3600 |
+| **Open** (default) | Any phone that knows an extension number can register without credentials. | Isolated bench testing only. Not for production on a shared LAN. |
+| **Learn** | The first device to claim an extension is adopted automatically (trust-on-first-use, keyed by MAC address). Subsequent registrations from a different MAC are rejected once the extension is secured. | During initial phone onboarding. Run this window short, then move to Secure. |
+| **Secure** | Every registration is SIP digest-challenged (RFC 2617). Only extensions with a configured secret can register. Each extension is locked to the MAC address that claimed it. | Steady-state production. The target for any completed deployment. |
 
-> [!IMPORTANT]
-> **Do not reuse the extensions `777` or `999`.** They are reserved virtual extensions
-> (echo test and all-page broadcast — see step 5).
+### Recommended workflow for a new deployment
 
-**Steps:**
+1. Set registrar mode to **Learn** while registering phones.
+2. Confirm the adopted roster in **[4] SECURITY** — verify each extension shows the correct
+   MAC address.
+3. Assign a per-extension SIP secret to each extension via **[3] PBX CONFIG → Extensions → [S]**.
+4. Flip mode to **Secure** once all phones are registered and secrets are set.
 
-1. Open your SIP client and create a new account/identity.
-2. Enter server `192.168.4.1`, port `5060`, transport **UDP**.
-3. Choose an extension (e.g. `1001`) as the username.
-4. Restrict the codec list to **G.711 µ-law and a-law** (disable Opus, G.722, G.729).
-5. Save. The client should show "registered".
-6. Confirm on the dashboard: the extension appears in the `clients` list of
-   [`GET /api/status`](API.md#get-apistatus).
+The Learn mode window is a deliberate, time-limited weakening of the registrar. On a
+wired segment with physical access controls, this risk is manageable — but close the
+window promptly. See [LEARN_MODE.md](LEARN_MODE.md) for the full cutover runbook,
+including MAC-lock behavior, ARP resolution caveats, and rollback procedures.
 
-Register a **second** extension (e.g. `1002`) on another client so you can place a real
-call later. Per-client walkthroughs and known quirks are in
+> **Mode transitions require admin authentication and are not automatic.** There is no
+> silent downgrade — moving from Secure back to Learn or Open is an explicit admin action.
+
+---
+
+## 5. Add extensions
+
+In **Open** and **Learn** mode, phones self-register: configure the phone with any
+extension number and the SIP registrar accepts it directly. No pre-provisioning step
+is required.
+
+> The [A] Add extension form in the TUI ([3] PBX CONFIG → Extensions) renders a
+> layout for future use but does not persist entries yet — extensions appear in the
+> list only while a phone is actively registered.
+
+### Setting per-extension SIP secrets (required for Secure mode)
+
+To use **Secure** registrar mode, each extension needs a SIP digest secret:
+
+1. Leave the registrar in **Learn** mode temporarily.
+2. Register the phone — it appears in the TUI extensions list while connected.
+3. With the extension highlighted, press **[S]** to assign a secret (never echoed).
+4. Enter the same secret on the phone's SIP account password field.
+5. Once all phones have secrets set, switch registrar mode to **Secure**.
+
+The device stores an HA1 hash of the secret — the actual secret text is not recoverable
+from the device, but the stored HA1 is equivalent to a credential. Record all secrets in
+the site's secure credentials log.
+
+**Reserved extensions — do not use as phone extensions:**
+
+| Extension | Purpose |
+| :--- | :--- |
+| 700–799 | Call park orbits |
+| 777 | Echo test (loopback) |
+| 98x | Zone paging |
+| 999 | All-page broadcast |
+
+---
+
+## 6. Register phones
+
+Universal SIP account settings for all phones:
+
+| Setting | Value | Notes |
+| :--- | :--- | :--- |
+| SIP server / registrar | `drawbridge.local` or the device IP | Use the IP if mDNS does not resolve |
+| Port | `5060` | UDP only |
+| Transport | **UDP** | |
+| Extension / username | e.g. `1001` | Any number except reserved extensions (777, 999, 700–799, 98x) |
+| Password / secret | SIP secret set via TUI [S] | Blank if using Open mode |
+| Codec | **G.711 µ-law (PCMU) and a-law (PCMA) only** | Disable Opus, G.722, G.729 |
+| Codec payload | PCMU = 0, PCMA = 8, telephone-event = 101 | |
+| Registration expiry | Up to 3600 seconds | Higher values are capped to 3600 |
+| NAT / STUN / ICE | **All OFF** | The device is on the same LAN — no NAT traversal needed |
+
+> **Codec requirement:** DRAWBRIDGE rewrites all SDP to `0 8 101` via `enforceG711()`.
+> Phones that negotiate Opus or G.722 will have their codec list overridden. Disable
+> non-G.711 codecs on each phone to avoid confusion during call setup.
+
+After the phone registers, confirm it appears in the extensions list under **[3] PBX CONFIG**
+or in the web dashboard at `http://drawbridge.local`.
+
+The registrar sends an OPTIONS keepalive to each registered phone every 5 seconds and
+prunes extensions that do not respond after approximately 15 seconds. A phone that does
+not answer OPTIONS keepalives may disappear from the roster.
+
+For per-model configuration walkthroughs and known quirks, see
 [PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md).
 
-> [!NOTE]
-> The registrar pings each registered client with a SIP `OPTIONS` keepalive every 5
-> seconds and prunes a client after ~15 seconds of silence (`RequestsHandler.cpp`). A
-> phone that does not answer OPTIONS may be dropped from the registrar.
+---
+
+## 7. Test calls
+
+Verify the system before leaving the site. At minimum, run the echo test and one
+extension-to-extension call.
+
+### Echo test — dial 777
+
+Dial **777** from any registered phone. The call answers immediately and echoes your
+voice back to you using your own phone's RTP connection information. This tests
+audio path, codec negotiation, and RTP connectivity without requiring a second phone.
+
+- You should hear your own voice returned with a short delay.
+- If the call answers but you hear nothing, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+  for one-way or no-audio diagnosis.
+- If the call does not connect, confirm the phone is registered in **[3] PBX CONFIG**.
+
+### All-page broadcast — dial 999
+
+With at least two phones registered, dial **999** from one phone. All other registered
+extensions ring simultaneously with auto-answer headers. The first extension to answer is
+bridged to the caller; the rest stop ringing.
+
+### Extension-to-extension call
+
+Dial from one registered extension to another (for example, `1001` to `1002`).
+
+- The callee phone rings; answer it.
+- Two-way audio should be audible on both ends.
+- RTP media flows **directly between the two phones** — the DRAWBRIDGE device only brokers
+  the SIP signaling for LAN calls. The call appears in the active sessions list in
+  **[3] PBX CONFIG** and on the web dashboard.
 
 ---
 
-## 5. Make a test call
+## 8. Site-handoff checklist
 
-### 5a. Echo test — dial `777`
+Complete and sign off on this list before leaving the site. Keep a copy in the site's
+installation record.
 
-`777` is a built-in echo loopback. When an endpoint dials `777`, the server answers
-`200 OK` using **the caller's own SDP connection info**, so the phone streams its audio
-back to its own receive port — a zero-DSP hardware echo test (`RequestsHandler::onInvite`).
+**System**
+- [ ] Firmware version confirmed — TUI **[6] ABOUT**
+- [ ] Device IP noted; static DHCP binding configured on the switch for this MAC address
+      (prevents IP changes on reboot)
+- [ ] Unit is on a trusted, physically controlled LAN segment or voice VLAN
 
-1. From a registered phone, dial **`777`**.
-2. The call connects immediately. Speak — you should hear your own voice echoed back.
-3. Hang up.
+**Security**
+- [ ] Admin PIN set — minimum 6 alphanumeric characters
+- [ ] PIN recorded in the site's secure credentials log (not on a sticky note near the device)
+- [ ] Registrar mode configured — Open / Learn / Secure (circle one)
+- [ ] If Secure: per-extension secrets set and confirmed on each handset
 
-If you hear nothing, your audio path (codec/RTP) is the suspect — see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#one-way-or-no-audio).
+**Phones**
+- [ ] All phones registered and visible in TUI [3] PBX CONFIG → Extensions
+- [ ] All phones show as registered in TUI [3] PBX CONFIG or web dashboard
+- [ ] Echo test (777) passed on at least one extension — two-way audio confirmed
+- [ ] Extension-to-extension call passed — two-way audio confirmed
 
-### 5b. All-page broadcast — dial `999`
-
-`999` is a parallel intercom/all-page. Dialing it forks the INVITE to **every other
-registered extension** at once, injecting auto-answer headers; the first device to answer
-`200 OK` is connected and the rest are cancelled (`RequestsHandler` broadcast handler).
-
-1. Make sure at least one **other** extension is registered (e.g. `1002` from step 4).
-2. From one phone, dial **`999`**.
-3. Every other registered phone is paged simultaneously. When one answers, it is bridged
-   to the caller and the others stop ringing.
-
-### 5c. Direct extension-to-extension call
-
-1. From `1001`, dial `1002` (the second extension you registered).
-2. The callee rings; answer it.
-3. Audio (RTP) flows **peer-to-peer** directly between the two phones — the device only
-   brokers signaling (see [ARCHITECTURE.md](ARCHITECTURE.md) and [SCALING.md](SCALING.md)).
-4. The active call appears in the `sessions` list on the dashboard.
+**Optional / if applicable**
+- [ ] PSTN trunk configured and verified (outbound and inbound calls tested)
+- [ ] Ring groups configured
+- [ ] Call park orbits tested (700–799)
 
 ---
 
-## 6. Quick-start checklist
+## Next steps
 
-- [ ] Firmware flashed (see [README.md](../README.md#building) / [OTA.md](OTA.md)).
-- [ ] Powered on; joined Wi-Fi SSID **`esp32-sipserver`** (open) — or completed the
-      `My-Ap` captive portal on the display build.
-- [ ] Dashboard reachable at `http://192.168.4.1` (or `http://pocketdial.local`).
-- [ ] **Admin PIN set** via `/api/admin/set-pin` (≥6 alphanumeric chars recommended).
-- [ ] Logged in (`/api/admin/login`) before using any gated control.
-- [ ] First softphone/IP phone registered: server `192.168.4.1:5060`, **UDP**, **G.711**,
-      extension e.g. `1001`.
-- [ ] Second extension registered (e.g. `1002`).
-- [ ] Dialed **`777`** — heard echo.
-- [ ] Dialed **`999`** — other phones paged.
-- [ ] Placed a direct `1001 → 1002` call — two-way audio.
-
-**Next:** [PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md) ·
-[HARDWARE_SELECTION.md](HARDWARE_SELECTION.md) ·
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md) · [SCALING.md](SCALING.md)
+- [PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md) — per-model phone configuration walkthroughs
+- [LEARN_MODE.md](LEARN_MODE.md) — full cutover runbook for migrating an existing phone fleet
+- [QUICKSTART.md](QUICKSTART.md) — abbreviated first-boot path (10 minutes)
+- [OTA.md](OTA.md) — firmware updates after initial deployment
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — audio, registration, and connectivity problems
+- [THREAT_MODEL.md](THREAT_MODEL.md) — security posture, hardening roadmap, and risk analysis

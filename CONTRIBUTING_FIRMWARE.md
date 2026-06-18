@@ -1,6 +1,6 @@
-# Pocket-Dial Firmware: PR & Coding Standards Policy
+# DRAWBRIDGE Firmware: PR & Coding Standards Policy
 
-This document establishes the mandatory code quality, memory safety, and performance standards for all firmware contributions to **pocket-dial**. All Pull Requests (PRs) must strictly comply with these rules to pass the automated gating pipelines and peer reviews.
+This document establishes the mandatory code quality, memory safety, and performance standards for all firmware contributions to **DRAWBRIDGE**. All Pull Requests (PRs) must strictly comply with these rules to pass the automated gating pipelines and peer reviews.
 
 ---
 

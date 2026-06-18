@@ -1,12 +1,12 @@
-# Pocket-Dial ESP32 Firmware: Hardware Configuration Guide
+# DRAWBRIDGE ESP32 Firmware: Hardware Configuration Guide
 
-This document defines the official hardware specifications, pin mappings, wiring diagrams, and Bills of Materials (BOM) for the supported microcontrollers and smart display boards running the **pocket-dial** firmware.
+This document defines the official hardware specifications, pin mappings, wiring diagrams, and Bills of Materials (BOM) for the supported microcontrollers and smart display boards running the **DRAWBRIDGE** firmware.
 
 ---
 
 ## 1. Supported Hardware Boards Overview
 
-The **pocket-dial** firmware is designed to compile across multiple hardware targets. It supports two primary product configurations:
+The **DRAWBRIDGE** firmware is designed to compile across multiple hardware targets. It supports two primary product configurations:
 1. **Interactive Smart Displays**: Running an on-screen LVGL UI with real-time log scrolling, status fields, and a captive portal.
 2. **Headless PoE Signalling Servers**: Compact, high-throughput, power-over-ethernet SIP servers designed for high packet-processing reliability.
 
@@ -14,7 +14,9 @@ Because developers deploy these on different target setups depending on hardware
 
 ---
 
-## 2. Guition JC3248W535 Smart Display (3.5" Black LCD)
+## 2. Guition JC3248W535 Smart Display (3.5" Black LCD) — development/evaluation only
+
+> **Note:** The Guition JC3248W535 is intended for development and evaluation only and is not recommended for production deployment. For production installs, use the LilyGO T-ETH-ELITE S3 (§5).
 
 The Guition JC3248W535 is an all-in-one Smart Display powered by an ESP32-S3. It includes a 3.5" high-resolution screen, a capacitive touchscreen, and a built-in battery ADC voltage divider.
 
@@ -119,13 +121,16 @@ A widely used dev board featuring an integrated SD/TF card slot, 16MB flash, and
 
 ---
 
-## 5. LilyGO T-ETH-ELITE S3 (W5500, PoE) — default `eth` board
+## 5. LilyGO T-ETH-ELITE S3 (W5500, PoE) — commercial reference hardware, default `eth` board
+
+> **This is the recommended board for production DRAWBRIDGE deployments.** It is the commercial reference hardware: wired Ethernet, onboard 802.3af PoE, and an S3 SoC with 16 MB flash and 8 MB PSRAM.
 
 The current default Ethernet target. An ESP32-S3-WROOM-1 carrier board (16 MB flash,
-8 MB PSRAM) pairing a W5500 SPI Ethernet controller with onboard 802.3af PoE and a
-40-pin Raspberry-Pi-compatible header (T-ETH ELite Shield compatible). A microSD slot
-shares a second SPI bus. This is a **different board from the T-ETH-Lite** above — the
-W5500 pin map is not the same, so build it with `-D PD_ETH_BOARD=elite` (the default).
+8 MB PSRAM) pairing a W5500 SPI Ethernet controller with onboard 802.3af PoE (802.3af
+Class 0, input 36–57 V) and a 40-pin Raspberry-Pi-compatible header (T-ETH ELite Shield
+compatible). A microSD slot shares a second SPI bus. This is a **different board from the
+T-ETH-Lite** above — the W5500 pin map is not the same, so build it with
+`-D PD_ETH_BOARD=elite` (the default).
 
 ```
        ┌──────────────────┐
@@ -233,7 +238,7 @@ For developers lacking Ethernet or smart displays, the firmware compiles onto an
 
 ## 8. Bill of Materials (BOM) Estimates
 
-The following table provides estimated BOM specifications for assembling a physical **pocket-dial** station.
+The following table provides estimated BOM specifications for assembling a physical **DRAWBRIDGE** unit.
 
 | Component Name | Description | Manufacturer Part Number | Quantity | Est. Unit Price (USD) |
 | :--- | :--- | :--- | :---: | :---: |

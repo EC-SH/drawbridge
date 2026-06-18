@@ -1,6 +1,6 @@
-# ESP32 Pocket-Dial Firmware: Field Incident Playbook
+# ESP32 DRAWBRIDGE Firmware: Field Incident Playbook
 
-This document serves as the authoritative production-grade field operation and incident playbook for the pocket-dial ESP32 / ESP32-S3 firmware. It is intended for field engineers, system administrators, and core firmware maintainers to diagnose, isolate, secure, and recover devices suffering from field anomalies.
+This document serves as the authoritative production-grade field operation and incident playbook for the DRAWBRIDGE ESP32 / ESP32-S3 firmware. It is intended for field engineers, system administrators, and core firmware maintainers to diagnose, isolate, secure, and recover devices suffering from field anomalies.
 
 ---
 

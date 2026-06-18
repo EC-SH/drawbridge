@@ -1,6 +1,6 @@
-# Pocket-Dial ESP32 Firmware: HTTP REST API Specification
+# DRAWBRIDGE ESP32 Firmware: HTTP REST API Specification
 
-This document provides the formal API specification for the HTTP control interface of the **pocket-dial** firmware. The API handles status reporting, client management, and Wi-Fi onboarding.
+This document provides the formal API specification for the HTTP control interface of the **DRAWBRIDGE** firmware. The API handles status reporting, client management, and Wi-Fi onboarding.
 
 ---
 
@@ -50,7 +50,7 @@ When booting into onboarding mode, the device intercepts client browser check do
 * **Trigger**: Any HTTP `GET` request where the `Host` header does not contain:
   * `192.168.4.1` (the local SoftAP gateway IP)
   * `localhost`
-  * `pocketdial` (mDNS hostname)
+  * `drawbridge` (mDNS hostname)
   * The current DHCP-assigned IP address.
 * **Action**: The server immediately returns a `302 Found` redirect to the captive portal landing page:
   ```http

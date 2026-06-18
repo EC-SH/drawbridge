@@ -1,19 +1,20 @@
 # Scaling & Capacity Planning
 
-How to size the **pocket-dial** SIP registrar for a given board, what it costs in
+How to size the **DRAWBRIDGE** SIP registrar for a given board, what it costs in
 RAM, and what breaks if you push it too far.
 
 > TL;DR: capacity is set at **compile time** via three macros in
 > [`src/SIP/PoolConfig.hpp`](../src/SIP/PoolConfig.hpp). The defaults
 > (`32` clients / `8` sessions / `32` messages) target a generic Wi-Fi ESP32.
 > Bump them with `-D` flags for an S3-with-PSRAM build. See the tier table below
-> for ready-to-paste build commands.
+> for ready-to-paste build commands. **Changing pool sizes is not a runtime or NVS
+> setting — it requires rebuilding the firmware and reflashing the device.**
 
 ---
 
 ## 1. Why RAM is the binding constraint (not CPU or bandwidth)
 
-pocket-dial is a **signalling-only** SIP server. It registers endpoints, routes
+DRAWBRIDGE is a **signalling-only** SIP server. It registers endpoints, routes
 INVITE/BYE/CANCEL, and brokers call setup. It does **not** touch the audio:
 
 * **RTP media is peer-to-peer.** Once two phones complete the SDP offer/answer,
@@ -22,7 +23,7 @@ INVITE/BYE/CANCEL, and brokers call setup. It does **not** touch the audio:
   server **zero** ongoing CPU and **zero** media bandwidth — only the few hundred
   bytes of `Session` bookkeeping that remember who is talking to whom.
   *Caveat:* this is now true of the **LAN call path only**. The optional WAN trunk
-  anchor ([ARCHITECTURE.md](ARCHITECTURE.md) §6) is a deliberate, **bounded
+  anchor is a deliberate, **bounded
   exception**: one trunk-bridged call at a time terminates the handset's RTP on
   the device (`MediaBridge`, µ-law⇄PCM16) and relays it to the upstream. That
   single bridge is capacity-capped by design and does not change the scaling

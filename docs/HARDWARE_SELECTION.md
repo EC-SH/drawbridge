@@ -1,12 +1,12 @@
 # Hardware Selection Guide
 
-How to choose a board for **pocket-dial**. This guide maps the supported targets to
+How to choose a board for **DRAWBRIDGE**. This guide maps the supported targets to
 connectivity, display, memory, and realistic capacity so you can pick the right one for
 your deployment. All specifications are drawn from [HARDWARE.md](HARDWARE.md) (pinouts,
 BOM, wiring) and [SCALING.md](SCALING.md) (capacity tiers); read those for the full
 detail.
 
-> pocket-dial is a **signaling-only** SIP server: RTP audio flows peer-to-peer between
+> DRAWBRIDGE is a **signaling-only** SIP server: RTP audio flows peer-to-peer between
 > phones and never touches the board, so capacity is bound almost entirely by RAM
 > reserved for the connection pools — not CPU or bandwidth (see
 > [SCALING.md](SCALING.md) §1). The board you pick mostly determines your *network tier*
@@ -27,6 +27,7 @@ detail.
 
 Notes:
 
+- The **LilyGO T-ETH-ELITE S3** is the recommended commercial deployment board. The **Guition JC3248W535** is development/evaluation only and is not recommended for production.
 - "Display" means a native on-device LVGL UI (status, scrolling SIP log, captive portal
   QR). All boards still serve the full HTTP dashboard over the network regardless of
   whether they have a screen.
@@ -77,6 +78,8 @@ Notes:
 ---
 
 ## 3. Display: yes or no
+
+> **The Guition JC3248W535 display board is development/evaluation only and is not recommended for production deployment.** For permanent installs, use the LilyGO T-ETH-ELITE S3 (the commercial reference hardware).
 
 Only the **Guition JC3248W535** has a screen — a 3.5" 320×480 IPS capacitive touch panel
 driven by the AXS15231B controller over QSPI, with a battery-voltage ADC on GPIO 5

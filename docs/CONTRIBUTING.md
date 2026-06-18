@@ -1,4 +1,4 @@
-# Pocket-Dial ESP32 Firmware: Contributing & Build Guide
+# DRAWBRIDGE ESP32 Firmware: Contributing & Build Guide
 
 Welcome! This guide assists contributors in setting up the development environment, compiling the source files, flashing targets, and executing local functional validation testing.
 
@@ -6,7 +6,7 @@ Welcome! This guide assists contributors in setting up the development environme
 
 ## 1. Development Toolchain Prerequisites
 
-The **pocket-dial** firmware compiles under two build environments depending on your target configuration:
+The **DRAWBRIDGE** firmware compiles under two build environments depending on your target configuration:
 * **ESP-IDF Toolchain**: Preferred for production, smart-displays, and advanced multithreading builds.
 * ~~**Arduino Toolchain**: Used for rapid prototyping and flashing individual `.ino` sketch targets.~~ *(removed — ESP32-only pivot, #96)*
 
@@ -114,7 +114,7 @@ Verify the Web dashboard and security barriers using `curl` or a web browser:
 
 ## 4. Continuous Integration (CI) Checks
 
-The **pocket-dial** repository enforces strict verification checks on every pull request (configured via `.github/workflows/ci.yml`):
+The **DRAWBRIDGE** repository enforces strict verification checks on every pull request (configured via `.github/workflows/ci.yml`):
 * **Syntax Validation**: Ensures all source files are free of compilation warnings.
 * **API Schema Audits**: Spawns a virtual container running the build and validates JSON responses against the API schemas defined in [docs/API.md](API.md).
 * **Cross-Compilation Verification**: Verifies code builds for both `esp32` and `esp32s3` targets.

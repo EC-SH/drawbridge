@@ -1,18 +1,55 @@
-# Flashing pocket-dial Firmware
+# Flashing DRAWBRIDGE Firmware
 
-This guide covers building and flashing pocket-dial firmware onto an ESP32-S3
-board, and updating it afterward over-the-air (OTA).
+This guide covers flashing DRAWBRIDGE firmware onto an ESP32-S3 board and
+updating it afterward over-the-air (OTA).
 
 > **First flash must be over USB.** The dual-OTA partition layout (see
 > [OTA.md](OTA.md)) differs from any single-`factory` image, so the very first
 > install of an OTA-capable build has to go on over the USB/serial port. After
-> that, you can update wirelessly from the dashboard.
+> that, you can update wirelessly via the HTTP API.
+
+---
+
+## 0. Recommended: flash a prebuilt release binary
+
+The simplest path — no toolchain required.
+
+1. Download the merged binary for your board from the **[latest release](../../releases/latest)**:
+
+   | Variant | Board |
+   |---------|-------|
+   | `drawbridge-eth-esp32s3-<ver>.bin` | LilyGO T-ETH-ELITE S3 (commercial reference) |
+   | `drawbridge-wifi-esp32s3-<ver>.bin` | Generic ESP32-S3 (WiFi SoftAP) |
+   | `drawbridge-display-esp32s3-<ver>.bin` | Guition JC3248W535 (development only) |
+
+2. Download `SHA256SUMS` from the same release page.
+
+3. Verify the download integrity:
+   ```powershell
+   # Windows PowerShell
+   (Get-FileHash .\drawbridge-eth-esp32s3-<ver>.bin -Algorithm SHA256).Hash
+   ```
+   ```bash
+   # Linux / macOS
+   sha256sum drawbridge-eth-esp32s3-<ver>.bin
+   ```
+   The hex output must match the corresponding line in `SHA256SUMS`. **Do not flash if they differ.**
+
+4. Install esptool if not already present: `pip install esptool`
+
+5. Connect the board over USB and flash the single merged image:
+   ```bash
+   esptool.py --chip esp32s3 -p COM3 -b 460800 write_flash 0x0 drawbridge-eth-esp32s3-<ver>.bin
+   ```
+   Replace `COM3` with your port (`/dev/ttyUSB0` on Linux/macOS).
+
+6. Power-cycle, connect PoE Ethernet, and SSH to `drawbridge.local` to complete setup.
 
 ---
 
 ## 1. Which firmware for which board
 
-All targets build for **ESP32-S3** with **ESP-IDF v5.2.1**. Pick the transport
+All targets build for **ESP32-S3** with **ESP-IDF v6.0.1**. Pick the transport
 with `-D SIP_TRANSPORT=<transport>`:
 
 | Board | `SIP_TRANSPORT` | Verified app size |
@@ -28,7 +65,7 @@ Every image fits comfortably in the 6 MB `ota_0` / `ota_1` slots.
 ## 2. Build
 
 ```bash
-. $IDF_PATH/export.sh            # set up the ESP-IDF v5.2.1 environment
+. $IDF_PATH/export.sh            # set up the ESP-IDF v6.0.1 environment
 idf.py set-target esp32s3
 idf.py -D SIP_TRANSPORT=display build     # or wifi / eth
 ```
