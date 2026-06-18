@@ -17,7 +17,7 @@ Built on the MIT-licensed **pocket-dial** open-source SIP registrar engine.
 ## What it does
 
 - Extension-to-extension SIP calls with peer-to-peer RTP (no server transcoding)
-- Outbound and inbound PSTN via WAN anchor (commercial softswitch call-control API)
+- Outbound and inbound PSTN via WAN anchor (commercial softswitch call-control API) — up to **4 concurrent PSTN calls**, self-healing
 - Call park on orbits 700–799, ring/hunt groups, call forwarding (CFU/CFB/CFNA), DND
 - Attended and blind transfer (REFER/REFER+Replaces)
 - BLF/presence via SUBSCRIBE/NOTIFY
@@ -25,7 +25,7 @@ Built on the MIT-licensed **pocket-dial** open-source SIP registrar engine.
 - Web dashboard — HTTP status, CDR, and OTA firmware updates
 - SIP digest authentication with open/learn/secure registrar modes
 - OTA updates with anti-rollback partition protection
-- Star codes: `*60` DND, `*72`/`*73` call forward, `*69` call return, `*11` readback
+- Star codes: `*60`/`*80` DND on/off, `*72`/`*73` call forward, `*69` call return, `*11` echo test
 - Virtual extensions: `777` echo test, `999` all-page broadcast
 - CDR (call detail records)
 - RFC 4028 session timers, RFC 3311 UPDATE, RFC 3515/3891 REFER+Replaces

@@ -110,6 +110,28 @@ screen prevents accidental deletion — the safe default is "Keep, go back". Pre
 
 ---
 
+## Call Transfer
+
+DRAWBRIDGE handles both blind and attended (consultative) transfer via SIP REFER (RFC 3515/3891). Transfer is initiated from the phone using the phone's built-in transfer key — no star code required.
+
+**Blind transfer** — transfer without consulting the target:
+
+1. While on a call, press the phone's **Transfer** key.
+2. Dial the target extension.
+3. Press **Transfer** again (or **Send**) to complete. The call is immediately handed off.
+
+**Attended (consultative) transfer** — consult the target before completing:
+
+1. While on call with A, press **Transfer**, then dial B.
+2. Wait for B to answer. Consult with B while A is on hold.
+3. Press **Transfer** again to connect A and B. You drop off; A and B are spliced directly.
+
+The server sends `202 Accepted` on the REFER, then issues re-INVITEs to cross-connect the two parties (REFER+Replaces, RFC 3891). Transfer works with any phone that sends a REFER — consult [PHONE_COMPATIBILITY.md](PHONE_COMPATIBILITY.md) for phone-specific transfer key names.
+
+> Transferring to a park orbit (700–799) parks the call instead of connecting a new party — see [Call Park](#call-park) below.
+
+---
+
 ## Call Park
 
 Park orbits are numbered **700–799**.

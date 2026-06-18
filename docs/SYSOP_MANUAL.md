@@ -650,6 +650,15 @@ Dial these codes from any registered SIP phone. They are single-step (no PIN req
 | `700`–`799` | Call park orbits — park a call on orbit N, retrieve from any phone by dialing N |
 | `98x` | Page zone x — rings the phones assigned to zone x |
 
+**Transferring a call:**
+
+Use your phone's **Transfer** key — no star code needed. DRAWBRIDGE supports both transfer modes via SIP REFER (RFC 3515/3891):
+
+| Mode | Steps |
+|------|-------|
+| **Blind transfer** | Press Transfer, dial target, press Transfer/Send. Call handed off immediately. |
+| **Attended transfer** | Press Transfer, dial target, wait for answer, consult, press Transfer again. The two parties connect directly; you drop off. |
+
 **Parking a call:**
 
 1. While on a call, transfer to any orbit number (700–799).

@@ -43,8 +43,8 @@ PROVISIONING.md ·
 | Security (HTTP) | Same-origin/CSRF check, 16 KB body cap, `SO_RCVTIMEO`, no wildcard CORS | `ARCHITECTURE.md` §5 |
 | Dev / debug | Desktop (Linux/Windows) host build & CI smoke harness; SIP load tester + liveness/SSH/HTTP smoke scripts | `main.cpp`, `tests/load/sip_stress.py`, `.smoke/`, `tests/http/test_api.sh` |
 | **Config over SSH** | **SSH "sysop terminal"** — two interchangeable backends behind one façade: wolfSSH (display build, hardware-verified end-to-end) and the from-scratch **littlessh** PSA/mbedTLS backend (eth/wifi/lan8720 builds). ANSI/TUI hub (banner → System Monitor · Network · PBX Config — incl. the shipped **Trunk** tab · Security · Reports/CDR · About). Ring groups, call-forward, DND, and trunk credentials are configurable over SSH. | `src/Helpers/Tui.cpp`, `src/Helpers/SshServer.cpp`, `src/Helpers/SshServerLittlessh.cpp`, `components/littlessh/`, `cmake/patch_wolfssl.py` |
-| **WAN trunk anchor** | Outbound calls beyond the LAN via a commercial softswitch's HTTPS call-control API (`9`-prefix dial plan, mTLS/WSS, on-device µ-law⇄PCM16 `MediaBridge`; outbound teardown hardware-confirmed), plus **inbound PSTN→extension ring-all (Mode 1)** — delayed-offer INVITE forked to every registered extension, answer-on-handset-200 (*hardware-verified pre-alpha; soak hardening in progress*). Performance-hardened with TLS session resumption, both-ways media cut-through, and a capped/drained playout buffer. | `src/SIP/AnchorClient.hpp`, `MediaBridge.cpp`, `PlayoutBuffer.cpp`, ARCHITECTURE.md §6 |
-| **PBX call features** | CDR ring, per-extension **DND**, **call-forward** (CFU/CFB/CFNA), **ring groups** (ring-all / hunt), **blind transfer** (REFER), DTMF star-codes (`*60/*80/*72/*73/*69/*11`) | `src/SIP/RequestsHandler.cpp`, `CallDetailRecord.hpp`, `PbxConfig.hpp` |
+| **WAN trunk anchor** | Outbound calls beyond the LAN via a commercial softswitch's HTTPS call-control API (`9`-prefix dial plan, mTLS/WSS, on-device µ-law⇄PCM16 `MediaBridge`; outbound teardown hardware-confirmed), plus **inbound PSTN→extension ring-all (Mode 1)** — delayed-offer INVITE forked to every registered extension, answer-on-handset-200 (*hardware-verified*). Up to **4 concurrent PSTN calls** (hardware-validated, self-healing reaper). Performance-hardened with TLS session resumption, both-ways media cut-through, PSRAM task stacks, and a capped/drained playout buffer. | `src/SIP/AnchorClient.hpp`, `MediaBridge.cpp`, `PlayoutBuffer.cpp`, `ThreeCxAnchorClient.cpp` |
+| **PBX call features** | CDR ring, per-extension **DND**, **call-forward** (CFU/CFB/CFNA), **ring groups** (ring-all / hunt), **blind transfer** (REFER, RFC 3515), **attended transfer** (REFER+Replaces, RFC 3515/3891), **RFC 4028 session timers**, **RFC 3311 mid-dialog UPDATE**, DTMF star-codes (`*60/*80/*72/*73/*69/*11`) | `src/SIP/RequestsHandler.cpp`, `CallDetailRecord.hpp`, `PbxConfig.hpp` |
 
 ---
 
@@ -65,6 +65,11 @@ PROVISIONING.md ·
 > ring/hunt groups, and blind transfer (REFER) — all surfaced in the new SSH "sysop terminal."
 > Treat their backlog rows in §3.1 as **done** unless a sub-point says otherwise.
 
+> **Update (2026-06-18):** Iteration C is fully complete. **Attended transfer** (REFER+Replaces,
+> RFC 3515/3891), **RFC 4028 session timers**, and **RFC 3311 mid-dialog UPDATE** have all
+> shipped. The WAN trunk anchor now supports **4 concurrent PSTN calls** (hardware-validated,
+> self-healing). See §1 rows for updated references.
+
 > **Known cross-cutting hazard (flagged in PROVISIONING.md §3.3):** SIP
 > auth (P0 below) depends on the per-MAC secret store provisioning writes, and provisioning
 > credentials only become load-bearing once SIP digest auth verifies them. Sequence them
@@ -82,9 +87,9 @@ Complexity is a t-shirt size for *signalling-side* work unless noted.
 
 | Pri | Feature | Rationale (technical) | Complexity | Notes / constraints |
 |-----|---------|----------------------|------------|---------------------|
-| **P0** | **Blind transfer (REFER / `302`)** | Highest-value missing call-control primitive; pure signalling (server reissues INVITE to Refer-To target). No media path. Built on the existing session state machine. | **M** | Implement `onRefer`; validate Refer-To as an AOR (reuse `isValidAor`); generate `202 Accepted` + NOTIFY (`sipfrag`). RFC 5589/3515. |
+| ~~**P0**~~ | ~~**Blind transfer (REFER / `302`)**~~ | ~~Highest-value missing call-control primitive; pure signalling (server reissues INVITE to Refer-To target). No media path. Built on the existing session state machine.~~ | ~~**M**~~ | **✅ Shipped** — `onRefer()`, RFC 3515. |
 | **P1** | **Call hold / resume** | Re-INVITE with `a=sendonly`/`inactive` SDP. Server just relays the re-INVITE/200; phones renegotiate P2P. Cheap, expected by users. | **S** | Mostly passthrough; ensure `enforceG711()`/`clearBody()` don't corrupt hold SDP. Add a `Session::State::HELD`. |
-| **P1** | **Attended (consultative) transfer** | Natural follow-on to blind transfer; uses REFER with Replaces. Still media-free server-side. | **M** | Needs dialog/`Replaces` correlation in the session map; depends on P0 REFER landing first. |
+| ~~**P1**~~ | ~~**Attended (consultative) transfer**~~ | ~~Natural follow-on to blind transfer; uses REFER with Replaces. Still media-free server-side.~~ | ~~**M**~~ | **✅ Shipped** — Phase C-2 (REFER+Replaces, RFC 3515/3891); `onRefer()` + `handleTransferOk()` + `_remoteSdp` cross-swap. |
 | **P1** | **Per-extension Do-Not-Disturb (DND)** | Small per-`SipClient` flag; `onInvite` short-circuits to `486 Busy Here`. Toggle via dashboard / star-code. Bounded, no new pool. | **S** | One bool on `SipClient`; persist optionally in NVS. Honour existing AOR/virtual-ext reservations. |
 | **P1** | **Static dial plan / routing table** | Today routing is "exact AOR match + reserved 777/999." A small compile-time/NVS map enables hunt groups, ring-all aliases, simple prefixes. | **M** | Keep it a bounded lookup table (mirror pool discipline); resolve to existing INVITE path. Reuse the `999` forking engine for ring-groups. |
 | **P1** | **Call parking / park-orbit** | Reuses the session machinery: park = move a leg to a virtual "orbit" slot (e.g. `700x`), retrieve = INVITE the orbit. No media held by server. | **M** | Costs one session slot per parked call — document against `MAX_SESSIONS`. |
@@ -148,11 +153,13 @@ Iteration B  ── Trusted endpoints (provisioning ⇄ SIP auth, sequenced toge
   P0  SIP digest auth .............. *consumes* that secret store; only now is the secret load-bearing
       └─ DEPENDS ON provisioning's credential store + the OPEN→closed registrar flip
 
-Iteration C  ── Core call control (pure signalling, builds on session machine)
-  P0  Blind transfer (REFER) ....... unblocks attended transfer
-  P1  Call hold/resume ............. near-passthrough; ship with transfer
-  P1  Attended transfer ............ DEPENDS ON REFER (Iteration C step 1)
-  P1  Per-extension DND ............ tiny; ride along
+Iteration C  ── Core call control [✅ COMPLETE]
+  P0  Blind transfer (REFER) ....... ✅ shipped
+  P1  Call hold/resume ............. ✅ shipped
+  P1  Attended transfer ............ ✅ shipped (Phase C-2, REFER+Replaces)
+  P1  RFC 4028 session timers ....... ✅ shipped (Phase B)
+  P1  RFC 3311 mid-dialog UPDATE .... ✅ shipped (Phase C-1)
+  P1  Per-extension DND ............ ✅ shipped
 
 Iteration D  ── Observability & ops
   P1  Watchdog/health, /metrics, syslog ... reuse existing snapshot + log queue (no new locks)

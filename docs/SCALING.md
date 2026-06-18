@@ -23,11 +23,13 @@ INVITE/BYE/CANCEL, and brokers call setup. It does **not** touch the audio:
   server **zero** ongoing CPU and **zero** media bandwidth — only the few hundred
   bytes of `Session` bookkeeping that remember who is talking to whom.
   *Caveat:* this is now true of the **LAN call path only**. The optional WAN trunk
-  anchor is a deliberate, **bounded
-  exception**: one trunk-bridged call at a time terminates the handset's RTP on
-  the device (`MediaBridge`, µ-law⇄PCM16) and relays it to the upstream. That
-  single bridge is capacity-capped by design and does not change the scaling
-  math below for ordinary extension-to-extension calls.
+  anchor is a deliberate, **bounded exception**: up to **4 concurrent
+  trunk-bridged calls** each terminate a handset's RTP on the device
+  (`MediaBridge`, µ-law⇄PCM16) and relay it upstream. The 4-call cap is the
+  hardware-validated ceiling on the ESP32-S3 (software ECDHE serialises TLS
+  handshakes; simultaneous cold opens saturate both cores above ~5). The pool
+  returns `503 Service Unavailable` on the 5th attempt. These WAN bridge slots
+  do not affect the scaling math for ordinary extension-to-extension calls.
 * **Signalling is bursty and tiny.** A REGISTER or INVITE is a sub-1 KB UDP
   datagram handled in microseconds. Even with aggressive OPTIONS keepalives the
   packet rate per client is a handful per *minute*.

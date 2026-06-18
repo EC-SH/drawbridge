@@ -10,20 +10,16 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 
 ### 🔴 Critical Priority: Commercial-Softswitch Call Control & Media Loopback (WAN Bridge)
 
-> **Status (2026-06-15):** The core WAN-anchor capability — RTP receive/decode (#61), the
+> **Status (2026-06-18):** The core WAN-anchor capability — RTP receive/decode (#61), the
 > call-control client (#63), and bridge orchestration (#64) — **shipped via PR #39** and is
-> hardware-confirmed. Since then, on `main` (newest first): **inbound PSTN ring-all (#102/#80)**
-> forks an inbound DID call to every registered extension with two-way audio (**hardware-verified
-> pre-alpha** — this cleared the project's inbound-PSTN capability gate); **outbound teardown
-> (#39/#40, #95)** is hardware-confirmed; and a **performance-hardening wave** landed — TLS session
-> resumption + warm control session (#93/#99), media cut-through both-ways pre-warm + outbound TLS
-> resumption (#105), playout-buffer cap+drain (#104), LWIP IRAM tuning (#98), and the WS-event
-> worker pool (#101). Soak telemetry now ships in `/api/status` (#81-84/#103). Connect/teardown
-> dropped from ~1 s toward ~100 ms. The items below remain genuinely open follow-ups.
->
-> **In flight (not shipped):** a **configurable TLS re-warm heartbeat (#107)** — periodic idle
-> re-warm of the POST audio TLS session so even the first call after a long idle gap resumes instead
-> of cold-handshaking; the interval will be user-configurable. Being implemented now.
+> hardware-confirmed. Since then, on `main` (newest first): **multi-call WAN anchor (#114)** —
+> **4 concurrent PSTN calls hardware-validated** (PSRAM task stacks, per-call media bridge pool,
+> self-healing abandoned-call + orphan-bridge reapers, `503` at capacity, 48-socket LWIP pool);
+> **SIP RFC completeness wave (Phases A–C)** — retransmit layer (RFC 3261 §17), session timers
+> (RFC 4028), mid-dialog UPDATE (RFC 3311), and attended+blind transfer (RFC 3515/3891 REFER+Replaces)
+> all shipped; **inbound PSTN ring-all (#102/#80)** hardware-verified; **performance-hardening wave**
+> — TLS session resumption (#93/#99/#109), media cut-through + playout-buffer (#104/#105), LWIP IRAM
+> (#98), WS-event worker pool (#101); connect/teardown dropped from ~1 s toward ~100 ms.
 >
 > **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating
 > the desktop/server product. PR #97 removed the install/quickstart deadweight and the desktop
@@ -66,6 +62,28 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 ---
 
 ### 🟢 Medium Priority: Hardware Validation & Deployment Features
+
+#### 🟡 Issue #117: SSH re-enable: disabling SSH in TUI must not self-lock — add web dashboard toggle
+* **Status**: ⏳ Open
+* **Labels**: `ux`, `security`, `ssh`
+* **Severity**: High
+* **Description**: Disabling SSH via [4] SECURITY is currently irreversible from the network — the only SSH toggle is inside the SSH TUI. Add a `POST /api/ssh/enable` dashboard endpoint (admin-session-gated) and/or a dial-string escape hatch so an operator can recover without physical access or factory reset.
+
+---
+
+### 🟢 Medium Priority: Hardware Validation & Deployment Features
+
+#### 🟢 Issue #118: TUI: page zone (98x) management screen not yet exposed in SSH TUI
+* **Status**: ⏳ Open
+* **Labels**: `feature`, `tui`, `pbx`
+* **Severity**: Medium
+* **Description**: The engine supports up to 10 page zones (980–989) with NVS persistence, but zone creation and member assignment have no TUI surface. Operators must use the 999 all-page or scripted provisioning. A Page Zones tab (mirroring the Ring Groups tab) is needed for field usability.
+
+#### 🟢 Issue #119: TUI: IVR tab is a non-functional stub — hide or remove until backend ships
+* **Status**: ⏳ Open
+* **Labels**: `tui`, `ux`
+* **Severity**: Medium
+* **Description**: The IVR tab under [3] PBX CONFIG renders and accepts input but silently discards it — the backend is not implemented. For a commercial release this must either be hidden entirely or show a clear "NOT YET AVAILABLE" banner with no editable fields.
 
 #### 🟢 Issue #44: End-to-end SIP call test needed on JC3248W535EN hardware
 * **Status**: ⏳ Open / Planned
