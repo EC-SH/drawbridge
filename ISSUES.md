@@ -21,10 +21,16 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 > — TLS session resumption (#93/#99/#109), media cut-through + playout-buffer (#104/#105), LWIP IRAM
 > (#98), WS-event worker pool (#101); connect/teardown dropped from ~1 s toward ~100 ms.
 >
-> **Backlog expansion (2026-06-18):** Issues #117–#152 added covering: SSH lockout (#117), PBX/TUI
-> UX (#118–#123), security foundation (#124, #125, #130–#132, #134–#135), reliability (#127, #128,
-> #129, #133), provisioning (#136–#138), raw SIP trunk path (#142–#145), SIP provider interop
+> **Backlog expansion (2026-06-18, wave 1):** Issues #117–#152 added covering: SSH lockout (#117),
+> PBX/TUI UX (#118–#123), security foundation (#124, #125, #130–#132, #134–#135), reliability
+> (#127–#129, #133), provisioning (#136–#138), raw SIP trunk path (#142–#145), SIP provider interop
 > (#146–#151), site federation (#152), and long-tail features (#126, #139–#141).
+>
+> **Backlog expansion (2026-06-18, wave 2):** Issues #153–#163 added covering: owner/sysop privilege
+> model (#153), mDNS pre-gate (#154), SSH dead on wifi/lan8720 (#155), `owner@` username plumbing
+> (#156), littlessh buffered repaint (#157), first-run wizard (#158), command palette (#159),
+> accessibility STATIC mode (#160), RFC 3262 PRACK (#161), TUI provider de-dup (#162), CDR
+> persistence (#163). Issue #84 closed / consolidated into #127.
 >
 > **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating
 > the desktop/server product. PR #97 removed the install/quickstart deadweight and the desktop
@@ -101,6 +107,57 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Labels**: `feature-request`, `provisioning`
 * **Severity**: Medium
 * **Description**: Implement a local HTTP directory service to serve auto-generated `.cfg` and `.xml` configuration files to standard IP phones (Yealink, Grandstream, Cisco) upon boot, automatically mapping MAC addresses to local extensions from NVS storage.
+
+---
+
+---
+
+### 🟡 High Priority: SSH Foundation & First-Boot Flow
+
+#### 🟡 Issue #153: Security: owner/sysop two-role privilege model — real authz, not landing-screen separation
+* **Status**: ⏳ Open
+* **Labels**: `security`, `ssh`, `priority-high`
+* **Severity**: High — MUST-FIX before commercial deployment
+* **Description**: Both SSH roles currently share one admin PIN. Add a dedicated owner credential (`owner_salt`/`owner_hash`), resolve role at auth time (constant-time comparison against both hashes), stash role in session state, and gate destructive operations (`applyFactoryReset()`, NVS backup/restore) with a per-action `isOwner()` check. Extend brute-force lockout key from `Channel` to `(Channel, Principal)` to prevent sysop PIN spraying from locking out the owner recovery path. See also: #117 (SSH re-enable lockout), #130 (per-IP HTTP lockout).
+
+#### 🟡 Issue #154: Infra: hoist `mdns_init` before provisioning gate so `drawbridge.local` resolves on first boot
+* **Status**: ⏳ Open
+* **Labels**: `network`, `priority-high`
+* **Description**: mDNS currently starts inside the `SipServer` constructor — after the provisioning gate. A factory-fresh unit never starts mDNS, so `drawbridge.local` does not resolve and `ssh owner@drawbridge.local` fails on first boot. Fix: hoist `mdns_init()` + `mdns_hostname_set("drawbridge", NULL)` into `app_main` before the provisioning gate in each entry point. Also locks the mDNS hostname to `"drawbridge"` (product identity — not `pocketdial.local`).
+
+#### 🟡 Issue #155: SSH: `SshServer::start()` never called in wifi + lan8720 entry points — SSH dead on those builds
+* **Status**: ⏳ Open
+* **Labels**: `ssh`, `priority-high`
+* **Description**: `esp_main.cpp` (wifi) and `esp_main_eth_lan8720.cpp` link littlessh but never call `SshServer::start()`. SSH is silently absent on those firmware variants — no error, just no port 22. Fix: add `SshServer::start()` before the provisioning gate in both entry points, mirroring `esp_main_eth.cpp`.
+
+#### 🟡 Issue #156: SSH: wire `owner@` username through `ll_on_open` in littlessh so Guided Mode is reachable
+* **Status**: ⏳ Open
+* **Labels**: `ssh`, `tui`, `priority-high`
+* **Description**: `ll_on_open` currently discards the SSH username (`(void)user`). As a result `ssh owner@drawbridge.local` opens the same Expert Mode as `ssh sysop@drawbridge.local` — Guided Mode is unreachable over eth/wifi/lan8720 SSH. Fix: stop discarding `user`; store it in session state and pass it to `setUsername()` (same as the wolfSSH path already does). Depends on privilege model (#153).
+
+#### 🟡 Issue #157: SSH performance: littlessh buffered repaint — one `lssh_write()` per screen, not per `put()`
+* **Status**: ⏳ Open
+* **Labels**: `ssh`, `performance`, `priority-high`
+* **Description**: The littlessh `setWriter` lambda calls `lssh_write()` on every `Tui::put()` call — a full screen render sends ~50–150 encrypted SSH packets. Fix: buffer the whole screen into a persistent `_frame` string (`.reserve(8192)` at session open, `.clear()` keeps capacity), then a single `lssh_write()` per repaint. No changes to `Tui.cpp`. `_frame` lives on the heap (PSRAM-friendly), outside the SIP zero-alloc hot-path.
+
+#### 🟡 Issue #158: TUI P1: first-run wizard — guided onboarding for fresh-deployed unit
+* **Status**: ⏳ Open
+* **Labels**: `tui`, `feature-request`, `priority-high`
+* **Description**: No guided first-boot flow exists. When no owner PIN is provisioned, trigger a wizard: (1) welcome + hostname, (2) set owner PIN, (3) optional sysop PIN, (4) registrar mode selection, (5) live test-call verify (dial 777), (6) quick-reference card. `owner@` login only; Esc exits to Expert at any step. Requires a `ext_name_<dn>` NVS key for extension names (~1 KB budget).
+
+---
+
+### 🟢 Medium Priority: TUI & Accessibility
+
+#### 🟢 Issue #159: TUI P2: command palette (`:` / Ctrl-P) — verb-based command entry over existing setter callbacks
+* **Status**: ⏳ Open
+* **Labels**: `tui`, `feature-request`, `priority-medium`
+* **Description**: Power-user / scripted management: type `:set ext 1001 name "Reception"` or `:trunk status` instead of navigating the menu tree. N=64 byte buffer, Tab completion over a fixed verb list, dispatches to the existing setter callbacks. Owner-only verbs (`reboot`, `factory-reset`) require `isOwner()`. Additive — keyboard navigation unchanged.
+
+#### 🟢 Issue #160: TUI P1: accessibility — STATIC/screen-reader mode, ASCII tier auto-select, mouse OFF by default
+* **Status**: ⏳ Open
+* **Labels**: `tui`, `priority-medium`
+* **Description**: The 1Hz `tickLive()` → full repaint is hostile to screen readers. Three additive fixes: (1) STATIC mode gate — `tickLive()` skips repaint; refresh on Ctrl-L (promotes existing `_monFrozen` early-return); (2) ASCII tier auto-select for SR clients — `glyph→WORD` table when `setUnicode(false)` is triggered (code path exists, trigger doesn't); (3) mouse mode OFF at session open, opt-in only (capture breaks selection-to-speech). A11Y-1/2 from `docs/design/accessibility.md`.
 
 ---
 
@@ -298,6 +355,23 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Status**: ⏳ Open
 * **Labels**: `network`, `priority-low`
 * **Description**: ESP32 SoftAP hard-limits to ~16 stations. For larger deployments: (1) wired backbone of APs sharing the same SSID (recommended — no firmware changes, just deployment topology), or (2) ESP-NOW mesh with one unit as registrar. Document Option 1 as the recommended path. The correct long-term answer for >16 phones is the wired Ethernet build.
+
+#### 🔵 Issue #161: SIP P2: RFC 3262 100rel / PRACK — interop gap with strict RFC platforms (Metaswitch)
+* **Status**: ⏳ Open
+* **Labels**: `sip-engine`, `priority-medium`
+* **Description**: DRAWBRIDGE does not implement reliable provisional responses (100rel/PRACK). Most phones and providers operate fine without it, but Metaswitch/Perimeta and some carrier-class platforms send `Require: 100rel` and may reject calls with `420 Bad Extension`. Fix: parse `Require: 100rel`, send `183`/`180` with `RSeq`, await PRACK before proceeding. Bounded state (`pendingPrack`, `rseq` counter) on `Session`. See also: #151.
+
+#### 🔵 Issue #162: Code quality P2: de-duplicate TUI providers/setters between wolfSSH and littlessh backends
+* **Status**: ⏳ Open
+* **Labels**: `tui`, `code-quality`, `priority-medium`
+* **Description**: ~300 lines of TUI provider/setter glue are copy-pasted verbatim between `SshServer.cpp` (wolfSSH) and `SshServerLittlessh.cpp`. Extract to a shared `SshServerTuiProviders.cpp` / `TuiProviders.h`. Also: port wolfSSH resize-debounce to littlessh `ll_on_pty`; remove dead pubkey-auth path (~130 lines, no caller); collapse 10 copy-pasted `wtr_t`+send tails into one helper.
+
+#### 🔵 Issue #163: Platform P2: CDR persistence across reboots — NVS-backed ring buffer
+* **Status**: ⏳ Open
+* **Labels**: `api`, `diagnostics`, `priority-medium`
+* **Description**: CDR data is lost on every reboot (OTA, watchdog, power event). Fix: write each CDR entry to NVS on call completion; pre-populate the in-memory buffer from NVS on boot. NVS write endurance (~100k cycles/key) is sufficient for typical office call volumes. Admin-gated `POST /api/cdr/clear` wipes both NVS and in-memory ring. Pairs with NVS schema versioning (#133).
+
+> **Note: #84 closed / consolidated into #127.** The "last-boot reset reason in `/api/status`" (#84) is a subset of the task watchdog + heap/stack high-water-mark monitoring issue (#127). All deliverables from #84 are covered by #127.
 
 ---
 
