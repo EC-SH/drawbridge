@@ -110,3 +110,8 @@ components/3cx-callcontrol-xapi.yaml
 
 # Internal engineering docs (security findings, audit reports, design specs for unbuilt features)
 docs/internal/
+
+# NVS backups / provisioning dumps — contain device secrets (PINs, anchor creds). NEVER commit.
+nvs_backup_*.bin
+*.nvs.bin
+nvs_*.bin
