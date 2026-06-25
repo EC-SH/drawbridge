@@ -5,6 +5,7 @@
 #include <thread>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>   // std::memcpy — used on ALL platforms (registerTx retransmit cache); must not be ESP-gated
 #include <algorithm>
 #include "SipMessageTypes.h"
 #include "SipSdpMessage.hpp"
@@ -30,7 +31,6 @@
 	#include "esp_sntp.h"
 	#include "esp_system.h"
 	#include "esp_idf_version.h"
-	#include <cstring>
 	#include "PsramTask.hpp"   // #100: PSRAM-backed stacks for the transient TLS call workers
 #endif
 

@@ -2387,7 +2387,7 @@ void Tui::renderAbout()
     }
 #if defined(POCKETDIAL_BOARD_NAME)
     leader("Hardware", col(Role::Text, std::string("ESP32-S3 ") + dot +
-           " " POCKETDIAL_BOARD_NAME " " + dot + " 8 MB PSRAM " + dot + " 16 MB flash")); ++bodyUsed;
+           " " + std::string(POCKETDIAL_BOARD_NAME) + " " + dot + " 8 MB PSRAM " + dot + " 16 MB flash")); ++bodyUsed;
 #else
     leader("Hardware", col(Role::Text, "host build")); ++bodyUsed;
 #endif
