@@ -19,7 +19,9 @@ INVITE/BYE/CANCEL, and brokers call setup. It does **not** touch the audio:
 
 * **RTP media is peer-to-peer.** Once two phones complete the SDP offer/answer,
   they stream G.711 audio *directly to each other's IP:port*. The ESP32 never
-  sees an RTP packet, never transcodes, never mixes. A connected call costs the
+  sees an RTP packet, never transcodes, ~~never mixes~~ — *and that last claim is
+  now falling: see the on-device **N-way Conference Mix Bus** (#164), which
+  summing-junctions multiple terminated legs on-MCU at ≤8 narrowband ports*. A connected call costs the
   server **zero** ongoing CPU and **zero** media bandwidth — only the few hundred
   bytes of `Session` bookkeeping that remember who is talking to whom.
   *Caveat:* this is now true of the **LAN call path only**. The optional WAN trunk
