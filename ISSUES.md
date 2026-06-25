@@ -32,6 +32,16 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 > accessibility STATIC mode (#160), RFC 3262 PRACK (#161), TUI provider de-dup (#162), CDR
 > persistence (#163). Issue #84 closed / consolidated into #127.
 >
+> **Backlog expansion (2026-06-25, wave 3 — Media / Conferencing):** Issues #164–#170 added for the
+> on-device **N-way conference Mix Bus** epic (#164) and its open pieces: `MediaBridge` integration
+> (#165), the handset→bus input ring (#166), the mix-tick driver decision (#167), the int32 PIE
+> parity kernel pending TRM verification (#168), per-port repacketization for non-20 ms ptime
+> codecs (#169), and VAD energy-gating (#170). **This wave deliberately overturns a documented
+> non-goal** — `docs/FEATURE_ROADMAP.md` §6 / `docs/SCALING.md` §1 declare on-MCU mixing impossible;
+> the scalar `MixBus` + master-clock tick + per-port state machine in `drawbridge-conference-mixer/`
+> (compiled, `-Wall -Wextra`-clean, self-test green) demonstrate otherwise. Roadmap reconciliation is
+> in scope for #164.
+>
 > **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating
 > the desktop/server product. PR #97 removed the install/quickstart deadweight and the desktop
 > framing; the host build + its CI test gate are retained until an on-target/QEMU harness replaces
@@ -158,6 +168,53 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Status**: ⏳ Open
 * **Labels**: `tui`, `priority-medium`
 * **Description**: The 1Hz `tickLive()` → full repaint is hostile to screen readers. Three additive fixes: (1) STATIC mode gate — `tickLive()` skips repaint; refresh on Ctrl-L (promotes existing `_monFrozen` early-return); (2) ASCII tier auto-select for SR clients — `glyph→WORD` table when `setUnicode(false)` is triggered (code path exists, trigger doesn't); (3) mouse mode OFF at session open, opt-in only (capture breaks selection-to-speech). A11Y-1/2 from `docs/design/accessibility.md`.
+
+---
+
+### 🟡 High Priority: Media — On-Device N-Way Conference Mix Bus
+
+> **Overturns a documented non-goal.** `docs/FEATURE_ROADMAP.md` §6 and `docs/SCALING.md` §1 currently
+> state that on-MCU media mixing is impossible ("the server never touches RTP" / "no DSP budget"). The
+> WAN anchor already breaks the no-touch-RTP rule for the PSTN leg, and linear int16 PCM is already the
+> internal currency at the anchor boundary (`MediaBridge` / `feedRx` / `writeAudio` speak linear; µ-law
+> lives only at the handset rim). The missing operation is the **summing junction**. A working scalar
+> reference + master-clock tick + per-port concurrency model lives in `drawbridge-conference-mixer/`
+> (`CONFERENCE_MIXER.md` + `src/` + `test/mixbus_selftest.cpp`), built standalone with no ESP toolchain.
+
+#### 🟡 Issue #164: Media: on-device N-way conference Mix Bus (the summing junction) — EPIC
+* **Status**: ⏳ Open
+* **Labels**: `media`, `feature-request`, `priority-high`, `epic`
+* **Description**: Add a single `MixBus` that owns the **mix tick** as master clock. Each call attaches a **port** (two `PlayoutBuffer` rings: leg→bus and bus→leg) and hears the **N−1 mix** — the saturated sum of all *other* ports. An ordinary 1:1 call falls out as the **N=2 case**, so the mixer subsumes the point-to-point anchored path and the single-bridge special-casing retires. **The one invariant the design hinges on: never saturate the running mix** — sum into an int32 accumulator, subtract self, saturate exactly once at per-port output. The over-saturation trap (four legs at +30000 where a pre-clipped mix makes a loud talker hear 2767 instead of 32767) is asserted green in the self-test. Bundle status: scalar `MixBus` (attach/detach/tick), `Free→Active→Draining→Free` per-port state machine (tick is sole ring-clearer — the #100 lesson generalized to N legs), and the confirmed-ISA PIE kernel all compiled and `-Wall -Wextra`-clean. **Scope also includes reconciling `docs/FEATURE_ROADMAP.md` §6 + `docs/SCALING.md` §1** so the non-goal language matches reality. Sub-issues: #165–#170. Source: `drawbridge-conference-mixer/CONFERENCE_MIXER.md`.
+
+#### 🟡 Issue #165: Media: wire the Mix Bus into `MediaBridge` (the integration diff)
+* **Status**: ⏳ Open
+* **Labels**: `media`, `priority-high`
+* **Description**: `MediaBridge` keeps the RTP sockets + rim companding and rewires two callbacks at the bus: RX `mulawDecodeBuffer → bus.inputFrame(port, pcm, n)`, TX `bus.outputFrame(port, pcm, n) → ulawEncodeBuffer`. `startBridge`: `port = bus.attach()` then wire; `stopBridge`: `bus.detach(port)` then stop sockets. The anchor/PSTN leg is already linear → it drops onto the bus as just another port via `bus.inputFrame(anchorPort, …)` with no compand. Retire the one-mutex single-bridge path once N ports + one shared tick driver replace it. Depends on #164. (§7 of the design doc.)
+
+#### 🟡 Issue #166: Media: add the handset→bus input-direction `PlayoutBuffer` (second ring per port)
+* **Status**: ⏳ Open
+* **Labels**: `media`, `priority-high`
+* **Description**: Today only the anchor→handset direction is buffered. The mixer needs the handset→bus direction buffered too so the tick can drain one frame per port in lockstep and absorb each leg's RTP jitter. Same `PlayoutBuffer` class, a second instance per port. A late leg contributes zeros for that tick and the tick never stalls. Depends on #164. (Trap #3 / §3 of the design doc.)
+
+#### 🟡 Issue #167: Media: mix-tick driver — dedicated 20 ms timer vs. existing sender cadence (jitter-stability decision)
+* **Status**: ⏳ Open
+* **Labels**: `media`, `priority-high`, `needs-investigation`
+* **Description**: The tick cadence is inviolable; everything slots around it. **Open decision (wants hardware data):** hang the tick off the existing 20 ms RTP sender cadence, or run a dedicated periodic task/timer — whichever is more jitter-stable on the **T-ETH-ELITE** (eth) build, where the W5500 MACRAW path and LWIP socket pressure already shape timing. Measure tick-to-tick jitter both ways on hardware before committing. Depends on #164. (§3 / §8 of the design doc.)
+
+#### 🟢 Issue #168: Media: int32 sum-once-subtract PIE kernel — TRM-verify before trusting (scalar stays default)
+* **Status**: ⏳ Open
+* **Labels**: `media`, `performance`, `priority-medium`, `needs-investigation`
+* **Description**: The small-conference path (`pie/mix_sum4_s16.S`, ≤5-way) uses **only confirmed S3 instructions** (`ee.vld.128.ip` / `ee.vadds.s16` / `ee.vst.128.ip`, envelope cross-checked against esp-dsp `dsps_add_s16_aes3.S`) and structurally cannot hit the over-saturation trap because it never forms the all-inclusive sum. The **large/variable-N int32 parity path** needs ops not yet confirmed to assemble — widen 8×int16→4×int32, `ee.vadds.s32`/`ee.vsubs.s32`, saturating narrow int32→int16 (or the QACC `ee.vmulas.s16.qacc` multiply-by-ones accumulate trick, ~16-leg headroom in 20-bit segments). **Verify against the S3 TRM extended-instruction chapter first; keep the scalar `mix_accumulate`/`mix_minus_self` bodies as the default until then.** Vectorize last — at ≤8 narrowband legs the scalar mix is ~64k adds/s, a rounding error on a 240 MHz core. Depends on #164. (§6 of the design doc.)
+
+#### 🟢 Issue #169: Media: per-port repacketization layer for non-20 ms ptime codecs before the bus
+* **Status**: ⏳ Open
+* **Labels**: `media`, `priority-medium`
+* **Description**: The bus `FRAME` must equal the RTP ptime. The moment a non-20 ms-ptime codec appears (G.723.1 = 30 ms, G.729 = 10 ms, Opus 2.5–60 ms) each such port needs repacketization to the bus frame size **before** it reaches the bus. This is a correctness/jitter problem, not a compute one — noted but not solved in the bundle. Depends on #164. (§8 trap #5 of the design doc.)
+
+#### 🔵 Issue #170: Media: VAD energy-gating of mix participation (conference-grade quiet)
+* **Status**: ⏳ Open
+* **Labels**: `media`, `feature-request`, `priority-low`
+* **Description**: To make the bus *sound* like a conference rather than merely be correct, gate the mix to ports actually speaking — drops the noise floor and clip risk together. The per-frame energy test is **sum-of-squares**, a clean vector MAC (`ee.vmulas.s16.accx`), the same kernel shape as the Goertzel/correlation DSP. Naive clip is fine for one or two simultaneous talkers; add this when scaling participant counts. Depends on #164. (§6c of the design doc.)
 
 ---
 
