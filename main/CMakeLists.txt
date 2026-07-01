@@ -161,6 +161,16 @@ endif()
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     "POCKETDIAL_BOARD_NAME=\"${_PD_BOARD_NAME}\"")
 
+# mDNS hostname — the product identity (issue #154). Every entry point brings
+# mDNS up pre-provisioning-gate using this macro so `drawbridge.local` resolves
+# on first boot. Overridable at configure time (-DPOCKETDIAL_HOSTNAME=foo) so two
+# units on one LAN needn't both claim the same name (issue #47).
+if(NOT DEFINED POCKETDIAL_HOSTNAME)
+    set(POCKETDIAL_HOSTNAME "drawbridge")
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    "POCKETDIAL_HOSTNAME=\"${POCKETDIAL_HOSTNAME}\"")
+
 # Re-apply the wolfSSL ESP-IDF-v6.0.1 compatibility patches to the freshly fetched
 # (git-ignored) managed component. The wolfssl/wolfssh deps in idf_component.yml are
 # fetched for EVERY transport (the component manager's rules: can't gate on the custom

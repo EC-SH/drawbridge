@@ -13,6 +13,7 @@
 #include "nvs.h"
 #include "esp_timer.h"
 #include "mdns.h"
+#include "pd_mdns.h"      // shared pd_mdns_start() — unified mDNS hostname (#154)
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
@@ -808,18 +809,19 @@ extern "C" void app_main(void) {
         g_httpServer = new HttpServer(g_localIp, 80, nullptr);
         g_httpServer->start();
 
-        // mDNS so the portal also answers at http://pocketdial.local/ (station/standalone
-        // modes get mDNS from the SIP server; the captive portal has no SIP server, so do it
-        // here). Matches the SipServer hostname/service for consistency.
-        if (mdns_init() == ESP_OK) {
-            mdns_hostname_set("pocketdial");
-            mdns_instance_name_set("Pocket-Dial Setup");
-            mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-        }
-
-        ESP_LOGI(TAG, "Captive onboarding active at http://192.168.4.1/ or pocketdial.local (decays in %ds)", CAPTIVE_DECAY_SECONDS);
+        // mDNS for the portal is brought up by the unified pd_mdns_start() below —
+        // one hostname across every role (#154), so captive and operational modes
+        // no longer advertise different names.
+        ESP_LOGI(TAG, "Captive onboarding active at http://192.168.4.1/ or " POCKETDIAL_HOSTNAME ".local (decays in %ds)", CAPTIVE_DECAY_SECONDS);
         xTaskCreatePinnedToCore(&captive_decay_task, "decay_task", 3072, NULL, 3, NULL, 0);
     }
+
+    // ── mDNS: advertise <hostname>.local for EVERY role (#154) ───────────────
+    // Unified here (was previously split: the SipServer ctor for station/standalone,
+    // a captive-only block advertising a different name). All paths have a live
+    // netif/IP by this point. The display build has no provisioning gate, but a
+    // single early hostname keeps captive + operational modes consistent.
+    pd_mdns_start(TAG, 5060 /* SIP */, 80 /* HTTP dashboard */);
 
     // ── SSH / esp_console engine (Ticket 2) ─────────────────────────────────
     // Available in EVERY network role — operational STATION/Standalone AND during

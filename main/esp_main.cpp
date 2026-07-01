@@ -19,6 +19,7 @@
 #include "AdminAuth.hpp"
 #include "LogQueue.hpp"
 #include "SshServer.hpp"
+#include "pd_mdns.h"      // shared pd_mdns_start() — mDNS pre-gate (#154)
 #include "host_compat.h"
 
 // ── Default INFRA (AP) profile settings ───────────────────────────────────────
@@ -304,6 +305,12 @@ extern "C" void app_main(void)
     }
 
     s_sip_ip = sip_ip;
+
+    // ── mDNS: advertise <hostname>.local BEFORE the provisioning gate (#154) ─────
+    // Both AP and STA netifs are final by here (the STA-fail fallback above may
+    // re-init the Wi-Fi driver), so this is the earliest safe point. Without it a
+    // fresh Wi-Fi unit never resolves drawbridge.local for SSH onboarding.
+    pd_mdns_start(TAG, 5060 /* SIP */, HTTP_DASHBOARD_PORT);
 
     // ── Task 1C: provisioning gate ───────────────────────────────────────────
     // Read the "provisioned" flag from NVS. If absent or 0, hold the SIP stack

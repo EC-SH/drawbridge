@@ -132,17 +132,23 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Severity**: High — MUST-FIX before commercial deployment
 * **Description**: Both SSH roles currently share one admin PIN. Add a dedicated owner credential (`owner_salt`/`owner_hash`), resolve role at auth time (constant-time comparison against both hashes), stash role in session state, and gate destructive operations (`applyFactoryReset()`, NVS backup/restore) with a per-action `isOwner()` check. Extend brute-force lockout key from `Channel` to `(Channel, Principal)` to prevent sysop PIN spraying from locking out the owner recovery path. See also: #117 (SSH re-enable lockout), #130 (per-IP HTTP lockout).
 
-#### 🟡 Issue #154: Infra: hoist `mdns_init` before provisioning gate so `drawbridge.local` resolves on first boot
-* **Status**: ⏳ Open
-* **Labels**: `network`, `priority-high`
-* **Description**: mDNS currently starts inside the `SipServer` constructor — after the provisioning gate. A factory-fresh unit never starts mDNS, so `drawbridge.local` does not resolve and `ssh owner@drawbridge.local` fails on first boot. Fix: hoist `mdns_init()` + `mdns_hostname_set("drawbridge", NULL)` into `app_main` before the provisioning gate in each entry point. Also locks the mDNS hostname to `"drawbridge"` (product identity — not `pocketdial.local`).
+> **Note:** the #155/#156 numbers below were previously swapped relative to the GitHub tracker;
+> corrected here. GitHub **#156** = "SSH start never called on wifi/lan8720"; **#155** = "wire
+> `owner@` username through `ll_on_open`".
 
-#### 🟡 Issue #155: SSH: `SshServer::start()` never called in wifi + lan8720 entry points — SSH dead on those builds
-* **Status**: ⏳ Open
+#### 🟡 Issue #154: Infra: hoist `mdns_init` before provisioning gate so `drawbridge.local` resolves on first boot
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
+* **Labels**: `network`, `priority-high`
+* **Description**: mDNS currently starts inside the `SipServer` constructor — after the provisioning gate. A factory-fresh unit never starts mDNS, so `drawbridge.local` does not resolve and `ssh owner@drawbridge.local` fails on first boot. Fix: hoist `mdns_init()` + `mdns_hostname_set("drawbridge")` into `app_main` before the provisioning gate in each entry point. Also locks the mDNS hostname to `"drawbridge"` (product identity — not `pocketdial.local`).
+* **Resolution**: mDNS bring-up removed from the `SipServer` ctor (which ran in the SIP task, post-gate — and on the eth build had been silently renaming the host back to the default once SIP started) and hoisted into every `app_main` before the provisioning gate via a shared `main/pd_mdns.h` (`pd_mdns_start()`), so the four transports stay in lockstep. Hostname is now `POCKETDIAL_HOSTNAME`, a `main/CMakeLists.txt` compile def defaulting to `"drawbridge"` (overridable, #47); the display build's captive-portal-only mDNS block (which advertised `pocketdial`) is folded into the unified call. Host build + suite green; cppcheck clean; firmware compile-verified by the CI matrix (no local IDF toolchain — hardware `.local`-resolution verify is a follow-up).
+
+#### 🟡 Issue #156: SSH: `SshServer::start()` never called in wifi + lan8720 entry points — SSH dead on those builds
+* **Status**: ✅ Resolved (already fixed in `7a82593`; verified on `claude/open-issues-ekhtpb`)
 * **Labels**: `ssh`, `priority-high`
 * **Description**: `esp_main.cpp` (wifi) and `esp_main_eth_lan8720.cpp` link littlessh but never call `SshServer::start()`. SSH is silently absent on those firmware variants — no error, just no port 22. Fix: add `SshServer::start()` before the provisioning gate in both entry points, mirroring `esp_main_eth.cpp`.
+* **Resolution**: Both entry points already call `SshServer::instance().start()` before the provisioning gate — wifi at `esp_main.cpp:338`, lan8720 at `esp_main_eth_lan8720.cpp:397` — landed in `7a82593` (audit #44 cluster). No further code change; verified during the #154 mDNS work. (The ISSUES.md status had drifted stale.)
 
-#### 🟡 Issue #156: SSH: wire `owner@` username through `ll_on_open` in littlessh so Guided Mode is reachable
+#### 🟡 Issue #155: SSH: wire `owner@` username through `ll_on_open` in littlessh so Guided Mode is reachable
 * **Status**: ⏳ Open
 * **Labels**: `ssh`, `tui`, `priority-high`
 * **Description**: `ll_on_open` currently discards the SSH username (`(void)user`). As a result `ssh owner@drawbridge.local` opens the same Expert Mode as `ssh sysop@drawbridge.local` — Guided Mode is unreachable over eth/wifi/lan8720 SSH. Fix: stop discarding `user`; store it in session state and pass it to `setUsername()` (same as the wolfSSH path already does). Depends on privilege model (#153).

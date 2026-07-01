@@ -1,15 +1,14 @@
 #include "SipServer.hpp"
 #include "SipMessageTypes.h"
 
-#if defined(ESP_PLATFORM)
-#include <mdns.h>
-#endif
-
-// Issue #47: mDNS hostname is compile-time configurable so two units on one LAN
-// don't both claim "pocketdial.local". Override with -DPOCKETDIAL_HOSTNAME=\"foo\".
-#ifndef POCKETDIAL_HOSTNAME
-#define POCKETDIAL_HOSTNAME "pocketdial"
-#endif
+// mDNS is NO LONGER initialised here (issue #154). It used to be brought up in
+// this constructor, which on ESP runs INSIDE the SIP task — i.e. AFTER the
+// provisioning gate — so a factory-fresh unit sitting at the gate never
+// advertised `drawbridge.local`, breaking the `ssh owner@drawbridge.local`
+// onboarding path. Worse, on the eth build (whose entry point already brings
+// mDNS up pre-gate) this ctor re-ran `mdns_hostname_set()` once SIP started and
+// silently renamed the host back to the default. mDNS is now hoisted into each
+// transport's `app_main`, before the provisioning gate. See main/esp_main_*.cpp.
 
 SipServer::SipServer(std::string ip, int port, int httpPort) :
 	_socket(ip, port, std::bind(&SipServer::onNewMessage, this, std::placeholders::_1, std::placeholders::_2)),
@@ -17,20 +16,6 @@ SipServer::SipServer(std::string ip, int port, int httpPort) :
 {
 	(void)httpPort;
 	_socket.startReceive();
-
-	// ── Multicast DNS (mDNS) responder broadcast ─────────────────────
-#if defined(ESP_PLATFORM)
-	esp_err_t err = mdns_init();
-	if (err == ESP_OK) {
-		mdns_hostname_set(POCKETDIAL_HOSTNAME);
-		mdns_instance_name_set("Pocket Dial SIP Server");
-		mdns_service_add(NULL, "_sip", "_udp", port, NULL, 0);
-		mdns_service_add(NULL, "_http", "_tcp", httpPort, NULL, 0);
-		std::cout << "[mDNS] Broadcast active: " << POCKETDIAL_HOSTNAME << ".local\n";
-	} else {
-		std::cerr << "[mDNS] Failed to initialize: " << err << "\n";
-	}
-#endif
 
 	// ── Desktop Background Tick Thread ───────────────────────────────
 #if !defined(ESP_PLATFORM) && !defined(ESP32)
