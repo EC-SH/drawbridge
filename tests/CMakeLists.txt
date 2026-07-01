@@ -27,6 +27,9 @@ add_executable(sip_parser_tests
     SipMessage_header_test.cpp
     SipStatus_test.cpp
     SipDigest_test.cpp
+    # #125: SIP digest auth for INVITE (407 challenge) end-to-end through
+    # RequestsHandler in Secure registrar mode.
+    InviteAuth_test.cpp
     ArpLookup_test.cpp
     Pbx_test.cpp
     PageZone_test.cpp

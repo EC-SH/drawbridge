@@ -418,6 +418,35 @@ HTTP_CODE=$(echo "$RESP_DATA" | tail -n1)
 BODY_CONTENT=$(echo "$RESP_DATA" | sed '$d')
 assert_status "TC-AUTH-07: POST /api/kill (provisioned, WITH cookie -> 200)" "200" "$HTTP_CODE" "$BODY_CONTENT"
 
+# TC-AUTH-07b: SSH re-enable escape hatch (#117) — cross-origin is rejected,
+#   an unauthenticated POST is 401 (we are provisioned by now), and the
+#   session-cookie POST succeeds. On host, setEnabled(true) is an in-memory
+#   toggle (no NVS, no backend task unless PD_HOST_SSH) so 200 is deterministic.
+RESP_DATA=$(curl -s -w "\n%{http_code}" -X POST \
+  -H "Host: ${HOST_HDR}" \
+  -H "Origin: http://evil.example" \
+  "${BASE_URL}/api/ssh/enable")
+HTTP_CODE=$(echo "$RESP_DATA" | tail -n1)
+BODY_CONTENT=$(echo "$RESP_DATA" | sed '$d')
+assert_status "TC-AUTH-07b: POST /api/ssh/enable (cross-origin -> 403)" "403" "$HTTP_CODE" "$BODY_CONTENT"
+
+RESP_DATA=$(curl -s -w "\n%{http_code}" -X POST \
+  -H "Host: ${HOST_HDR}" \
+  -H "Origin: ${ORIGIN_HDR}" \
+  "${BASE_URL}/api/ssh/enable")
+HTTP_CODE=$(echo "$RESP_DATA" | tail -n1)
+BODY_CONTENT=$(echo "$RESP_DATA" | sed '$d')
+assert_status "TC-AUTH-07c: POST /api/ssh/enable (provisioned, no cookie -> 401)" "401" "$HTTP_CODE" "$BODY_CONTENT"
+
+RESP_DATA=$(curl -s -w "\n%{http_code}" -X POST \
+  -H "Host: ${HOST_HDR}" \
+  -H "Origin: ${ORIGIN_HDR}" \
+  -H "Cookie: pd_session=${SESSION}" \
+  "${BASE_URL}/api/ssh/enable")
+HTTP_CODE=$(echo "$RESP_DATA" | tail -n1)
+BODY_CONTENT=$(echo "$RESP_DATA" | sed '$d')
+assert_status "TC-AUTH-07d: POST /api/ssh/enable (WITH cookie -> 200)" "200" "$HTTP_CODE" "$BODY_CONTENT"
+
 # TC-AUTH-08: brute-force lockout — 5 consecutive wrong PINs trip a 429.
 #   verifyPin engages the lockout on the 5th failure, so by the 5th attempt the
 #   login endpoint must answer 429 (Too Many Requests). We log out first so the

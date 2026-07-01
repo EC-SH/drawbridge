@@ -43,7 +43,9 @@ public:
 
 private:
 	void acceptLoop();
-	void handleClient(int clientSock);
+	// `peerIp`: the client's IPv4 address (network byte order, opaque key) —
+	// captured at accept() time for the per-source-IP login lockout (issue #130).
+	void handleClient(int clientSock, uint32_t peerIp);
 
 	// HTTP request parsing
 	struct HttpRequest {
@@ -87,8 +89,14 @@ private:
 	// --- Admin auth endpoints (PIN-gated session layer; see AdminAuth.hpp) ---
 	void sendApiAdminStatus(int sock, const HttpRequest& req);
 	void sendApiAdminSetPin(int sock, const HttpRequest& req);
-	void sendApiAdminLogin(int sock, const HttpRequest& req);
+	void sendApiAdminLogin(int sock, const HttpRequest& req, uint32_t peerIp);
 	void sendApiAdminLogout(int sock, const HttpRequest& req);
+
+	// --- SSH re-enable escape hatch (issue #117; same-origin + auth gated) ---
+	// POST /api/ssh/enable — turns the SSH sysop terminal back on from the web
+	// dashboard after it was disabled in the TUI (which would otherwise be a
+	// one-way door on a headless unit).
+	void sendApiSshEnable(int sock);
 
 	// --- OTA firmware-update endpoints (see OtaUpdater.hpp + docs/OTA.md) ---
 	// Streams the request body straight into the inactive OTA slot. This MUST

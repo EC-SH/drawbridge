@@ -230,7 +230,8 @@ extension — so re-adoption is a deliberate admin action, by design.
 | Capability | Milestone | Notes |
 |------------|-----------|-------|
 | Runtime registrar mode (Open/Learn/Secure) | **M1 (now)** | NVS-backed; chosen at onboarding. |
-| Digest auth on REGISTER (challenge/verify) | **M1 (now)** | RFC 2617 (MD5); closes the open registrar. INVITE auth (407) is a follow-up. |
+| Digest auth on REGISTER (challenge/verify) | **M1 (now)** | RFC 2617 (MD5); closes the open registrar. |
+| Digest auth on INVITE (407 challenge/verify) | **shipped (#125)** | `secure` mode challenges initial INVITEs with `407`; re-INVITEs and star codes exempt. |
 | Learn-mode TOFU adoption keyed by MAC | **M1 (now)** | Unknown MAC adopted; recorded `{MAC, ext}`. |
 | Extension ↔ MAC lock (anti-spoof) | **M1 (now)** | Different MAC for a secured ext → reject. |
 | Set / rotate per-extension secret in config panel | **M1 (now)** | Manual entry on the handset; box stores HA1. |

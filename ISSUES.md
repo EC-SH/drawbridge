@@ -85,10 +85,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 ### 🟢 Medium Priority: Hardware Validation & Deployment Features
 
 #### 🟡 Issue #117: SSH re-enable: disabling SSH in TUI must not self-lock — add web dashboard toggle
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `security`, `ssh`, `tui`, `priority-high`
 * **Severity**: High
 * **Description**: Disabling SSH via [4] SECURITY is currently irreversible from the network — the only SSH toggle is inside the SSH TUI. Add a `POST /api/ssh/enable` dashboard endpoint (admin-session-gated) and/or a dial-string escape hatch so an operator can recover without physical access or factory reset.
+* **Resolution**: `POST /api/ssh/enable` added to the dashboard (same-origin + admin-session gate, same shape as `/api/dnd`); calls `SshServer::setEnabled(true)`, which now returns whether the NVS persist succeeded (checked returns per CONTRIBUTING_FIRMWARE) — a persist failure is reported as 500 instead of silently claiming reboot-persistence. HTTP smoke covers 403/401/200; SYSOP_MANUAL §SECURITY and OPERATOR_ADMIN document the recovery procedure. The dial-string escape hatch remains a possible follow-up.
 
 ---
 
@@ -101,10 +102,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Description**: The engine supports up to 10 page zones (980–989) with NVS persistence, but zone creation and member assignment have no TUI surface. Operators must use the 999 all-page or scripted provisioning. A Page Zones tab (mirroring the Ring Groups tab) is needed for field usability.
 
 #### 🟢 Issue #119: TUI: IVR tab is a non-functional stub — hide or remove until backend ships
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `tui`, `ux`
 * **Severity**: Medium
 * **Description**: The IVR tab under [3] PBX CONFIG renders and accepts input but silently discards it — the backend is not implemented. For a commercial release this must either be hidden entirely or show a clear "NOT YET AVAILABLE" banner with no editable fields.
+* **Resolution**: Removed entirely (option 1 — cleaner for a commercial release) rather than bannered. Dropped `PbxTab::Ivr`, `Screen::PbxIvrEdit`, `renderPbxIvr`/`renderPbxIvrEdit`/`onKeyPbxIvrEdit`, the IVR editor state, and every router/help/footer reference; the tab strip loop and `pbxTabCount()` now stay in lockstep with the enum (strip count derived from `sizeof(kTabs)`). `_pbxTab` is session-local (no persisted index to migrate). Tui_test.cpp updated to pin the IVR tab's absence and the 5-tab cycle; `.smoke/ssh_tui.py` tab-walk and SYSOP_MANUAL updated. Full Tui suite (60 tests) green.
 
 #### 🟢 Issue #44: End-to-end SIP call test needed on JC3248W535EN hardware
 * **Status**: ⏳ Open / Planned
@@ -130,25 +132,33 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Severity**: High — MUST-FIX before commercial deployment
 * **Description**: Both SSH roles currently share one admin PIN. Add a dedicated owner credential (`owner_salt`/`owner_hash`), resolve role at auth time (constant-time comparison against both hashes), stash role in session state, and gate destructive operations (`applyFactoryReset()`, NVS backup/restore) with a per-action `isOwner()` check. Extend brute-force lockout key from `Channel` to `(Channel, Principal)` to prevent sysop PIN spraying from locking out the owner recovery path. See also: #117 (SSH re-enable lockout), #130 (per-IP HTTP lockout).
 
-#### 🟡 Issue #154: Infra: hoist `mdns_init` before provisioning gate so `drawbridge.local` resolves on first boot
-* **Status**: ⏳ Open
-* **Labels**: `network`, `priority-high`
-* **Description**: mDNS currently starts inside the `SipServer` constructor — after the provisioning gate. A factory-fresh unit never starts mDNS, so `drawbridge.local` does not resolve and `ssh owner@drawbridge.local` fails on first boot. Fix: hoist `mdns_init()` + `mdns_hostname_set("drawbridge", NULL)` into `app_main` before the provisioning gate in each entry point. Also locks the mDNS hostname to `"drawbridge"` (product identity — not `pocketdial.local`).
+> **Note:** the #155/#156 numbers below were previously swapped relative to the GitHub tracker;
+> corrected here. GitHub **#156** = "SSH start never called on wifi/lan8720"; **#155** = "wire
+> `owner@` username through `ll_on_open`".
 
-#### 🟡 Issue #155: SSH: `SshServer::start()` never called in wifi + lan8720 entry points — SSH dead on those builds
-* **Status**: ⏳ Open
+#### 🟡 Issue #154: Infra: hoist `mdns_init` before provisioning gate so `drawbridge.local` resolves on first boot
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
+* **Labels**: `network`, `priority-high`
+* **Description**: mDNS currently starts inside the `SipServer` constructor — after the provisioning gate. A factory-fresh unit never starts mDNS, so `drawbridge.local` does not resolve and `ssh owner@drawbridge.local` fails on first boot. Fix: hoist `mdns_init()` + `mdns_hostname_set("drawbridge")` into `app_main` before the provisioning gate in each entry point. Also locks the mDNS hostname to `"drawbridge"` (product identity — not `pocketdial.local`).
+* **Resolution**: mDNS bring-up removed from the `SipServer` ctor (which ran in the SIP task, post-gate — and on the eth build had been silently renaming the host back to the default once SIP started) and hoisted into every `app_main` before the provisioning gate via a shared `main/pd_mdns.h` (`pd_mdns_start()`), so the four transports stay in lockstep. Hostname is now `POCKETDIAL_HOSTNAME`, a `main/CMakeLists.txt` compile def defaulting to `"drawbridge"` (overridable, #47); the display build's captive-portal-only mDNS block (which advertised `pocketdial`) is folded into the unified call. Host build + suite green; cppcheck clean; firmware compile-verified by the CI matrix (no local IDF toolchain — hardware `.local`-resolution verify is a follow-up).
+
+#### 🟡 Issue #156: SSH: `SshServer::start()` never called in wifi + lan8720 entry points — SSH dead on those builds
+* **Status**: ✅ Resolved (already fixed in `7a82593`; verified on `claude/open-issues-ekhtpb`)
 * **Labels**: `ssh`, `priority-high`
 * **Description**: `esp_main.cpp` (wifi) and `esp_main_eth_lan8720.cpp` link littlessh but never call `SshServer::start()`. SSH is silently absent on those firmware variants — no error, just no port 22. Fix: add `SshServer::start()` before the provisioning gate in both entry points, mirroring `esp_main_eth.cpp`.
+* **Resolution**: Both entry points already call `SshServer::instance().start()` before the provisioning gate — wifi at `esp_main.cpp:338`, lan8720 at `esp_main_eth_lan8720.cpp:397` — landed in `7a82593` (audit #44 cluster). No further code change; verified during the #154 mDNS work. (The ISSUES.md status had drifted stale.)
 
-#### 🟡 Issue #156: SSH: wire `owner@` username through `ll_on_open` in littlessh so Guided Mode is reachable
-* **Status**: ⏳ Open
+#### 🟡 Issue #155: SSH: wire `owner@` username through `ll_on_open` in littlessh so Guided Mode is reachable
+* **Status**: ✅ Resolved (landed in `516591b`; verified on `claude/open-issues-ekhtpb`)
 * **Labels**: `ssh`, `tui`, `priority-high`
 * **Description**: `ll_on_open` currently discards the SSH username (`(void)user`). As a result `ssh owner@drawbridge.local` opens the same Expert Mode as `ssh sysop@drawbridge.local` — Guided Mode is unreachable over eth/wifi/lan8720 SSH. Fix: stop discarding `user`; store it in session state and pass it to `setUsername()` (same as the wolfSSH path already does). Depends on privilege model (#153).
+* **Resolution**: `ll_on_open` reads `lssh_username(s)` and calls `tui.setUsername(...)` before `tui.begin()` (which derives `_guidedMode` from the name and routes `owner`/`Owner` → `GuidedHub`) — exact parity with the wolfSSH `wsUserAuth` → `runTuiSession` path. Already committed; verified during the #157 work. This is presentation routing only; two-role authz (separate owner/sysop credentials) remains #153.
 
 #### 🟡 Issue #157: SSH performance: littlessh buffered repaint — one `lssh_write()` per screen, not per `put()`
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `ssh`, `performance`, `priority-high`
 * **Description**: The littlessh `setWriter` lambda calls `lssh_write()` on every `Tui::put()` call — a full screen render sends ~50–150 encrypted SSH packets. Fix: buffer the whole screen into a persistent `_frame` string (`.reserve(8192)` at session open, `.clear()` keeps capacity), then a single `lssh_write()` per repaint. No changes to `Tui.cpp`. `_frame` lives on the heap (PSRAM-friendly), outside the SIP zero-alloc hot-path.
+* **Resolution**: The buffered writer (`g_frame` append + one `flush_frame()` per `feed()`/`tickLive()`) landed in `516591b`. This change closes the last gap: `ll_on_open` ended with `tui.begin()` but never flushed, so the INITIAL paint (banner + first screen) sat buffered until the first keystroke or the ≤1 s idle beat — a fresh connection showed a blank terminal. Added the `flush_frame(s)` after `begin()`, wrapped in the file's `g_tui_busy` re-entrancy guard (an `lssh_write` window-stall can pump the connection and re-enter `ll_on_data`). cppcheck clean; ESP compile on the CI firmware matrix; hardware repaint-latency verify via `.smoke/ssh_tui.py` is a follow-up.
 
 #### 🟡 Issue #158: TUI P1: first-run wizard — guided onboarding for fresh-deployed unit
 * **Status**: ⏳ Open
@@ -221,10 +231,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 ### 🔵 Low Priority: Diagnostics & Hobbyist Compatibility
 
 #### 🟢 Issue #120: Park recall: play intercom beep after 5-minute hold with orbit+retrieval caller ID
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`) — caller-ID + `**orbit` retrieve (ring-back timer already shipped; intercom auto-answer remains a follow-up)
 * **Labels**: `pbx`, `feature-request`, `priority-high`
 * **Severity**: High
 * **Description**: When a call has been parked on an orbit for more than 5 minutes without retrieval, ring back the extension that parked it with an intercom auto-answer INVITE. Caller ID should show the orbit number and the retrieval star code (e.g., "Orbit 701 — dial **701 to retrieve"). Prevents forgotten parked calls from sitting indefinitely.
+* **Resolution**: The park-timeout ring-back INVITE (and its in-dialog ACK) now advertise the orbit identity as caller ID via a shared `parkRingbackFrom` helper — display name `"Orbit 70x"`, URI user `**70x` — so the phone screen shows the orbit and the dial-back code. `parkOrbitIndex` accepts a leading `**` alias at every call site (onInvite/onCancel/onBye/onAck), so `**70x` parks/retrieves identically to the bare orbit while all bookkeeping keeps the canonical `70x`. Tests in `tests/Park_test.cpp`: orbit caller-ID on ring-back, `**700` retrieve-bridges, `**700`-to-free-orbit parks. Docs updated (OPERATOR_ADMIN, SYSOP_MANUAL). Note: the ring-back timer itself was already shipped; the *intercom auto-answer* variant remains a possible follow-up.
 
 #### 🟢 Issue #121: TUI: clickable dialogs and mouse event handling (xterm mouse protocol)
 * **Status**: ⏳ Open
@@ -257,14 +268,16 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Description**: The SoftAP currently runs open (no passphrase). Any device on the same radio can join, reach the SIP registrar, and attempt to register extensions. Fix: set `authmode = WIFI_AUTH_WPA2_PSK` in `esp_wifi_ap_config_t` with a unique per-device PSK (generated at first boot, displayed via TUI [2] NETWORK, QR-encoded on the display build). This is the primary security control for SoftAP deployments; HTTPS (#134) and SRTP (#135) depend on this being in place first.
 
 #### 🟡 Issue #125: SIP digest auth for INVITE — REGISTER auth ships; INVITE challenge is incomplete
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `sip-engine`, `security`, `priority-high`
 * **Description**: REGISTER digest challenge (RFC 2617 MD5) is shipped in Secure mode. INVITE challenges are not uniformly applied — an attacker who can reach the UDP port can call any extension without credentials. Extend the challenge machinery to INVITE: 401 challenge on first attempt, accept only if the digest matches the registered extension's HA1.
+* **Resolution**: `onInvite` now challenges initial INVITEs with `407 Proxy Authentication Required` in Secure mode (`admitInviteSecure` + `sendProxyChallenge`, mirroring the REGISTER `401`/`admitSecure` ladder — stateless nonce, `Proxy-Authenticate`, method-bound HA2 verify against the From-extension's HA1). `SipMessage` now parses `Proxy-Authorization` and `SipDigest::parseAuthorization` tolerates that header name. Placement is deliberate: mid-dialog re-INVITEs (hold/resume/transfer) are diverted to `onReinvite` before the gate, unregistered callers still get 403, and star-code/`#` INVITEs from registered extensions are exempt (registered == authenticated). The ACK for the 407 is absorbed by `onAck`'s session-miss guard (RFC 3261 §22 — no session allocated). Six end-to-end tests through `RequestsHandler` (`tests/InviteAuth_test.cpp`): challenge, authenticated proceed, wrong-creds 403, ACK absorption, star-code exemption, Open-mode passthrough. THREAT_MODEL S-3/D-2, LEARN_MODE, FEATURE_ROADMAP updated.
 
 #### 🟡 Issue #130: Security: per-source-IP brute-force lockout on /api/admin/login
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `security`, `priority-high`
 * **Description**: The current global 5-attempt / 60-second lockout lets an attacker on the LAN self-DoS the legitimate admin (D-3 in THREAT_MODEL.md). Replace with a per-IP `unordered_map<uint32_t, LockoutState>` bounded to 64 entries (evict oldest on overflow). Each IP gets its own independent window.
+* **Resolution**: Implemented as a fixed `std::array<IpLockout, 64>` inside `AdminAuth` (pool discipline — no rehash/alloc under the auth mutex), keyed by the peer IPv4 captured at `accept()` and threaded through `handleClient` → `sendApiAdminLogin`. Oldest-touched eviction bounds spoofed-source growth; SSH/DTMF channels keep their per-channel windows (#57); `srcIp = 0` callers keep the legacy bucket (source-compatible). Unit tests cover per-IP isolation, legacy independence, and eviction; THREAT_MODEL D-3 marked closed.
 
 #### 🟡 Issue #131: OTA: bind upload to admin session + local-link-only gate
 * **Status**: ⏳ Open

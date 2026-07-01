@@ -208,6 +208,64 @@ TEST(Park, TimeoutRingsBackRegisteredParker) {
     EXPECT_NE(rb->toString().find("INVITE sip:100@"), std::string::npos);
 }
 
+// #120: the park-timeout ring-back INVITE must advertise the ORBIT identity as
+// caller ID — display name "Orbit 700" and URI user "**700" — so the parking
+// extension's phone screen shows which orbit the call is on and the dial-back
+// code, without answering.
+TEST(Park, RingbackFromCarriesOrbitCallerId) {
+    ParkFixture f;
+    f.handler.handle(makeInvite("100", "700", f.ip100, "park-1", 40000));
+    f.cap.clear();
+    f.handler.setParkTimeout(std::chrono::seconds(0));
+    f.handler.tick();
+
+    auto rb = f.find(f.ip100, "INVITE");
+    ASSERT_NE(rb, nullptr) << "expired park must ring the parker back";
+    std::string from = hdr(rb, "From:");
+    EXPECT_NE(from.find("\"Orbit 700\""), std::string::npos)
+        << "ring-back From must show the orbit as the display name; got: " << from;
+    EXPECT_NE(from.find("sip:**700@"), std::string::npos)
+        << "ring-back From URI user must be the **700 dial-back code; got: " << from;
+}
+
+// #120: a caller dialing the caller-ID number literally — "**700" — retrieves
+// the parked call exactly as the bare orbit "700" does.
+TEST(Park, StarStarOrbitRetrievesLikeBareOrbit) {
+    ParkFixture f;
+    f.handler.handle(makeInvite("100", "700", f.ip100, "park-1", 40000));
+    f.cap.clear();
+
+    // 101 retrieves by dialing the **-prefixed alias shown on the phone screen.
+    f.handler.handle(makeInvite("101", "**700", f.ip101, "retr-1", 41000));
+
+    // Retriever is answered with the parked party's SDP (port 40000) — bridged.
+    auto ok = f.find(f.ip101, "SIP/2.0 200");
+    ASSERT_NE(ok, nullptr) << "**700 must retrieve the parked call (200 OK to retriever)";
+    EXPECT_NE(ok->toString().find("m=audio 40000"), std::string::npos)
+        << "retriever's answer carries the parked party's SDP";
+
+    // Parked party gets the re-INVITE with the retriever's SDP (port 41000).
+    auto reinv = f.find(f.ip100, "INVITE");
+    ASSERT_NE(reinv, nullptr) << "parked party must get a re-INVITE on **700 retrieve";
+    EXPECT_NE(reinv->toString().find("m=audio 41000"), std::string::npos);
+
+    // Orbit released.
+    EXPECT_TRUE(f.handler.getParkedCalls().empty());
+}
+
+// #120 regression guard: dialing "**700" while the orbit is FREE parks the
+// caller there (same as bare "700"), rather than 404ing or leaking to a trunk.
+TEST(Park, StarStarOrbitToFreeOrbitParks) {
+    ParkFixture f;
+    f.handler.handle(makeInvite("100", "**700", f.ip100, "park-1", 40000));
+
+    auto ok = f.find(f.ip100, "SIP/2.0 200");
+    ASSERT_NE(ok, nullptr) << "**700 to a free orbit must park (200 OK to parker)";
+    auto parked = f.handler.getParkedCalls();
+    ASSERT_EQ(parked.size(), 1u);
+    EXPECT_EQ(std::get<0>(parked[0]), "700") << "slot must record the canonical bare orbit";
+}
+
 TEST(Park, ParkedPartyByeFreesOrbit) {
     ParkFixture f;
     f.handler.handle(makeInvite("100", "700", f.ip100, "park-1", 40000));

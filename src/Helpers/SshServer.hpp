@@ -73,8 +73,12 @@ public:
     void clearBackendTask() { _taskHandle = nullptr; }
 
     // Runtime toggle — writes "ssh_enabled" (u8) to NVS namespace "storage" and
-    // calls start() or stop() as appropriate.
-    void setEnabled(bool enabled);
+    // calls start() or stop() as appropriate. Returns false if the NVS persist
+    // failed (the in-memory state and start/stop still take effect for this
+    // boot); always true on host, where there is no NVS. Callers that surface
+    // state to an operator (e.g. POST /api/ssh/enable, #117) should report a
+    // persist failure rather than imply the change survives a reboot.
+    bool setEnabled(bool enabled);
 
     // Returns true if "ssh_enabled" NVS key is 1 (or if NVS is absent on host).
     bool isEnabled() const;

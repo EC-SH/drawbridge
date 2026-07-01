@@ -324,11 +324,27 @@ namespace
 		std::string hash;               // hex (salted, iterated digest)
 
 		// Per-channel brute-force lockout (issue #57: decouple HTTP / SSH / DTMF so a
-		// flood on one surface can't throttle the admin on another). In-process; see
-		// threat model re: per-IP within a channel. Indexed by AdminAuth::Channel.
+		// flood on one surface can't throttle the admin on another). In-process.
+		// Indexed by AdminAuth::Channel.
 		static constexpr size_t kChannels = static_cast<size_t>(AdminAuth::Channel::Count);
 		std::array<int, kChannels>      failedAttempts{};   // value-init -> all 0
 		std::array<uint64_t, kChannels> lockoutUntilMs{};   // value-init -> all 0
+
+		// Per-source-IP lockout for the Http channel (issue #130 / THREAT_MODEL D-3):
+		// the old channel-global counter let any LAN device lock the legitimate admin
+		// out by firing 5 wrong PINs. Fixed-capacity table (pool discipline — no
+		// rehash/alloc under the mutex); at capacity the oldest-touched entry is
+		// evicted, which bounds memory against source-IP spoofing. Key is the IPv4
+		// address as an opaque network-byte-order word; 0 means "no source info"
+		// and falls back to the legacy per-channel bucket above.
+		struct IpLockout
+		{
+			uint32_t ip = 0;               // 0 = free slot
+			int      failedAttempts = 0;
+			uint64_t lockoutUntilMs = 0;
+			uint64_t lastTouchedMs = 0;
+		};
+		std::array<IpLockout, AdminAuth::kMaxTrackedIps> ipLockouts{};
 
 		std::array<Session, AdminAuth::kMaxSessions> sessions{};
 	};
@@ -339,6 +355,59 @@ namespace
 	{
 		static AuthState s;
 		return s;
+	}
+
+	// Read-only per-IP lookup (issue #130). Caller must hold state().mutex.
+	// Never touches or evicts — safe for the hot isLockedOut(429) path.
+	const AuthState::IpLockout* findIpLockoutLocked(const AuthState& s, uint32_t ip)
+	{
+		for (const auto& e : s.ipLockouts)
+		{
+			if (e.ip == ip && ip != 0)
+			{
+				return &e;
+			}
+		}
+		return nullptr;
+	}
+
+	// Find-or-create the per-IP entry (issue #130). Caller must hold state().mutex.
+	// Prefers the existing entry, then a free slot, else evicts the oldest-touched
+	// entry (bounded table — spoofed sources can only recycle slots, not grow it).
+	AuthState::IpLockout& obtainIpLockoutLocked(AuthState& s, uint32_t ip, uint64_t now)
+	{
+		size_t slot = 0;
+		uint64_t oldestTouch = UINT64_MAX;
+		for (size_t i = 0; i < s.ipLockouts.size(); ++i)
+		{
+			AuthState::IpLockout& e = s.ipLockouts[i];
+			if (e.ip == ip)
+			{
+				e.lastTouchedMs = now;
+				return e;
+			}
+			if (e.ip == 0)
+			{
+				// Free slot: remember the first one, but keep scanning in case the
+				// IP exists later in the table.
+				if (oldestTouch != 0)
+				{
+					oldestTouch = 0;
+					slot = i;
+				}
+			}
+			else if (e.lastTouchedMs < oldestTouch)
+			{
+				oldestTouch = e.lastTouchedMs;
+				slot = i;
+			}
+		}
+		AuthState::IpLockout& e = s.ipLockouts[slot];
+		e.ip = ip;                 // claim (or recycle) the slot for this source
+		e.failedAttempts = 0;
+		e.lockoutUntilMs = 0;
+		e.lastTouchedMs = now;
+		return e;
 	}
 
 	// --- NVS-backed persistence (ESP only); no-ops on host. ---
@@ -457,13 +526,15 @@ namespace AdminAuth
 		}
 
 		// A credential (re)set clears EVERY channel's lockout (issue #57): the admin
-		// legitimately re-proved control, so all surfaces get a fresh window.
+		// legitimately re-proved control, so all surfaces get a fresh window —
+		// including every tracked source IP (issue #130).
 		s.failedAttempts.fill(0);
 		s.lockoutUntilMs.fill(0);
+		s.ipLockouts.fill({});
 		return true;
 	}
 
-	bool isLockedOut(Channel channel)
+	bool isLockedOut(Channel channel, uint32_t srcIp)
 	{
 		AuthState& s = state();
 		std::lock_guard<std::mutex> lock(s.mutex);
@@ -472,10 +543,16 @@ namespace AdminAuth
 		{
 			return false;   // defensive: out-of-range channel never locks
 		}
+		if (channel == Channel::Http && srcIp != 0)
+		{
+			// Per-source window (issue #130). An untracked source is never locked.
+			const AuthState::IpLockout* e = findIpLockoutLocked(s, srcIp);
+			return e != nullptr && e->lockoutUntilMs != 0 && nowMs() < e->lockoutUntilMs;
+		}
 		return s.lockoutUntilMs[c] != 0 && nowMs() < s.lockoutUntilMs[c];
 	}
 
-	bool verifyPin(const std::string& pin, Channel channel)
+	bool verifyPin(const std::string& pin, Channel channel, uint32_t srcIp)
 	{
 		AuthState& s = state();
 		std::lock_guard<std::mutex> lock(s.mutex);
@@ -492,9 +569,21 @@ namespace AdminAuth
 			return false;   // defensive: reject an unknown channel rather than UB
 		}
 
-		// Honor THIS channel's lockout without hashing while it is engaged. Other
-		// channels are unaffected (issue #57: no cross-channel throttling).
-		if (s.lockoutUntilMs[c] != 0 && nowMs() < s.lockoutUntilMs[c])
+		// Pick the accounting bucket: the per-source-IP entry for HTTP logins with
+		// a known peer (issue #130), else the legacy per-channel bucket. Other
+		// channels are unaffected either way (issue #57: no cross-channel throttling).
+		const bool perIp = (channel == Channel::Http && srcIp != 0);
+		const uint64_t now = nowMs();
+		AuthState::IpLockout* entry = nullptr;
+		if (perIp)
+		{
+			entry = &obtainIpLockoutLocked(s, srcIp, now);
+		}
+		int&      attempts = perIp ? entry->failedAttempts : s.failedAttempts[c];
+		uint64_t& lockout  = perIp ? entry->lockoutUntilMs : s.lockoutUntilMs[c];
+
+		// Honor THIS bucket's lockout without hashing while it is engaged.
+		if (lockout != 0 && now < lockout)
 		{
 			return false;
 		}
@@ -504,22 +593,22 @@ namespace AdminAuth
 
 		if (ok)
 		{
-			s.failedAttempts[c] = 0;
-			s.lockoutUntilMs[c] = 0;
+			attempts = 0;
+			lockout = 0;
 		}
 		else
 		{
-			if (s.failedAttempts[c] < kMaxFailedAttempts)
+			if (attempts < kMaxFailedAttempts)
 			{
-				++s.failedAttempts[c];
+				++attempts;
 			}
-			if (s.failedAttempts[c] >= kMaxFailedAttempts)
+			if (attempts >= kMaxFailedAttempts)
 			{
-				s.lockoutUntilMs[c] = nowMs() + kLockoutMs;
+				lockout = nowMs() + kLockoutMs;
 				// Reset the counter so that, after the cooldown, the attacker
 				// gets a fresh window of kMaxFailedAttempts rather than being
 				// locked out permanently after one bad streak.
-				s.failedAttempts[c] = 0;
+				attempts = 0;
 			}
 		}
 		return ok;
@@ -634,6 +723,7 @@ namespace AdminAuth
 		s.loaded = true;          // we know the (now empty) state; don't reload
 		s.failedAttempts.fill(0);
 		s.lockoutUntilMs.fill(0);
+		s.ipLockouts.fill({});    // per-IP windows too (issue #130)
 
 		for (auto& sess : s.sessions)
 		{

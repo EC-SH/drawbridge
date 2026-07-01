@@ -89,3 +89,90 @@ TEST(AdminAuthLockout, CorrectPinResetsItsChannelCounter)
     EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Ssh));
     EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Ssh));
 }
+
+// ── Issue #130: within the Http channel, lockout is per SOURCE IP ────────────
+// The old channel-global counter let any LAN device lock the legitimate admin
+// out by firing 5 wrong PINs (THREAT_MODEL D-3 admin self-DoS). All clock-free.
+
+namespace {
+// Opaque IPv4 keys (network byte order is irrelevant to the accounting logic).
+constexpr uint32_t kAttackerIp = 0x0100000A;   // "10.0.0.1"
+constexpr uint32_t kAdminIp    = 0x0200000A;   // "10.0.0.2"
+
+void tripHttpLockoutFromIp(uint32_t ip) {
+    for (int i = 0; i < AdminAuth::kMaxFailedAttempts; ++i) {
+        EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, ip));
+    }
+}
+} // namespace
+
+// An attacker's failed streak locks out ONLY the attacker's IP; the admin's IP
+// still logs in with the correct PIN — the D-3 self-DoS path is closed.
+TEST(AdminAuthLockout, HttpLockoutIsPerSourceIp)
+{
+    resetAuth();
+    tripHttpLockoutFromIp(kAttackerIp);
+
+    EXPECT_TRUE(AdminAuth::isLockedOut(Channel::Http, kAttackerIp))
+        << "the attacker's own IP must be locked after kMaxFailedAttempts";
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http, kAdminIp))
+        << "a different source IP must remain unlocked";
+    EXPECT_TRUE(AdminAuth::verifyPin(kPin, Channel::Http, kAdminIp))
+        << "the admin logs in from their own IP while the attacker is locked";
+
+    // The locked IP refuses even the correct PIN during its cooldown.
+    EXPECT_FALSE(AdminAuth::verifyPin(kPin, Channel::Http, kAttackerIp));
+}
+
+// Legacy callers (no source info, srcIp==0) and non-Http channels keep the
+// per-channel bucket, fully independent of the per-IP table.
+TEST(AdminAuthLockout, LegacyAndNonHttpCallersUnaffectedByPerIpTable)
+{
+    resetAuth();
+    tripHttpLockoutFromIp(kAttackerIp);
+
+    // srcIp==0 → legacy channel-global bucket, untouched by the attacker's IP.
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http))
+        << "the legacy (no-IP) Http bucket must not be tripped by per-IP failures";
+    EXPECT_TRUE(AdminAuth::verifyPin(kPin, Channel::Http));
+
+    // Non-Http channels ignore srcIp entirely (per-channel semantics, #57).
+    tripLockout(Channel::Ssh);
+    EXPECT_TRUE(AdminAuth::isLockedOut(Channel::Ssh, kAttackerIp))
+        << "srcIp must be ignored on non-Http channels (same channel bucket)";
+}
+
+// Bounded table: at capacity (kMaxTrackedIps) the OLDEST-touched entry is
+// evicted, so spoofed sources can only recycle slots — memory never grows —
+// and an evicted source starts from a fresh window.
+TEST(AdminAuthLockout, PerIpTableEvictsOldestAtCapacity)
+{
+    resetAuth();
+
+    // Entry 1: partially tripped (kMax-1 failures — one more would lock it).
+    const uint32_t oldest = 0x01010101;
+    for (int i = 0; i < AdminAuth::kMaxFailedAttempts - 1; ++i) {
+        EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, oldest));
+    }
+
+    // Fill the remaining kMaxTrackedIps-1 slots, then one more to force the
+    // eviction of `oldest` (it has the earliest last-touch).
+    for (uint32_t i = 0; i < AdminAuth::kMaxTrackedIps; ++i) {
+        EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, 0x0A000000u + i));
+    }
+
+    // `oldest` was evicted: its streak is gone, so a single wrong PIN must not
+    // lock it (a fresh window), and it reports unlocked.
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http, oldest));
+    EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, oldest));
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http, oldest))
+        << "an evicted IP must restart from a clean window, not a stale streak";
+
+    // The newest entries are still tracked: the last-added IP can be locked by
+    // completing its streak.
+    const uint32_t newest = 0x0A000000u + AdminAuth::kMaxTrackedIps - 1;
+    for (int i = 0; i < AdminAuth::kMaxFailedAttempts - 1; ++i) {
+        EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, newest));
+    }
+    EXPECT_TRUE(AdminAuth::isLockedOut(Channel::Http, newest));
+}

@@ -434,13 +434,12 @@ public:
     //   PbxForwardEdit— Forwards/DND [Enter] CFU/CFB/CFNA editor (§3.7.1)
     //   PbxForwardPick— Forward target picker: extensions only (§3.7.2; ring groups
     //                    excluded until SIP resolves a group forward target)
-    //   PbxIvrEdit    — IVR digit editor (§3.8.1; honest stub)
     enum class Screen {
         Banner, Hub, Help, RebootConfirm, Placeholder, Monitor,
         Network, Security, Reports, About,
         ModeConfirm, FactoryConfirm, ChangePin, CdrDetail,
         PbxConfig, PbxAddMenu, PbxAddSingle, PbxAddRange,
-        PbxGroupEdit, PbxGroupDelete, PbxForwardEdit, PbxForwardPick, PbxIvrEdit,
+        PbxGroupEdit, PbxGroupDelete, PbxForwardEdit, PbxForwardPick,
         // STAGE 3 — registrar/devices surface + its modals:
         //   Devices         — [4]/[D] registrar mode + adopted-device roster (§ new)
         //   RegModePick     — [4]/[D]/[M] registrar mode chooser (Standalone/Learn/New)
@@ -462,7 +461,9 @@ public:
 
     // The active PBX tab (tui-style §2.5 tab strip). Public so host tests can assert
     // tab switching without reaching into private state.
-    enum class PbxTab { Extensions, RingGroups, Forwards, Ivr, Features, Trunk };
+    // IVR removed (#119): the tab was a non-functional stub — hidden until a real
+    // IVR backend ships, rather than accepting config that silently has no effect.
+    enum class PbxTab { Extensions, RingGroups, Forwards, Features, Trunk };
     PbxTab pbxTab() const { return _pbxTab; }
     Screen screen() const { return _screen; }
     // True while the monitor's 1 Hz repaint is frozen ([F]); test/observability hook.
@@ -579,7 +580,6 @@ private:
     void renderPbxExtensions(int& bodyUsed);  // Extensions tab body (§3.5)
     void renderPbxRingGroups(int& bodyUsed);  // Ring Groups tab body (§3.6)
     void renderPbxForwards(int& bodyUsed);    // Forwards/DND tab body (§3.7)
-    void renderPbxIvr(int& bodyUsed);         // IVR tab body (§3.8)
     void renderPbxFeatures(int& bodyUsed);    // Features tab body (§3.9)
     void renderPbxTrunk(int& bodyUsed);       // TRUNK tab body (PSTN trunk config)
     void renderPbxTrunkEdit();                // [3]/TRUNK [E] editor modal
@@ -591,7 +591,6 @@ private:
     void renderPbxGroupDelete();          // §2.8 guarded group delete confirm
     void renderPbxForwardEdit();          // §3.7.1 CFU/CFB/CFNA editor
     void renderPbxForwardPick();          // §3.7.2 forward target picker
-    void renderPbxIvrEdit();              // §3.8.1 IVR digit editor (honest stub)
 
     // Shared framed-body helpers used by the new full-frame screens (a single 3-zone
     // spine: blank rows + label/value rows, padded to the 18-row body). `key` rows
@@ -629,7 +628,6 @@ private:
     void onKeyPbxGroupDelete(Key k, unsigned char ch);
     void onKeyPbxForwardEdit(Key k, unsigned char ch);
     void onKeyPbxForwardPick(Key k, unsigned char ch);
-    void onKeyPbxIvrEdit(Key k, unsigned char ch);
     void onKeyPbxTrunkEdit(Key k, unsigned char ch);
     void onKeyFirstRun(Key k, unsigned char ch);
     // Guided Mode screen (owner@ simplified launcher).
@@ -781,7 +779,7 @@ private:
 
     // ── [3] PBX CONFIG state (B2b-4) ─────────────────────────────────────────
     // The active tab + the per-list selection cursor. `_pbxSel` is reused by every
-    // table tab (Extensions / Ring Groups / Forwards / IVR); it is clamped against the
+    // table tab (Extensions / Ring Groups / Forwards); it is clamped against the
     // active list in each render so switching tabs never lands out of range. `_pbxTop`
     // pages a list taller than the body.
     PbxTab _pbxTab = PbxTab::Extensions;
@@ -838,12 +836,7 @@ private:
     int         _fwdPickSel = 0;
     int         _fwdPickField = 1;   // 1=CFU 2=CFB 3=CFNA
 
-    // ── IVR digit-editor state (§3.8.1; honest stub) ─────────────────────────
-    // The IVR has no persistent menu store yet (DTMF collection exists, no menu). The
-    // editor renders the §3.8.1 layout over a fixed digit row but cannot persist; the
-    // action radio focus is tracked so the layout is interactive/legible.
-    char _ivrDigit = '1';
-    int  _ivrAction = 0;             // 0=group 1=ext 2=prompt 3=unset (radio focus)
+    // (IVR digit-editor state removed with the IVR tab, #119.)
 
     // ── STAGE 3: registrar/devices surface state ─────────────────────────────
     // `_devSel`/`_devTop` are the device-roster selection cursor + page top, reused by

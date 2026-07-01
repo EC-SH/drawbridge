@@ -59,6 +59,7 @@
 #include "AdminAuth.hpp"
 #include "LogQueue.hpp"
 #include "SshServer.hpp"
+#include "pd_mdns.h"      // shared pd_mdns_start() — mDNS pre-gate (#154)
 
 // ── Tag for ESP_LOG ────────────────────────────────────────────────────────
 static const char* TAG = "SipServerLAN8720";
@@ -352,6 +353,11 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "FATAL: No IP after 30 s.  Check cable / link / DHCP.");
         return;
     }
+
+    // ── mDNS: advertise <hostname>.local BEFORE the provisioning gate (#154) ─────
+    // After IP-up is the earliest safe point (mDNS needs the netif attached).
+    // Without it a fresh unit never resolves drawbridge.local for SSH onboarding.
+    pd_mdns_start(TAG, SIP_PORT, HTTP_DASHBOARD_PORT);
 
     // ── Task 1D: INFRA mode — start DHCP server on Ethernet netif if requested
     {

@@ -27,6 +27,20 @@ to jump directly to that section.
 | `5` | REPORTS/LOGS |
 | `6` | ABOUT |
 
+### Recovering SSH After It Was Disabled
+
+If SSH was disabled from the TUI's [4] SECURITY screen, re-enable it from the web
+dashboard (admin-session-gated, same-origin) — no physical access needed:
+
+```bash
+DEVICE=http://drawbridge.local   # or http://<device-ip>
+JAR=cookies.txt
+curl -s -c "$JAR" -H "Origin: $DEVICE" -X POST --data "pin=YOUR_PIN" "$DEVICE/api/admin/login"
+curl -s -b "$JAR" -H "Origin: $DEVICE" -X POST "$DEVICE/api/ssh/enable"
+```
+
+The setting persists across reboots; the SSH listener restarts immediately.
+
 ---
 
 ## Extension Management
@@ -138,9 +152,13 @@ Park orbits are numbered **700–799**.
 
 - **To park:** while on a call, transfer (blind or attended) to any orbit in the 700–799
   range (e.g., transfer to 700).
-- **To retrieve:** any phone dials the orbit number the call was parked on.
+- **To retrieve:** any phone dials the orbit number the call was parked on — either the
+  bare orbit (e.g. `700`) or the `**`-prefixed form (`**700`). Both retrieve identically.
 - **Timeout:** if a parked call is not retrieved within the park timeout, it rings back to
-  the extension that originally parked it.
+  the extension that originally parked it. The ring-back shows the **orbit as caller ID** —
+  the phone displays `Orbit 700` with the number `**700`, so the operator can see which
+  orbit the call is on and dial `**700` straight from the call log to retrieve it (or just
+  answer the ring-back to be connected directly).
 
 No TUI configuration is required — park orbits are always active.
 

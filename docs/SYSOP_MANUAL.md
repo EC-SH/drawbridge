@@ -234,7 +234,7 @@ The `[M]` mode switch presents a confirmation screen before taking effect. A reb
 ### 7.3 PBX CONFIG
 
 **Key:** `3` from anywhere  
-**Purpose:** Configure extensions, ring groups, call forwarding, IVR, features, and the PSTN trunk.
+**Purpose:** Configure extensions, ring groups, call forwarding, features, and the PSTN trunk.
 
 PBX CONFIG is a tabbed panel. Navigate tabs with `Tab` or the left/right arrow keys.
 
@@ -243,7 +243,6 @@ PBX CONFIG is a tabbed panel. Navigate tabs with `Tab` or the left/right arrow k
 | Extensions | View registered extensions and manage credentials |
 | Ring Groups | Create and manage ring/hunt groups |
 | Forwards/DND | Per-extension call forwarding and Do Not Disturb |
-| IVR | Digit routing (pending — shown as stub) |
 | Features | System-wide feature settings |
 | TRUNK | PSTN trunk configuration |
 
@@ -348,12 +347,6 @@ Forward targets are extension numbers. Leaving a target blank clears that forwar
 
 ---
 
-#### IVR Tab
-
-IVR (Interactive Voice Response) digit routing. This tab is present but the IVR backend is not yet implemented. Configuration shown here is for layout reference only and will have no effect until IVR is available.
-
----
-
 #### Features Tab
 
 System-wide PBX feature configuration. Content varies with firmware version.
@@ -421,7 +414,13 @@ Displays:
 | `D` | Open REGISTRAR · DEVICES screen |
 | `X` | Factory reset (requires two-step confirmation) |
 
-**Disabling SSH access ([K]):** Disabling SSH closes the port and logs out any active session. Re-enabling requires physical access to the device to restore SSH (e.g., through a provisioning reset). Do not disable SSH unless you have an alternative access path.
+**Disabling SSH access ([K]):** Disabling SSH closes the port and logs out any active session. To re-enable SSH without physical access, use the web dashboard escape hatch: from a browser (or curl) on the LAN, log in to the dashboard and issue `POST /api/ssh/enable` (admin-session-gated, same-origin):
+
+```bash
+curl -X POST -H "Cookie: pd_session=<token>" http://<device-ip>/api/ssh/enable
+```
+
+The setting persists across reboots. If the dashboard is also unreachable, physical serial access or a provisioning reset remains the fallback.
 
 **Factory reset ([X]):** Erases all NVS configuration: admin PIN, WiFi credentials, trunk credentials, registered extension secrets, and device adoption records. The device reboots into first-run state. This requires two separate confirmations (type `Y` twice) to prevent accidental execution. There is no undo.
 
@@ -647,7 +646,7 @@ Dial these codes from any registered SIP phone. They are single-step (no PIN req
 | `*11` | Echo test — reroutes the active call to the echo loopback (equivalent to dialing 777) |
 | `777` | Echo test — hear your own voice (confirms audio path) |
 | `999` | All-page broadcast — rings all registered extensions simultaneously |
-| `700`–`799` | Call park orbits — park a call on orbit N, retrieve from any phone by dialing N |
+| `700`–`799` | Call park orbits — park a call on orbit N, retrieve from any phone by dialing N (or `**N`) |
 | `98x` | Page zone x — rings the phones assigned to zone x |
 
 **Transferring a call:**
@@ -663,8 +662,11 @@ Use your phone's **Transfer** key — no star code needed. DRAWBRIDGE supports b
 
 1. While on a call, transfer to any orbit number (700–799).
 2. The call is parked. Tell the intended recipient the orbit number.
-3. The recipient dials the orbit number from their phone to retrieve the call.
-4. Unattended parked calls ring back to the parking extension after a timeout.
+3. The recipient dials the orbit number — bare (`700`) or `**`-prefixed (`**700`) — from
+   their phone to retrieve the call.
+4. Unattended parked calls ring back to the parking extension after a timeout. The ring-back
+   caller ID identifies the orbit — the phone shows `Orbit 700` / `**700`, so the operator
+   can retrieve straight from the call log by dialing `**700`, or answer to connect directly.
 
 ---
 

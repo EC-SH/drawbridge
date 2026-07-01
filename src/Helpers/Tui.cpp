@@ -1055,7 +1055,6 @@ void Tui::renderHelp()
         case Screen::PbxGroupDelete: mode = "PBX CONFIG"; title = "Help \xc2\xb7 Ring group"; break;
         case Screen::PbxForwardEdit:
         case Screen::PbxForwardPick: mode = "PBX CONFIG"; title = "Help \xc2\xb7 Forwards / DND"; break;
-        case Screen::PbxIvrEdit:  mode = "PBX CONFIG"; title = "Help \xc2\xb7 IVR digit"; break;
         case Screen::PbxTrunkEdit: mode = "PBX CONFIG"; title = "Help \xc2\xb7 Trunk settings"; break;
         case Screen::FirstRun:    mode = "FIRST RUN"; title = "Help \xc2\xb7 First-run setup"; break;
         default:                  break;   // Hub (and any other) → Master Hub help
@@ -1166,7 +1165,7 @@ void Tui::renderHelp()
     }
     else if (_helpReturn == Screen::PbxConfig)
     {
-        line(_unicode ? "\xe2\x86\x90/\xe2\x86\x92 / Tab .. move between the five tabs" : "Left/Right . move between the five tabs");
+        line(_unicode ? "\xe2\x86\x90/\xe2\x86\x92 / Tab .. move between the tabs" : "Left/Right . move between the tabs");
         line(_unicode ? "\xe2\x86\x91/\xe2\x86\x93 ........ select a row" : "Up/Dn ...... select a row");
         line("Enter ...... edit the selected row (forwards / group)");
         line("A / D ...... add / delete  (Ring Groups)   Space ... DND");
@@ -1179,7 +1178,6 @@ void Tui::renderHelp()
              _helpReturn == Screen::PbxAddMenu ||
              _helpReturn == Screen::PbxAddSingle ||
              _helpReturn == Screen::PbxAddRange ||
-             _helpReturn == Screen::PbxIvrEdit ||
              _helpReturn == Screen::PbxTrunkEdit ||
              _helpReturn == Screen::PbxGroupDelete)
     {
@@ -2699,7 +2697,6 @@ bool Tui::isEntryScreen() const
         case Screen::PbxGroupEdit:
         case Screen::PbxForwardEdit:
         case Screen::PbxForwardPick:
-        case Screen::PbxIvrEdit:
         case Screen::ModeConfirm:
         case Screen::FactoryConfirm:
         case Screen::RebootConfirm:
@@ -2753,7 +2750,6 @@ Tui::Section Tui::screenSection(Screen s)
         case Screen::PbxGroupDelete:
         case Screen::PbxForwardEdit:
         case Screen::PbxForwardPick:
-        case Screen::PbxIvrEdit:
         case Screen::PbxTrunkEdit:
             return Section::Pbx;
         case Screen::Security:
@@ -2815,7 +2811,6 @@ void Tui::gotoScreen(Screen s)
         case Screen::PbxGroupDelete: renderPbxGroupDelete(); break;
         case Screen::PbxForwardEdit: renderPbxForwardEdit(); break;
         case Screen::PbxForwardPick: renderPbxForwardPick(); break;
-        case Screen::PbxIvrEdit:     renderPbxIvrEdit();     break;
         case Screen::Devices:        renderDevices();        break;
         case Screen::RegModePick:    renderRegModePick();    break;
         case Screen::SecretEntry:    renderSecretEntry();    break;
@@ -2917,7 +2912,6 @@ bool Tui::feed(const char* data, size_t len)
             case Screen::PbxGroupDelete: onKeyPbxGroupDelete(Key::Esc, 0); break;
             case Screen::PbxForwardEdit: onKeyPbxForwardEdit(Key::Esc, 0); break;
             case Screen::PbxForwardPick: onKeyPbxForwardPick(Key::Esc, 0); break;
-            case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(Key::Esc, 0); break;
             case Screen::Devices:        onKeyDevices(Key::Esc, 0); break;
             case Screen::RegModePick:    onKeyRegModePick(Key::Esc, 0); break;
             case Screen::SecretEntry:    onKeySecretEntry(Key::Esc, 0); break;
@@ -2972,7 +2966,6 @@ bool Tui::feedByte(unsigned char c)
             case Screen::PbxGroupDelete: onKeyPbxGroupDelete(esc, 0); break;
             case Screen::PbxForwardEdit: onKeyPbxForwardEdit(esc, 0); break;
             case Screen::PbxForwardPick: onKeyPbxForwardPick(esc, 0); break;
-            case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(esc, 0); break;
             case Screen::Devices:        onKeyDevices(esc, 0); break;
             case Screen::RegModePick:    onKeyRegModePick(esc, 0); break;
             case Screen::SecretEntry:    onKeySecretEntry(esc, 0); break;
@@ -3043,7 +3036,6 @@ bool Tui::feedByte(unsigned char c)
                 case Screen::PbxGroupDelete: onKeyPbxGroupDelete(k, 0); break;
                 case Screen::PbxForwardEdit: onKeyPbxForwardEdit(k, 0); break;
                 case Screen::PbxForwardPick: onKeyPbxForwardPick(k, 0); break;
-                case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(k, 0); break;
                 case Screen::Devices:        onKeyDevices(k, 0); break;
                 case Screen::RegModePick:    onKeyRegModePick(k, 0); break;
                 case Screen::SecretEntry:    onKeySecretEntry(k, 0); break;
@@ -3136,7 +3128,6 @@ bool Tui::feedByte(unsigned char c)
         case Screen::PbxGroupDelete: onKeyPbxGroupDelete(k, c); break;
         case Screen::PbxForwardEdit: onKeyPbxForwardEdit(k, c); break;
         case Screen::PbxForwardPick: onKeyPbxForwardPick(k, c); break;
-        case Screen::PbxIvrEdit:     onKeyPbxIvrEdit(k, c); break;
         case Screen::Devices:        onKeyDevices(k, c); break;
         case Screen::RegModePick:    onKeyRegModePick(k, c); break;
         case Screen::SecretEntry:    onKeySecretEntry(k, c); break;
@@ -4133,7 +4124,7 @@ void Tui::onKeyDeviceForget(Key k, unsigned char ch)
 // ═══════════════════════════════════════════════════════════════════════════════
 // [3] PBX CONFIG — the tabbed panel (B2b-4). tui-style §2.5 + §3.5–§3.9, IA §2/§4.
 //
-// One Screen::PbxConfig hosts all five tabs; `_pbxTab` selects the body. The shared
+// One Screen::PbxConfig hosts all the tabs; `_pbxTab` selects the body. The shared
 // 3-zone spine + framed-row discipline from the other screens is reused verbatim
 // (drawSpineTop("PBX CONFIG") · framed rows padded via dispWidth · drawFooter). Every
 // tabular cell routes through padCols() and every status through the glyph+LABEL
@@ -4143,15 +4134,15 @@ void Tui::onKeyDeviceForget(Key k, unsigned char ch)
 // HONESTY (per the ticket): Ring Groups, Forwards/DND and Features are FULLY backed by
 // RequestsHandler and wired. Extensions lists the live registered roster + feature
 // state and wires DND/forward/group membership, but the firmware has NO persistent
-// provisioning store, so the add/range flow is an explicit in-screen STUB. IVR has no
-// menu store yet — the layout is built and the unsupported persistence is stub-noted.
+// provisioning store, so the add/range flow is an explicit in-screen STUB. (The IVR
+// tab was removed in #119 — it had no backend and silently discarded config.)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Shared little framed-row helpers, duplicated locally per render (the engine has no
 // shared member for them — each screen defines its own bodyRow/bodyBlank/col lambdas).
 // To avoid repeating five copies, these macros-as-lambdas are created inside each
 // render via a common prelude. We instead factor the tab strip (which is identical
-// across all five tabs) into drawPbxTabStrip(), emitting two body rows and bumping
+// across all tabs) into drawPbxTabStrip(), emitting two body rows and bumping
 // bodyUsed.  It assumes the caller has already drawn the spine.
 void Tui::drawPbxTabStrip(int& bodyUsed)
 {
@@ -4171,15 +4162,16 @@ void Tui::drawPbxTabStrip(int& bodyUsed)
         return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
     };
 
-    // The six tab names + the active-tab underline (§2.5: underline AND bright name —
-    // never colour alone). Separators '│' in the border role.
-    static const char* kTabs[6] = { "Extensions", "Ring Groups", "Forwards/DND", "IVR", "Features", "TRUNK" };
+    // The tab names + the active-tab underline (§2.5: underline AND bright name —
+    // never colour alone). Separators '│' in the border role. (IVR removed, #119.)
+    static const char* kTabs[] = { "Extensions", "Ring Groups", "Forwards/DND", "Features", "TRUNK" };
+    static const int kTabCount = (int)(sizeof(kTabs) / sizeof(kTabs[0]));
     int active = (int)_pbxTab;
     const std::string sep = std::string(" ") + glyph(Glyph::BoxV) + " ";
     std::string strip;
     // Track the start column of the active tab name so the underline lands under it.
     int activeStartCol = 0, activeWidth = 0, runCol = 0;
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < kTabCount; ++i)
     {
         if (i)
         {
@@ -4223,7 +4215,6 @@ void Tui::renderPbxConfig()
         case PbxTab::Extensions: renderPbxExtensions(bodyUsed); break;
         case PbxTab::RingGroups: renderPbxRingGroups(bodyUsed); break;
         case PbxTab::Forwards:   renderPbxForwards(bodyUsed);   break;
-        case PbxTab::Ivr:        renderPbxIvr(bodyUsed);        break;
         case PbxTab::Features:   renderPbxFeatures(bodyUsed);   break;
         case PbxTab::Trunk:      renderPbxTrunk(bodyUsed);      break;
     }
@@ -4250,9 +4241,6 @@ void Tui::renderPbxConfig()
             break;
         case PbxTab::Forwards:
             foot = "[\xe2\x86\x90/\xe2\x86\x92]Tabs [\xe2\x86\x91/\xe2\x86\x93]Sel [Space]DND [Enter]Forwards [Esc]Back";
-            break;
-        case PbxTab::Ivr:
-            foot = "[\xe2\x86\x90/\xe2\x86\x92]Tabs [\xe2\x86\x91/\xe2\x86\x93]Sel [Enter]Edit [Esc]Back";
             break;
         case PbxTab::Trunk:
             foot = "[\xe2\x86\x90/\xe2\x86\x92] Tabs  [E] Edit  [Esc] Back  [?] Help";
@@ -4603,74 +4591,6 @@ void Tui::renderPbxForwards(int& bodyUsed)
         body += col(Role::Text, b);
         bodyRow(body);
     }
-}
-
-// ── IVR tab body (tui-style §3.8) — layout built; menu store is an honest stub ─
-void Tui::renderPbxIvr(int& bodyUsed)
-{
-    const std::string v = glyph(Glyph::BoxV);
-    auto bodyBlank = [&]() {
-        roled(Role::Border, v);
-        put(std::string((size_t)(fcols() - 2), ' '));
-        roled(Role::Border, v);
-        put("\r\n");
-        ++bodyUsed;
-    };
-    auto bodyRow = [&](const std::string& body) {
-        roled(Role::Border, v);
-        put(" ");
-        put(body);
-        int pad = (fcols() - 2) - 1 - dispWidth(body);
-        if (pad < 0) pad = 0;
-        put(std::string((size_t)pad, ' '));
-        roled(Role::Border, v);
-        put("\r\n");
-        ++bodyUsed;
-    };
-    auto col = [&](Role r, const std::string& s) -> std::string {
-        if (!_color) return s;
-        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
-    };
-
-    // Header facts (answer point / greeting) — honest "(unset)" since nothing
-    // persists. The old "[T] set / test" affordance was removed: its handler is a
-    // no-op stub (no IVR menu store), so advertising the key would be dishonest.
-    // The STUB disclosure at the foot of this body states the same plainly.
-    {
-        std::string body = col(Role::Text, " Answer point .. ");
-        body += col(Role::Dim, "(unset)");
-        bodyRow(body);
-    }
-    bodyRow(col(Role::Text, " Greeting ...... ") + col(Role::Dim, "(none on flash yet)"));
-    bodyBlank();
-
-    bodyRow(col(Role::Header, " DIGIT   ACTION                  TARGET"));
-    {
-        const char* H = glyph(Glyph::BoxH);
-        std::string r = " ";
-        auto run = [&](int n) { for (int i = 0; i < n; ++i) r += H; };
-        run(5); r += "  "; run(20); r += "  "; run(17);
-        bodyRow(col(Role::Border, r));
-    }
-
-    // A flat digit map, all unset (no menu store) — the §3.8 layout, honestly empty.
-    static const char* kDigits[6] = { "1", "2", "3", "0", "*", "#" };
-    int selRow = _pbxSel; if (selRow < 0) selRow = 0; if (selRow > 5) selRow = 5;
-    for (int i = 0; i < 6; ++i)
-    {
-        bool sel = (i == selRow);
-        std::string grid;
-        grid += (sel ? (_unicode ? "\xe2\x96\xb8" : ">") : " ");
-        grid += " ";
-        grid += padCols(kDigits[i], 4) + "  ";
-        grid += padCols(_unicode ? "\xe2\x80\x94 (unset)" : "- (unset)", 20) + "  ";
-        grid += padCols(_unicode ? "\xe2\x80\x94" : "-", 17);
-        if (sel && _color) bodyRow(std::string("\x1b[7m") + grid + "\x1b[0m");
-        else               bodyRow(col(Role::Dim, grid));
-    }
-
-    bodyRow(col(Role::Text, " One menu, one level deep \xe2\x80\x94 DTMF digit to action. No call queues."));
-    bodyRow(col(Role::Dim, " STUB: no IVR menu store yet \xe2\x80\x94 lands with the IVR media increment."));
 }
 
 // ── Features tab body (tui-style §3.9) — read-only star-code reference (real) ──
@@ -5087,89 +5007,6 @@ void Tui::renderPbxAddRange()
 
     for (int i = used; i < bodyRows(); ++i) bodyBlank();
     drawFooter("[Esc] Back  [?] Help");
-}
-
-// ── §3.8.1 IVR digit editor — honest stub ─────────────────────────────────────
-void Tui::renderPbxIvrEdit()
-{
-    LiveStats st = stats();
-    clearScreen();
-    hideCursor();
-    drawSpineTop("PBX CONFIG", st);
-
-    const std::string v = glyph(Glyph::BoxV);
-    auto bodyBlank = [&]() {
-        roled(Role::Border, v);
-        put(std::string((size_t)(fcols() - 2), ' '));
-        roled(Role::Border, v);
-        put("\r\n");
-    };
-    auto col = [&](Role r, const std::string& s) -> std::string {
-        if (!_color) return s;
-        return std::string("\x1b[") + sgrFor(r) + "m" + s + "\x1b[0m";
-    };
-    const int boxW = 52;
-    const int indent = (fcols() - 2 - boxW) / 2;
-    const char* TL = glyph(Glyph::BoxTL); const char* TR = glyph(Glyph::BoxTR);
-    const char* BL = glyph(Glyph::BoxBL); const char* BR = glyph(Glyph::BoxBR);
-    const char* VR = glyph(Glyph::BoxVR); const char* VL = glyph(Glyph::BoxVL);
-    const std::string H = glyph(Glyph::BoxH);
-    auto frame = [&](bool top, bool sep, const std::string& title) {
-        roled(Role::Border, v);
-        put(std::string((size_t)indent, ' '));
-        if (_color) sgr(sgrFor(Role::Border));
-        if (sep) put(VR); else put(top ? TL : BL);
-        int used = 0;
-        if (top && !title.empty()) { put(H); put(" "); put(title); put(" "); used = 1 + 1 + dispWidth(title) + 1; }
-        for (int i = 0; i < boxW - 2 - used; ++i) put(H);
-        if (sep) put(VL); else put(top ? TR : BR);
-        if (_color) put("\x1b[0m");
-        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
-        put(std::string((size_t)pad, ' '));
-        roled(Role::Border, v);
-        put("\r\n");
-    };
-    auto line = [&](const std::string& inner) {
-        roled(Role::Border, v);
-        put(std::string((size_t)indent, ' '));
-        roled(Role::Border, glyph(Glyph::BoxV));
-        put(" ");
-        put(inner);
-        int ipad = (boxW - 2) - 1 - dispWidth(inner); if (ipad < 0) ipad = 0;
-        put(std::string((size_t)ipad, ' '));
-        roled(Role::Border, glyph(Glyph::BoxV));
-        int pad = (fcols() - 2) - indent - boxW; if (pad < 0) pad = 0;
-        put(std::string((size_t)pad, ' '));
-        roled(Role::Border, v);
-        put("\r\n");
-    };
-    auto radio = [&](int idx, const char* label, const char* tail) {
-        std::string inner = "  ";
-        inner += (_ivrAction == idx) ? (_unicode ? "(\xe2\x80\xa2)" : "(*)") : "( )";
-        inner += " ";
-        inner += (_ivrAction == idx) ? col(Role::Text, label) : col(Role::Dim, label);
-        if (tail && tail[0]) { inner += "  "; inner += col(Role::Dim, tail); }
-        line(inner);
-    };
-
-    int used = 0;
-    bodyBlank(); ++used; bodyBlank(); ++used;
-    frame(true, false, std::string("Digit  ") + _ivrDigit); ++used;
-    line(col(Role::Text, std::string("When the caller presses ") + _ivrDigit + ", do:")); ++used;
-    radio(0, "Ring a group", "[ \xe2\x96\xbe ]"); ++used;
-    radio(1, "Ring extension", "[ ___ ]"); ++used;
-    radio(2, "Play a prompt", "[ ____.wav \xe2\x96\xbe ]"); ++used;
-    radio(3, "Nothing (unset)", ""); ++used;
-    line(""); ++used;
-    line(col(Role::Alert, std::string(glyph(Glyph::Alert)) + " no IVR menu store")); ++used;
-    line(col(Role::Dim, "DTMF collection exists; a persistent menu does not yet.")); ++used;
-    line(col(Role::Dim, "This editor lands wired with the IVR media increment.")); ++used;
-    frame(false, true, ""); ++used;
-    line(col(Role::Dim, "[\xe2\x86\x91/\xe2\x86\x93] Action  [Esc] Back")); ++used;
-    frame(false, false, ""); ++used;
-
-    for (int i = used; i < bodyRows(); ++i) bodyBlank();
-    drawFooter("[\xe2\x86\x91/\xe2\x86\x93] Action  [Esc] Back  [?] Help");
 }
 
 // ── §2.8 Ring Group delete — guarded confirm (reuses drawConfirmBox) ──────────
@@ -5615,7 +5452,8 @@ void Tui::renderPbxForwardPick()
 
 // Move the active tab left/right (wrapping), resetting the per-list cursor so a tab
 // switch never lands the selection out of range on a shorter list.
-static int pbxTabCount() { return 6; }
+// Kept in lockstep with the PbxTab enum / kTabs strip (IVR removed, #119).
+static int pbxTabCount() { return 5; }
 
 // Open the Forward editor pre-filled from the selected extension's current config.
 // (Defined as a member-style helper here so onKeyPbxConfig can reuse it.)
@@ -5644,7 +5482,6 @@ void Tui::onKeyPbxConfig(Key k, unsigned char ch)
         case PbxTab::Extensions: rows = (int)cfg.extensions.size(); break;
         case PbxTab::RingGroups: rows = (int)cfg.groups.size();     break;
         case PbxTab::Forwards:   rows = (int)cfg.extensions.size(); break;
-        case PbxTab::Ivr:        rows = 6;                          break;  // fixed digit map
         case PbxTab::Features:   rows = 0;                          break;
         case PbxTab::Trunk:      rows = 0;                          break;  // no selectable rows
     }
@@ -5779,18 +5616,6 @@ void Tui::onKeyPbxConfig(Key k, unsigned char ch)
             }
             return;
         }
-    }
-    else if (_pbxTab == PbxTab::Ivr)
-    {
-        if (k == Key::Enter)
-        {
-            static const char kDigits[6] = { '1', '2', '3', '0', '*', '#' };
-            _ivrDigit = kDigits[_pbxSel < 0 ? 0 : (_pbxSel > 5 ? 5 : _pbxSel)];
-            _ivrAction = 0;
-            gotoScreen(Screen::PbxIvrEdit);
-            return;
-        }
-        if (k == Key::Char && (ch == 'T' || ch == 't')) { /* set/test: no store yet (stub) */ return; }
     }
     else if (_pbxTab == PbxTab::Trunk)
     {
@@ -6044,16 +5869,6 @@ void Tui::onKeyPbxForwardPick(Key k, unsigned char ch)
         gotoScreen(Screen::PbxForwardEdit);
         return;
     }
-    if (k == Key::Char && ch == '?') { gotoScreen(Screen::Help); return; }
-}
-
-// ── §3.8.1 IVR digit editor keys (stub — interactive layout, no persistence) ──
-void Tui::onKeyPbxIvrEdit(Key k, unsigned char ch)
-{
-    if (k == Key::CtrlL) { gotoScreen(Screen::PbxIvrEdit); return; }
-    if (k == Key::Esc)   { gotoScreen(Screen::PbxConfig); return; }
-    if (k == Key::Up)    { if (_ivrAction > 0) --_ivrAction; gotoScreen(Screen::PbxIvrEdit); return; }
-    if (k == Key::Down)  { if (_ivrAction < 3) ++_ivrAction; gotoScreen(Screen::PbxIvrEdit); return; }
     if (k == Key::Char && ch == '?') { gotoScreen(Screen::Help); return; }
 }
 

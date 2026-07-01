@@ -3,6 +3,7 @@
 #include "RequestsHandler.hpp"
 #include "CallDetailRecord.hpp"
 #include "AdminAuth.hpp"
+#include "SshServer.hpp"
 #include "OtaUpdater.hpp"
 #include "index_html.h"
 #include "IPHelper.hpp"
@@ -176,10 +177,15 @@ void HttpServer::acceptLoop()
 		// while SIP traffic churns the heap). An uncaught throw here runs on the accept-loop
 		// pthread and calls std::terminate()/abort(), rebooting the whole device. Catch it and
 		// drop just this one connection so the server keeps serving instead of crashing.
+		// Capture the peer's IPv4 address BY VALUE (issue #130: per-source-IP login
+		// lockout) — clientAddr is a stack local of this loop iteration and the
+		// detached thread outlives it. Network byte order, used as an opaque key.
+		const uint32_t peerIp = clientAddr.sin_addr.s_addr;
+
 		try
 		{
-			std::thread([this, clientSock]() {
-				handleClient(clientSock);
+			std::thread([this, clientSock, peerIp]() {
+				handleClient(clientSock, peerIp);
 				// Release the in-flight slot once this handler is fully done.
 				_activeConns.fetch_sub(1, std::memory_order_acq_rel);
 			}).detach();
@@ -201,7 +207,7 @@ void HttpServer::acceptLoop()
 	}
 }
 
-void HttpServer::handleClient(int clientSock)
+void HttpServer::handleClient(int clientSock, uint32_t peerIp)
 {
 	// Issue #23 resolved: Added SO_RCVTIMEO per-client socket timeout and capped Content-Length to 16KB to prevent Accept thread DoS
 #if defined _WIN32 || defined _WIN64
@@ -563,6 +569,27 @@ void HttpServer::handleClient(int clientSock)
 			sendApiFactoryReset(clientSock, req.body);
 		}
 	}
+	else if (req.method == "POST" && req.path == "/api/ssh/enable")
+	{
+		// Issue #117: web escape hatch so disabling SSH in the TUI is never a
+		// one-way door on a headless unit. Mutating: same gate as /api/dnd
+		// (same-origin + auth once provisioned; open pre-PIN like the rest of
+		// the first-run dashboard).
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else if (AdminAuth::isProvisioned() && !isAuthed(req))
+		{
+			sendResponse(clientSock, 401, "Unauthorized", "application/json",
+			             "{\"error\":\"authentication required\"}");
+		}
+		else
+		{
+			sendApiSshEnable(clientSock);
+		}
+	}
 	else if (req.method == "GET" && req.path == "/api/admin/status")
 	{
 		// Read-only: tells the dashboard whether to show a set-PIN or login form.
@@ -589,7 +616,7 @@ void HttpServer::handleClient(int clientSock)
 		}
 		else
 		{
-			sendApiAdminLogin(clientSock, req);
+			sendApiAdminLogin(clientSock, req, peerIp);
 		}
 	}
 	else if (req.method == "POST" && req.path == "/api/admin/logout")
@@ -1473,7 +1500,7 @@ void HttpServer::sendApiAdminSetPin(int sock, const HttpRequest& req)
 	             "{\"status\":\"ok\",\"provisioned\":true}");
 }
 
-void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
+void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req, uint32_t peerIp)
 {
 	if (!AdminAuth::isProvisioned())
 	{
@@ -1484,9 +1511,11 @@ void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
 	}
 
 	// Reject while locked out before doing any hashing work. Issue #57: the HTTP
-	// login throttle is now scoped to the Http channel, so SSH/DTMF brute-force no
-	// longer locks the dashboard out (and vice-versa).
-	if (AdminAuth::isLockedOut(AdminAuth::Channel::Http))
+	// login throttle is scoped to the Http channel, so SSH/DTMF brute-force never
+	// locks the dashboard out (and vice-versa). Issue #130: within the channel the
+	// window is per source IP — an attacker's failures throttle only the attacker,
+	// closing the admin self-DoS path (THREAT_MODEL D-3).
+	if (AdminAuth::isLockedOut(AdminAuth::Channel::Http, peerIp))
 	{
 		sendResponse(sock, 429, "Too Many Requests", "application/json",
 		             "{\"error\":\"too many failed attempts; try again later\"}");
@@ -1494,10 +1523,10 @@ void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
 	}
 
 	std::string pin = getFormParam(req.body, "pin");
-	if (!AdminAuth::verifyPin(pin, AdminAuth::Channel::Http))
+	if (!AdminAuth::verifyPin(pin, AdminAuth::Channel::Http, peerIp))
 	{
 		// verifyPin may have just engaged the lockout on this attempt.
-		if (AdminAuth::isLockedOut(AdminAuth::Channel::Http))
+		if (AdminAuth::isLockedOut(AdminAuth::Channel::Http, peerIp))
 		{
 			sendResponse(sock, 429, "Too Many Requests", "application/json",
 			             "{\"error\":\"too many failed attempts; try again later\"}");
@@ -1539,6 +1568,26 @@ void HttpServer::sendApiAdminLogout(int sock, const HttpRequest& req)
 	std::string cookie = "Set-Cookie: pd_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0";
 	sendResponseWithHeader(sock, 200, "OK", "application/json",
 	                       "{\"status\":\"ok\"}", cookie);
+}
+
+void HttpServer::sendApiSshEnable(int sock)
+{
+	// Issue #117: re-enable the SSH sysop terminal from the web dashboard. The
+	// TUI's SSH-disable toggle is only reachable over SSH, so without this a
+	// disabled headless unit could only be recovered via serial or factory
+	// reset. setEnabled(true) persists NVS "ssh_enabled" and (re)starts the
+	// backend task; it only spawns — never blocks — so replying inline is safe.
+	const bool persisted = SshServer::instance().setEnabled(true);
+	if (!persisted)
+	{
+		// SSH is running for THIS boot, but the flag did not persist: say so
+		// instead of implying the recovery survives a power cycle.
+		sendResponse(sock, 500, "Internal Server Error", "application/json",
+		             "{\"error\":\"ssh enabled for this boot, but persisting the setting failed\"}");
+		return;
+	}
+	sendResponse(sock, 200, "OK", "application/json",
+	             "{\"status\":\"ok\",\"ssh\":\"enabled\"}");
 }
 
 bool HttpServer::streamBody(int sock, const char* prefix, size_t prefixLen,
