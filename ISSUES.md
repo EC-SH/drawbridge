@@ -258,9 +258,10 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Description**: The SoftAP currently runs open (no passphrase). Any device on the same radio can join, reach the SIP registrar, and attempt to register extensions. Fix: set `authmode = WIFI_AUTH_WPA2_PSK` in `esp_wifi_ap_config_t` with a unique per-device PSK (generated at first boot, displayed via TUI [2] NETWORK, QR-encoded on the display build). This is the primary security control for SoftAP deployments; HTTPS (#134) and SRTP (#135) depend on this being in place first.
 
 #### 🟡 Issue #125: SIP digest auth for INVITE — REGISTER auth ships; INVITE challenge is incomplete
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `sip-engine`, `security`, `priority-high`
 * **Description**: REGISTER digest challenge (RFC 2617 MD5) is shipped in Secure mode. INVITE challenges are not uniformly applied — an attacker who can reach the UDP port can call any extension without credentials. Extend the challenge machinery to INVITE: 401 challenge on first attempt, accept only if the digest matches the registered extension's HA1.
+* **Resolution**: `onInvite` now challenges initial INVITEs with `407 Proxy Authentication Required` in Secure mode (`admitInviteSecure` + `sendProxyChallenge`, mirroring the REGISTER `401`/`admitSecure` ladder — stateless nonce, `Proxy-Authenticate`, method-bound HA2 verify against the From-extension's HA1). `SipMessage` now parses `Proxy-Authorization` and `SipDigest::parseAuthorization` tolerates that header name. Placement is deliberate: mid-dialog re-INVITEs (hold/resume/transfer) are diverted to `onReinvite` before the gate, unregistered callers still get 403, and star-code/`#` INVITEs from registered extensions are exempt (registered == authenticated). The ACK for the 407 is absorbed by `onAck`'s session-miss guard (RFC 3261 §22 — no session allocated). Six end-to-end tests through `RequestsHandler` (`tests/InviteAuth_test.cpp`): challenge, authenticated proceed, wrong-creds 403, ACK absorption, star-code exemption, Open-mode passthrough. THREAT_MODEL S-3/D-2, LEARN_MODE, FEATURE_ROADMAP updated.
 
 #### 🟡 Issue #130: Security: per-source-IP brute-force lockout on /api/admin/login
 * **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)

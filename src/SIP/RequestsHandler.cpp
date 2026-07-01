@@ -692,6 +692,37 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 	}
 
 	std::string destNumber(data->getToNumber());
+
+	// INVITE digest auth (#125): in Secure mode, every INITIAL invite must carry
+	// a valid Proxy-Authorization for the From-extension — otherwise a LAN host
+	// could place calls impersonating any extension despite REGISTER auth
+	// (THREAT_MODEL S-3/D-2). Placement is deliberate:
+	//   * mid-dialog re-INVITEs (hold/resume/transfer) were already diverted to
+	//     onReinvite by the session guard above — authenticated at call setup;
+	//   * unregistered callers already got their 403 (no challenge leak);
+	//   * star-code / '#' destinations are trusted from registered extensions
+	//     (registered == authenticated in Secure mode);
+	//   * everything below (777/999/98x/440/park/group/trunk/normal) is covered.
+	// The challenged INVITE allocates NO session, so the ACK for the 407 is
+	// absorbed by onAck's session-miss guard (RFC 3261 §22 — no reply to it).
+	if (_registrarMode.load(std::memory_order_relaxed) == RegistrarMode::Secure &&
+		!destNumber.empty() && destNumber[0] != '*' && destNumber[0] != '#')
+	{
+		std::string rejectReason;
+		const std::string fromExt(data->getFromNumber());
+		AuthDecision decision = admitInviteSecure(data, fromExt, rejectReason);
+		if (decision == AuthDecision::Challenge)
+		{
+			return;   // 407 already enqueued by admitInviteSecure
+		}
+		if (decision == AuthDecision::Reject)
+		{
+			sendForbidden(data, rejectReason.empty() ? "Forbidden" : rejectReason);
+			return;
+		}
+		// Accept → fall through to the routing ladder.
+	}
+
 	if (destNumber == "777")
 	{
 		// SDP loopback echo test
@@ -4117,6 +4148,73 @@ RequestsHandler::AuthDecision RequestsHandler::admitSecure(
 	{
 		outRejectReason = "Bad Credentials";
 		queueLog("Secure REGISTER for ext " + ext + " failed digest verify", true);
+		return AuthDecision::Reject;
+	}
+
+	return AuthDecision::Accept;
+}
+
+void RequestsHandler::sendProxyChallenge(const std::shared_ptr<SipMessage>& data, bool stale)
+{
+	// 407 twin of sendChallenge (#125). buildWwwAuthenticate emits only the
+	// header VALUE (`Digest realm=..., nonce=..., ...`), so it is reusable
+	// verbatim under the Proxy-Authenticate name (RFC 3261 §22.3).
+	auto response = getMessageFromPool(data->toString(), data->getSource());
+	response->setHeader("SIP/2.0 407 Proxy Authentication Required");
+	response->clearBody();
+	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+	response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+	response->setTo(std::string(data->getTo()) + ";tag=" + IDGen::GenerateID(9));
+	response->addHeader("Proxy-Authenticate",
+		SipDigest::buildWwwAuthenticate(SipSecretStore::kRealm,
+			SipDigest::generateNonce(), stale));
+	response->syncContentLength();
+	_outbox.emplace_back(data->getSource(), std::move(response));
+}
+
+RequestsHandler::AuthDecision RequestsHandler::admitInviteSecure(
+	const std::shared_ptr<SipMessage>& data, const std::string& ext, std::string& outRejectReason)
+{
+	// Secure mode, INVITE leg (#125): without this gate an attacker on the LAN
+	// could place calls impersonating any extension even in Secure mode (the
+	// registrar only ever challenged REGISTER — THREAT_MODEL S-3/D-2). Same
+	// ladder as admitSecure; credentials ride Proxy-Authorization and the
+	// challenge is 407/Proxy-Authenticate. The From-extension keys the HA1
+	// lookup, same as the REGISTER path.
+	auto ha1 = SipSecretStore::getHa1(ext);
+	if (!ha1.has_value())
+	{
+		// In Secure mode an unprovisioned ext cannot register (admitSecure
+		// rejects it), so an INVITE claiming that From is spoofed or stale.
+		outRejectReason = "Extension Not Provisioned";
+		queueLog("Secure INVITE from unprovisioned ext " + ext + " rejected", true);
+		return AuthDecision::Reject;
+	}
+
+	SipDigest::DigestAuth auth;
+	std::string_view authHdr = data->getProxyAuthorization();
+	if (authHdr.empty() || !SipDigest::parseAuthorization(std::string(authHdr), auth))
+	{
+		// No (parseable) credentials → challenge with a fresh nonce.
+		sendProxyChallenge(data, /*stale=*/false);
+		return AuthDecision::Challenge;
+	}
+
+	// Validate the nonce we issued. A forged/garbage nonce is a hard re-challenge
+	// (not stale); an expired-but-ours nonce → challenge with stale=true so the
+	// phone silently retries.
+	bool expired = false;
+	if (!SipDigest::validateNonce(auth.nonce, &expired))
+	{
+		sendProxyChallenge(data, /*stale=*/expired);
+		return AuthDecision::Challenge;
+	}
+
+	// Recompute + constant-time compare. Method is INVITE (HA2 method binding).
+	if (!SipDigest::verify(auth, *ha1, std::string(data->getType())))
+	{
+		outRejectReason = "Bad Credentials";
+		queueLog("Secure INVITE from ext " + ext + " failed digest verify", true);
 		return AuthDecision::Reject;
 	}
 

@@ -49,6 +49,7 @@ void SipMessage::parse()
 	_contactNumber = {};
 	_contentLength = {};
 	_authorization = {};
+	_proxyAuthorization = {};
 	_statusInfo.reset();
 
 	// 1. Separate header block and body payload
@@ -199,6 +200,12 @@ void SipMessage::parse()
 			// Whole header line ("Authorization: Digest ..."); SipDigest's parser
 			// tolerates the leading header name. No compact form for Authorization.
 			_authorization = line;
+		}
+		else if (matchHeader(line, "proxy-authorization"))
+		{
+			// INVITE digest auth (#125): whole header line, same contract as
+			// Authorization above. No compact form for Proxy-Authorization.
+			_proxyAuthorization = line;
 		}
 	}
 }
@@ -709,6 +716,11 @@ std::string_view SipMessage::getContentLength() const
 std::string_view SipMessage::getAuthorization() const
 {
 	return _authorization;
+}
+
+std::string_view SipMessage::getProxyAuthorization() const
+{
+	return _proxyAuthorization;
 }
 
 std::string_view SipMessage::extractNumber(std::string_view header) const

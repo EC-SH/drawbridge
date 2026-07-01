@@ -881,6 +881,20 @@ private:
 	// Emit a 401 Unauthorized with a fresh WWW-Authenticate challenge for `data`
 	// into _outbox. `stale` answers an expired-but-valid nonce. Caller holds _mutex.
 	void sendChallenge(const std::shared_ptr<SipMessage>& data, bool stale);
+	// Secure-mode INVITE admission (#125): same digest ladder as admitSecure but
+	// reads Proxy-Authorization and challenges with 407/Proxy-Authenticate via
+	// sendProxyChallenge. Caller holds _mutex. Only called for initial INVITEs
+	// (mid-dialog re-INVITEs are diverted to onReinvite before the gate) from
+	// already-registered callers; star-code/`#` destinations are exempt at the
+	// call site (registered == authenticated for star codes).
+	AuthDecision admitInviteSecure(const std::shared_ptr<SipMessage>& data,
+		const std::string& ext, std::string& outRejectReason);
+	// Emit a 407 Proxy Authentication Required with a fresh Proxy-Authenticate
+	// challenge for `data` into _outbox (RFC 3261 §22.3). The ACK for the 407 is
+	// absorbed by onAck's session-miss guard (no session is allocated for a
+	// challenged INVITE). `stale` answers an expired-but-valid nonce. Caller
+	// holds _mutex.
+	void sendProxyChallenge(const std::shared_ptr<SipMessage>& data, bool stale);
 	// Emit a 403 Forbidden with a reason phrase into _outbox. Caller holds _mutex.
 	void sendForbidden(const std::shared_ptr<SipMessage>& data, const std::string& reason);
 	// Dialog-source binding for in-dialog teardown (BYE/CANCEL). Returns true iff the

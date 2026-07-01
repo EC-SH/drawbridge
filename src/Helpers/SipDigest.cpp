@@ -318,7 +318,8 @@ namespace SipDigest
 
 		std::string_view sv(authHeaderValue);
 
-		// Drop an optional "Authorization:" header name.
+		// Drop an optional "Authorization:" / "Proxy-Authorization:" header name
+		// (the latter feeds the INVITE 407 flow, #125).
 		size_t colon = sv.find(':');
 		if (colon != std::string_view::npos)
 		{
@@ -326,7 +327,8 @@ namespace SipDigest
 			// Only strip if it actually looks like the header name (no '=' before
 			// the colon, which would indicate this colon belongs to a param value).
 			if (name.find('=') == std::string_view::npos &&
-			    iequalsAscii(trimQuoted(name), "authorization"))
+			    (iequalsAscii(trimQuoted(name), "authorization") ||
+			     iequalsAscii(trimQuoted(name), "proxy-authorization")))
 			{
 				sv = sv.substr(colon + 1);
 			}
