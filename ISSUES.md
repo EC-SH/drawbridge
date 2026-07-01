@@ -149,14 +149,16 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Resolution**: Both entry points already call `SshServer::instance().start()` before the provisioning gate — wifi at `esp_main.cpp:338`, lan8720 at `esp_main_eth_lan8720.cpp:397` — landed in `7a82593` (audit #44 cluster). No further code change; verified during the #154 mDNS work. (The ISSUES.md status had drifted stale.)
 
 #### 🟡 Issue #155: SSH: wire `owner@` username through `ll_on_open` in littlessh so Guided Mode is reachable
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (landed in `516591b`; verified on `claude/open-issues-ekhtpb`)
 * **Labels**: `ssh`, `tui`, `priority-high`
 * **Description**: `ll_on_open` currently discards the SSH username (`(void)user`). As a result `ssh owner@drawbridge.local` opens the same Expert Mode as `ssh sysop@drawbridge.local` — Guided Mode is unreachable over eth/wifi/lan8720 SSH. Fix: stop discarding `user`; store it in session state and pass it to `setUsername()` (same as the wolfSSH path already does). Depends on privilege model (#153).
+* **Resolution**: `ll_on_open` reads `lssh_username(s)` and calls `tui.setUsername(...)` before `tui.begin()` (which derives `_guidedMode` from the name and routes `owner`/`Owner` → `GuidedHub`) — exact parity with the wolfSSH `wsUserAuth` → `runTuiSession` path. Already committed; verified during the #157 work. This is presentation routing only; two-role authz (separate owner/sysop credentials) remains #153.
 
 #### 🟡 Issue #157: SSH performance: littlessh buffered repaint — one `lssh_write()` per screen, not per `put()`
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `ssh`, `performance`, `priority-high`
 * **Description**: The littlessh `setWriter` lambda calls `lssh_write()` on every `Tui::put()` call — a full screen render sends ~50–150 encrypted SSH packets. Fix: buffer the whole screen into a persistent `_frame` string (`.reserve(8192)` at session open, `.clear()` keeps capacity), then a single `lssh_write()` per repaint. No changes to `Tui.cpp`. `_frame` lives on the heap (PSRAM-friendly), outside the SIP zero-alloc hot-path.
+* **Resolution**: The buffered writer (`g_frame` append + one `flush_frame()` per `feed()`/`tickLive()`) landed in `516591b`. This change closes the last gap: `ll_on_open` ended with `tui.begin()` but never flushed, so the INITIAL paint (banner + first screen) sat buffered until the first keystroke or the ≤1 s idle beat — a fresh connection showed a blank terminal. Added the `flush_frame(s)` after `begin()`, wrapped in the file's `g_tui_busy` re-entrancy guard (an `lssh_write` window-stall can pump the connection and re-enter `ll_on_data`). cppcheck clean; ESP compile on the CI firmware matrix; hardware repaint-latency verify via `.smoke/ssh_tui.py` is a follow-up.
 
 #### 🟡 Issue #158: TUI P1: first-run wizard — guided onboarding for fresh-deployed unit
 * **Status**: ⏳ Open

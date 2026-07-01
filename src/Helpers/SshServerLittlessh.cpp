@@ -527,7 +527,16 @@ static void ll_on_open(void* u, lssh_session_t* s, const char* exec_cmd)
     tui.setSize(g_cols, g_rows);
     const char* uname = lssh_username(s);
     tui.setUsername(uname ? uname : "");
+    // #157: flush the INITIAL paint (banner + first screen, several KB) now rather
+    // than leaving it buffered until the first keystroke or the ≤1 s idle beat —
+    // otherwise a fresh connection shows a blank terminal until the user types.
+    // Guard the flush like feed()/tickLive(): lssh_write() can pump the connection
+    // on a window stall and re-enter ll_on_data, whose feed would append to (and
+    // possibly reallocate) g_frame under the in-flight write.
+    g_tui_busy = true;
     tui.begin();
+    flush_frame(s);
+    g_tui_busy = false;
 }
 
 static void ll_on_data(void* u, lssh_session_t* s, const uint8_t* data, size_t len)
