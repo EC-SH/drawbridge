@@ -70,10 +70,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 > no longer de-scoped.
 
 #### 🟡 Issue #62: Real Desktop (host) Media Transport
-* **Status**: ⏳ Open / Planned (back in scope — desktop is a first-class target again)
+* **Status**: ✅ Resolved (`revert/keep-cross-compile-portability` — real host RTP transport)
 * **Labels**: `api-integration`, `media`, `desktop`
 * **Severity**: High
 * **Description**: Currently, the `RtpSender` socket and pacing are gated behind `#if ESP_PLATFORM`, leaving desktop builds with no-op stubs. Implement standard POSIX UDP socket writes and a platform-independent 20ms pacing loop to support audio bridging on desktop (Linux/Windows) gateway installations.
+* **Resolution**: `RtpSender` now has a full host arm (Linux/Windows/macOS — x86, x86_64, ARM; same `__linux__` path for all Linux architectures): real UDP socket bound to the advertised media port 5062, `std::thread` sender paced by `steady_clock`/`sleep_until` at exactly 20 ms, non-blocking `stop()` (registrar-lock-safe), joinable-drain teardown. Verified end-to-end on host: REGISTER → INVITE 440 → 50 pkts/s of PT-0 µ-law **tone** on the wire, monotonic seq/timestamp, symmetric-RTP source port, BYE stops the stream. Also fixed a both-arms regression where the no-provider path (extension 440) streamed silence instead of the synthesized tone since the FrameProvider/bridge refactor. ARMv7 cross-compile link-verified (glibc scratch toolchain; the musl static link still needs the offline musl toolchain — known gap). `ThreeCxAnchorClient` host transport remains #87.
 
 #### 🟡 Issue #87: WAN Anchor: Implement Desktop/Host Media Transport Support
 * **Status**: ⏳ Open / Planned (back in scope — desktop is a first-class target again)
