@@ -85,10 +85,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 ### 🟢 Medium Priority: Hardware Validation & Deployment Features
 
 #### 🟡 Issue #117: SSH re-enable: disabling SSH in TUI must not self-lock — add web dashboard toggle
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `security`, `ssh`, `tui`, `priority-high`
 * **Severity**: High
 * **Description**: Disabling SSH via [4] SECURITY is currently irreversible from the network — the only SSH toggle is inside the SSH TUI. Add a `POST /api/ssh/enable` dashboard endpoint (admin-session-gated) and/or a dial-string escape hatch so an operator can recover without physical access or factory reset.
+* **Resolution**: `POST /api/ssh/enable` added to the dashboard (same-origin + admin-session gate, same shape as `/api/dnd`); calls `SshServer::setEnabled(true)`, which now returns whether the NVS persist succeeded (checked returns per CONTRIBUTING_FIRMWARE) — a persist failure is reported as 500 instead of silently claiming reboot-persistence. HTTP smoke covers 403/401/200; SYSOP_MANUAL §SECURITY and OPERATOR_ADMIN document the recovery procedure. The dial-string escape hatch remains a possible follow-up.
 
 ---
 
@@ -262,9 +263,10 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Description**: REGISTER digest challenge (RFC 2617 MD5) is shipped in Secure mode. INVITE challenges are not uniformly applied — an attacker who can reach the UDP port can call any extension without credentials. Extend the challenge machinery to INVITE: 401 challenge on first attempt, accept only if the digest matches the registered extension's HA1.
 
 #### 🟡 Issue #130: Security: per-source-IP brute-force lockout on /api/admin/login
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `security`, `priority-high`
 * **Description**: The current global 5-attempt / 60-second lockout lets an attacker on the LAN self-DoS the legitimate admin (D-3 in THREAT_MODEL.md). Replace with a per-IP `unordered_map<uint32_t, LockoutState>` bounded to 64 entries (evict oldest on overflow). Each IP gets its own independent window.
+* **Resolution**: Implemented as a fixed `std::array<IpLockout, 64>` inside `AdminAuth` (pool discipline — no rehash/alloc under the auth mutex), keyed by the peer IPv4 captured at `accept()` and threaded through `handleClient` → `sendApiAdminLogin`. Oldest-touched eviction bounds spoofed-source growth; SSH/DTMF channels keep their per-channel windows (#57); `srcIp = 0` callers keep the legacy bucket (source-compatible). Unit tests cover per-IP isolation, legacy independence, and eviction; THREAT_MODEL D-3 marked closed.
 
 #### 🟡 Issue #131: OTA: bind upload to admin session + local-link-only gate
 * **Status**: ⏳ Open

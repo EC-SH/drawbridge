@@ -135,7 +135,7 @@ Each row: threat → current mitigation → **residual risk**.
 |----|--------|-----------|---------------|
 | D-1 | Connection/slowloris exhaustion on HTTP | Detached per-connection threads, `SO_RCVTIMEO` (5 s), body cap. | A flood from the open AP can still pressure a constrained MCU. |
 | D-2 | Malicious call teardown (`/api/kill` abuse) | Now admin-gated post-provisioning. | First-run gap; SIP-layer teardown (BYE spoofing) still possible without SIP auth (S-3). |
-| D-3 | PIN-guess lockout used as self-DoS | Lockout is global/in-process (not per-IP), so an attacker can lock out the legitimate admin for the cooldown (60 s) — **but the device stays usable** because pre-existing sessions remain valid and only `login` is throttled. | Accepted trade-off; **per-IP lockout would be stronger** (see *Brute force*). Cooldown auto-clears (no permanent lock). |
+| D-3 | PIN-guess lockout used as self-DoS | **Closed (#130)**: the HTTP `login` lockout is **per source IP** (bounded 64-entry table, oldest-touched evicted) — an attacker's failed attempts throttle only the attacker's address, never the admin's. SSH/DTMF channels keep their own independent windows (#57). | An attacker spoofing many source IPs can only recycle table slots (bounded memory), not lock the admin out. Cooldown auto-clears (no permanent lock). |
 | D-4 | RF jamming / deauth of the SoftAP | None (inherent to WiFi). | Out of scope; physical/RF layer. |
 
 ### Elevation of Privilege
@@ -165,11 +165,11 @@ shown on the device's screen/serial on first boot to eliminate even this window.
   and slows guessing, but a 4-digit numeric PIN is only 10⁴ candidates — trivially crackable
   offline. **PIN strength is the user's responsibility**; recommend ≥6 alphanumeric chars,
   and note that the real backstop for offline attack is flash encryption (P2).
-- **Limitation**: the lockout is a single in-process counter, **not per-IP**. This is simple
-  and safe (auto-clearing) but means (a) one attacker IP can briefly lock the admin out of
-  *new logins* (D-3), and (b) a botnet of AP peers shares one global budget. **Per-IP (or
-  per-association) tracking would be stronger** and is recommended if the threat model later
-  includes many simultaneous local clients.
+- **Per-IP scope (#130)**: for HTTP `login` the counter/cooldown is tracked **per source
+  IP** in a bounded in-process table (64 entries; at capacity the oldest-touched entry is
+  evicted, so spoofed sources recycle slots instead of growing memory). One attacker IP can
+  no longer lock the admin out of new logins (D-3 closed). The SSH and DTMF channels — where
+  no meaningful source address exists pre-auth — keep their per-channel windows (#57).
 
 ### 5.3 Session token theft & replay
 Tokens are 128-bit, server-side, with a **30-minute absolute expiry** and a fixed-capacity
@@ -253,8 +253,8 @@ do it eyes-open about the warning UX and MCU cost.
 ### P1 — soon (meaningful, moderate effort)
 - **SIP authentication** (digest auth on REGISTER/INVITE) to stop extension spoofing and
   BYE-based teardown (S-3, D-2) even on a trusted link.
-- **Per-IP / per-association brute-force tracking** for `login` (replaces the global counter;
-  removes the admin-lockout self-DoS in D-3).
+- ~~**Per-IP / per-association brute-force tracking** for `login` (replaces the global counter;
+  removes the admin-lockout self-DoS in D-3).~~ **Shipped (#130)** — see §5.2.
 - **Gate OTA behind the admin session** and restrict it to the local link until image
   signing lands.
 - **Session hardening**: optional idle timeout in addition to absolute expiry; consider

@@ -27,6 +27,20 @@ to jump directly to that section.
 | `5` | REPORTS/LOGS |
 | `6` | ABOUT |
 
+### Recovering SSH After It Was Disabled
+
+If SSH was disabled from the TUI's [4] SECURITY screen, re-enable it from the web
+dashboard (admin-session-gated, same-origin) — no physical access needed:
+
+```bash
+DEVICE=http://drawbridge.local   # or http://<device-ip>
+JAR=cookies.txt
+curl -s -c "$JAR" -H "Origin: $DEVICE" -X POST --data "pin=YOUR_PIN" "$DEVICE/api/admin/login"
+curl -s -b "$JAR" -H "Origin: $DEVICE" -X POST "$DEVICE/api/ssh/enable"
+```
+
+The setting persists across reboots; the SSH listener restarts immediately.
+
 ---
 
 ## Extension Management

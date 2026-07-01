@@ -35,14 +35,16 @@ namespace AdminAuth
 	constexpr int      kMaxFailedAttempts = 5;        // consecutive failures before lockout
 	constexpr uint64_t kLockoutMs         = 60ULL * 1000ULL;           // 60 s cooldown
 	constexpr uint32_t kHashIterations    = 50000;    // PBKDF-style iterated SHA-256 rounds
+	constexpr size_t   kMaxTrackedIps     = 64;       // per-IP lockout table capacity (#130)
 
 	// Authentication channel for brute-force lockout accounting. Each channel keeps
 	// an INDEPENDENT failure counter + cooldown so a flood of wrong PINs on one
 	// surface cannot throttle the legitimate admin on another (issue #57: SSH PIN
 	// spraying used to trip the single global lockout shared with HTTP login — a
 	// cross-channel login-DoS). The credential itself is shared; only the
-	// rate-limit state is per-channel. (Per-IP tracking WITHIN a channel remains a
-	// documented follow-up — see docs/THREAT_MODEL.md D-3.)
+	// rate-limit state is per-channel. Within the Http channel the lockout is
+	// additionally PER SOURCE IP (issue #130 / THREAT_MODEL D-3): an attacker's
+	// failed attempts lock out only the attacker's address, never the admin's.
 	enum class Channel : int
 	{
 		Http = 0,   // HTTP dashboard /api/admin/login
@@ -67,11 +69,19 @@ namespace AdminAuth
 	// channel's lockout. Returns false if not provisioned. The default `Http` keeps
 	// every existing caller (and the on-device DTMF/SSH paths pass their own channel)
 	// source-compatible.
-	bool verifyPin(const std::string& pin, Channel channel = Channel::Http);
+	//
+	// `srcIp` (issue #130): the peer's IPv4 address (network byte order, opaque key)
+	// for the Http channel. When nonzero, lockout accounting is per-source-IP in a
+	// bounded table (kMaxTrackedIps, oldest-touched evicted) so a LAN attacker
+	// cannot lock the legitimate admin out (THREAT_MODEL D-3 self-DoS). 0 — and
+	// every non-Http channel — keeps the legacy per-channel bucket.
+	bool verifyPin(const std::string& pin, Channel channel = Channel::Http, uint32_t srcIp = 0);
 
 	// True while the given channel's brute-force lockout is engaged (cooldown not yet
-	// elapsed). Channels are independent (issue #57).
-	bool isLockedOut(Channel channel = Channel::Http);
+	// elapsed). Channels are independent (issue #57). For Channel::Http a nonzero
+	// `srcIp` queries that source's own window (issue #130); read-only (never
+	// touches/evicts table entries).
+	bool isLockedOut(Channel channel = Channel::Http, uint32_t srcIp = 0);
 
 	// Create a new server-side session and return its opaque random token
 	// (kSessionTokenHex hex chars). Evicts the oldest/expired entry if the table

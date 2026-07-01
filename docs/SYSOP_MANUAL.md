@@ -421,7 +421,13 @@ Displays:
 | `D` | Open REGISTRAR · DEVICES screen |
 | `X` | Factory reset (requires two-step confirmation) |
 
-**Disabling SSH access ([K]):** Disabling SSH closes the port and logs out any active session. Re-enabling requires physical access to the device to restore SSH (e.g., through a provisioning reset). Do not disable SSH unless you have an alternative access path.
+**Disabling SSH access ([K]):** Disabling SSH closes the port and logs out any active session. To re-enable SSH without physical access, use the web dashboard escape hatch: from a browser (or curl) on the LAN, log in to the dashboard and issue `POST /api/ssh/enable` (admin-session-gated, same-origin):
+
+```bash
+curl -X POST -H "Cookie: pd_session=<token>" http://<device-ip>/api/ssh/enable
+```
+
+The setting persists across reboots. If the dashboard is also unreachable, physical serial access or a provisioning reset remains the fallback.
 
 **Factory reset ([X]):** Erases all NVS configuration: admin PIN, WiFi credentials, trunk credentials, registered extension secrets, and device adoption records. The device reboots into first-run state. This requires two separate confirmations (type `Y` twice) to prevent accidental execution. There is no undo.
 

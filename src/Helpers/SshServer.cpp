@@ -452,17 +452,24 @@ void SshServer::stop()
 #endif
 }
 
-void SshServer::setEnabled(bool enabled)
+bool SshServer::setEnabled(bool enabled)
 {
     _enabled = enabled;
 
+    bool persisted = true;
 #if defined(ESP_PLATFORM) || defined(ESP32)
+    // Checked NVS returns (CONTRIBUTING_FIRMWARE.md): a silent persist failure
+    // here would leave the operator believing the toggle survives a reboot.
     nvs_handle_t h;
     if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK)
     {
-        nvs_set_u8(h, "ssh_enabled", enabled ? 1 : 0);
-        nvs_commit(h);
+        persisted = (nvs_set_u8(h, "ssh_enabled", enabled ? 1 : 0) == ESP_OK) &&
+                    (nvs_commit(h) == ESP_OK);
         nvs_close(h);
+    }
+    else
+    {
+        persisted = false;
     }
 #endif
 
@@ -474,6 +481,7 @@ void SshServer::setEnabled(bool enabled)
     {
         stop();
     }
+    return persisted;
 }
 
 void SshServer::setNetInfo(const char* ip, uint8_t wifiMode, const char* ssid)
