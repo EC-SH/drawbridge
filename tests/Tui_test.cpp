@@ -578,11 +578,12 @@ TEST(Tui, PbxConfigOpensOnExtensionsTab) {
     EXPECT_EQ(h.tui.screen(), Tui::Screen::PbxConfig);
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Extensions);
     EXPECT_NE(h.out.find("[ PBX CONFIG ]"), std::string::npos);
-    // The tab strip names all five tabs.
+    // The tab strip names all the tabs. The IVR tab was removed (#119) — it must
+    // NOT appear (regression pin: no stub tab that discards config).
     EXPECT_NE(h.out.find("Extensions"), std::string::npos);
     EXPECT_NE(h.out.find("Ring Groups"), std::string::npos);
     EXPECT_NE(h.out.find("Forwards/DND"), std::string::npos);
-    EXPECT_NE(h.out.find("IVR"), std::string::npos);
+    EXPECT_EQ(h.out.find("IVR"), std::string::npos) << "IVR tab must be gone (#119)";
     EXPECT_NE(h.out.find("Features"), std::string::npos);
     // The registered roster renders.
     EXPECT_NE(h.out.find("101"), std::string::npos);
@@ -600,9 +601,9 @@ TEST(Tui, PbxTabSwitchingCyclesTabs) {
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::RingGroups);
     h.tui.feedByte('\t');   // → Forwards/DND
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Forwards);
-    h.tui.feedByte('\t'); h.tui.feedByte('\t');   // → IVR → Features
+    h.tui.feedByte('\t');   // → Features (IVR removed, #119)
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Features);
-    h.tui.feedByte('\t');   // → TRUNK (the sixth tab)
+    h.tui.feedByte('\t');   // → TRUNK (the last tab)
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Trunk);
     h.tui.feedByte('\t');   // wraps → Extensions
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Extensions);
@@ -615,8 +616,9 @@ TEST(Tui, PbxFeaturesTabListsOnlyRealStarCodes) {
     Harness h;
     h.toHub();
     h.tui.feedByte('3');
-    // Jump to the Features tab (4 Tabs forward) and clear, then redraw.
-    for (int i = 0; i < 4; ++i) h.tui.feedByte('\t');
+    // Jump to the Features tab (3 Tabs forward now that IVR is gone) and clear,
+    // then redraw.
+    for (int i = 0; i < 3; ++i) h.tui.feedByte('\t');
     h.clear();
     h.tui.feed("\x0c", 1);   // Ctrl-L redraw
     EXPECT_EQ(h.tui.pbxTab(), Tui::PbxTab::Features);

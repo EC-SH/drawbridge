@@ -102,10 +102,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Description**: The engine supports up to 10 page zones (980–989) with NVS persistence, but zone creation and member assignment have no TUI surface. Operators must use the 999 all-page or scripted provisioning. A Page Zones tab (mirroring the Ring Groups tab) is needed for field usability.
 
 #### 🟢 Issue #119: TUI: IVR tab is a non-functional stub — hide or remove until backend ships
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`)
 * **Labels**: `tui`, `ux`
 * **Severity**: Medium
 * **Description**: The IVR tab under [3] PBX CONFIG renders and accepts input but silently discards it — the backend is not implemented. For a commercial release this must either be hidden entirely or show a clear "NOT YET AVAILABLE" banner with no editable fields.
+* **Resolution**: Removed entirely (option 1 — cleaner for a commercial release) rather than bannered. Dropped `PbxTab::Ivr`, `Screen::PbxIvrEdit`, `renderPbxIvr`/`renderPbxIvrEdit`/`onKeyPbxIvrEdit`, the IVR editor state, and every router/help/footer reference; the tab strip loop and `pbxTabCount()` now stay in lockstep with the enum (strip count derived from `sizeof(kTabs)`). `_pbxTab` is session-local (no persisted index to migrate). Tui_test.cpp updated to pin the IVR tab's absence and the 5-tab cycle; `.smoke/ssh_tui.py` tab-walk and SYSOP_MANUAL updated. Full Tui suite (60 tests) green.
 
 #### 🟢 Issue #44: End-to-end SIP call test needed on JC3248W535EN hardware
 * **Status**: ⏳ Open / Planned

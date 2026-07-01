@@ -234,7 +234,7 @@ The `[M]` mode switch presents a confirmation screen before taking effect. A reb
 ### 7.3 PBX CONFIG
 
 **Key:** `3` from anywhere  
-**Purpose:** Configure extensions, ring groups, call forwarding, IVR, features, and the PSTN trunk.
+**Purpose:** Configure extensions, ring groups, call forwarding, features, and the PSTN trunk.
 
 PBX CONFIG is a tabbed panel. Navigate tabs with `Tab` or the left/right arrow keys.
 
@@ -243,7 +243,6 @@ PBX CONFIG is a tabbed panel. Navigate tabs with `Tab` or the left/right arrow k
 | Extensions | View registered extensions and manage credentials |
 | Ring Groups | Create and manage ring/hunt groups |
 | Forwards/DND | Per-extension call forwarding and Do Not Disturb |
-| IVR | Digit routing (pending — shown as stub) |
 | Features | System-wide feature settings |
 | TRUNK | PSTN trunk configuration |
 
@@ -345,12 +344,6 @@ The editor shows DND toggle and three forward targets: CFU, CFB, and CFNA.
 | CFNA (Call Forward No Answer) | Incoming calls that are not answered within the no-answer timeout |
 
 Forward targets are extension numbers. Leaving a target blank clears that forward. The target picker shows registered extensions and their current state. Ring groups cannot be used as forward targets at this time.
-
----
-
-#### IVR Tab
-
-IVR (Interactive Voice Response) digit routing. This tab is present but the IVR backend is not yet implemented. Configuration shown here is for layout reference only and will have no effect until IVR is available.
 
 ---
 
