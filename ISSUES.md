@@ -222,10 +222,11 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 ### 🔵 Low Priority: Diagnostics & Hobbyist Compatibility
 
 #### 🟢 Issue #120: Park recall: play intercom beep after 5-minute hold with orbit+retrieval caller ID
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved (`claude/open-issues-ekhtpb`) — caller-ID + `**orbit` retrieve (ring-back timer already shipped; intercom auto-answer remains a follow-up)
 * **Labels**: `pbx`, `feature-request`, `priority-high`
 * **Severity**: High
 * **Description**: When a call has been parked on an orbit for more than 5 minutes without retrieval, ring back the extension that parked it with an intercom auto-answer INVITE. Caller ID should show the orbit number and the retrieval star code (e.g., "Orbit 701 — dial **701 to retrieve"). Prevents forgotten parked calls from sitting indefinitely.
+* **Resolution**: The park-timeout ring-back INVITE (and its in-dialog ACK) now advertise the orbit identity as caller ID via a shared `parkRingbackFrom` helper — display name `"Orbit 70x"`, URI user `**70x` — so the phone screen shows the orbit and the dial-back code. `parkOrbitIndex` accepts a leading `**` alias at every call site (onInvite/onCancel/onBye/onAck), so `**70x` parks/retrieves identically to the bare orbit while all bookkeeping keeps the canonical `70x`. Tests in `tests/Park_test.cpp`: orbit caller-ID on ring-back, `**700` retrieve-bridges, `**700`-to-free-orbit parks. Docs updated (OPERATOR_ADMIN, SYSOP_MANUAL). Note: the ring-back timer itself was already shipped; the *intercom auto-answer* variant remains a possible follow-up.
 
 #### 🟢 Issue #121: TUI: clickable dialogs and mouse event handling (xterm mouse protocol)
 * **Status**: ⏳ Open

@@ -653,7 +653,7 @@ Dial these codes from any registered SIP phone. They are single-step (no PIN req
 | `*11` | Echo test — reroutes the active call to the echo loopback (equivalent to dialing 777) |
 | `777` | Echo test — hear your own voice (confirms audio path) |
 | `999` | All-page broadcast — rings all registered extensions simultaneously |
-| `700`–`799` | Call park orbits — park a call on orbit N, retrieve from any phone by dialing N |
+| `700`–`799` | Call park orbits — park a call on orbit N, retrieve from any phone by dialing N (or `**N`) |
 | `98x` | Page zone x — rings the phones assigned to zone x |
 
 **Transferring a call:**
@@ -669,8 +669,11 @@ Use your phone's **Transfer** key — no star code needed. DRAWBRIDGE supports b
 
 1. While on a call, transfer to any orbit number (700–799).
 2. The call is parked. Tell the intended recipient the orbit number.
-3. The recipient dials the orbit number from their phone to retrieve the call.
-4. Unattended parked calls ring back to the parking extension after a timeout.
+3. The recipient dials the orbit number — bare (`700`) or `**`-prefixed (`**700`) — from
+   their phone to retrieve the call.
+4. Unattended parked calls ring back to the parking extension after a timeout. The ring-back
+   caller ID identifies the orbit — the phone shows `Orbit 700` / `**700`, so the operator
+   can retrieve straight from the call log by dialing `**700`, or answer to connect directly.
 
 ---
 

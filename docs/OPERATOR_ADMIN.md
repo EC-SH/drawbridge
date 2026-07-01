@@ -152,9 +152,13 @@ Park orbits are numbered **700–799**.
 
 - **To park:** while on a call, transfer (blind or attended) to any orbit in the 700–799
   range (e.g., transfer to 700).
-- **To retrieve:** any phone dials the orbit number the call was parked on.
+- **To retrieve:** any phone dials the orbit number the call was parked on — either the
+  bare orbit (e.g. `700`) or the `**`-prefixed form (`**700`). Both retrieve identically.
 - **Timeout:** if a parked call is not retrieved within the park timeout, it rings back to
-  the extension that originally parked it.
+  the extension that originally parked it. The ring-back shows the **orbit as caller ID** —
+  the phone displays `Orbit 700` with the number `**700`, so the operator can see which
+  orbit the call is on and dial `**700` straight from the call log to retrieve it (or just
+  answer the ring-back to be connected directly).
 
 No TUI configuration is required — park orbits are always active.
 

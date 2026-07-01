@@ -1499,6 +1499,8 @@ void RequestsHandler::onUnavailable(std::shared_ptr<SipMessage> data)
 // onBye() can build the bridged-peer BYE from the stored dialog headers.
 static std::string parkTagOf(std::string_view header);
 static std::string stripHeaderName(std::string_view fullLine);
+static std::string parkRingbackFrom(const std::string& orbit,
+	const std::string& srcIpPort, const std::string& tag);
 
 // Dialog-source binding for in-dialog teardown (issue #46). The registrar does not
 // digest-challenge BYE/CANCEL (only REGISTER in secure mode — see admitSecure /
@@ -5052,9 +5054,34 @@ static std::string stripHeaderName(std::string_view h)
 	return std::string(h.substr(v, e - v));
 }
 
+// Park ring-back From-header value (issue #120): the synthetic INVITE that
+// rings the parking extension back on timeout advertises the ORBIT identity
+// as caller ID, so the operator's phone screen shows which orbit the call is
+// on and the dial-back code. Display name "Orbit 70x"; URI user "**70x" — the
+// caller-ID number IS the retrieve dial string (parkOrbitIndex accepts the
+// "**" alias). The INVITE and its in-dialog ACK From must be byte-identical
+// (RFC 3261), so both sites build the value here.
+static std::string parkRingbackFrom(const std::string& orbit,
+	const std::string& srcIpPort, const std::string& tag)
+{
+	return "\"Orbit " + orbit + "\" <sip:**" + orbit + "@" + srcIpPort +
+	       ">;tag=" + tag;
+}
+
 int RequestsHandler::parkOrbitIndex(std::string_view ext) const
 {
 	// Orbit extensions "700".."70(N-1)" (N == POCKETDIAL_PARK_SLOTS, ≤ 10).
+	// A leading "**" is an accepted alias for the bare orbit (issue #120): the
+	// park ring-back caller ID advertises "**70x" as the dial-back code, so a
+	// retriever dialing exactly what their phone screen shows must resolve to
+	// the same orbit. The alias is recognized at EVERY parkOrbitIndex call site
+	// (onInvite/onCancel/onBye/onAck) so a "**70x"-dialed dialog is handled
+	// uniformly for its whole life; onParkInvite still mints the canonical bare
+	// "70x" for all bookkeeping/Contact/dashboard.
+	if (ext.size() == 5 && ext[0] == '*' && ext[1] == '*')
+	{
+		ext.remove_prefix(2);
+	}
 	if (ext.size() != 3 || ext[0] != '7' || ext[1] != '0') return -1;
 	if (ext[2] < '0' || ext[2] > '9') return -1;
 	int idx = ext[2] - '0';
@@ -5253,11 +5280,14 @@ void RequestsHandler::startParkRingback(ParkSlot& slot, const std::shared_ptr<Si
 	std::ostringstream ss;
 	ss << "INVITE sip:" << parker->getNumber() << "@" << destIpPort << " SIP/2.0\r\n"
 	   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << slot.rbBranch << "\r\n"
-	   << "From: \"PocketDial Park\" <sip:" << slot.orbit << "@" << srcIpPort << ">;tag=" << slot.rbFromTag << "\r\n"
+	   << "From: " << parkRingbackFrom(slot.orbit, srcIpPort, slot.rbFromTag) << "\r\n"
 	   << "To: <sip:" << parker->getNumber() << "@" << activeIp << ">\r\n"
 	   << slot.rbCallID << "\r\n"
 	   << "CSeq: 1 INVITE\r\n"
 	   << "Max-Forwards: 70\r\n"
+	   // Contact stays the bare orbit: in-dialog requests (the parker's ACK/BYE)
+	   // route to a canonical AOR, and a phone "callback" dials 70x which
+	   // retrieves identically to **70x. Only the From carries the #120 caller ID.
 	   << "Contact: <sip:" << slot.orbit << "@" << srcIpPort << ";transport=UDP>\r\n"
 	   << "User-Agent: pocket-dial\r\n"
 	   << "Content-Type: application/sdp\r\n"
@@ -5319,7 +5349,8 @@ bool RequestsHandler::handleParkOk(const std::shared_ptr<SipMessage>& data)
 			std::ostringstream ss;
 			ss << "ACK sip:" << data->getToNumber() << "@" << destIpPort << " SIP/2.0\r\n"
 			   << "Via: SIP/2.0/UDP " << srcIpPort << ";branch=" << slot.rbBranch << "\r\n"
-			   << "From: \"PocketDial Park\" <sip:" << slot.orbit << "@" << srcIpPort << ">;tag=" << slot.rbFromTag << "\r\n"
+			   // Must match the ring-back INVITE From byte-for-byte (RFC 3261 §17.1.1.3).
+			   << "From: " << parkRingbackFrom(slot.orbit, srcIpPort, slot.rbFromTag) << "\r\n"
 			   << "To: " << stripHeaderName(data->getTo()) << "\r\n"   // strip the "To:" name (getTo() includes it)
 			   << slot.rbCallID << "\r\n"
 			   << "CSeq: 1 ACK\r\n"
