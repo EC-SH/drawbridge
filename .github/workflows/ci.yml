@@ -150,6 +150,28 @@ jobs:
           fi
           echo "HTTP API smoke suite PASSED."
 
+  # Job 1b: Windows host build (MSVC). The desktop/server build is a first-class
+  # deployment target on both Linux and Windows (the ESP32-only direction was
+  # reversed — see #96), so the engine must compile and pass the unit suite under
+  # MSVC too. cppcheck and tests/http/test_api.sh are bash-/Linux-specific and stay
+  # on the Ubuntu host job above.
+  build-and-test-windows:
+    name: Host Build & Unit Tests (Windows / MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (MSVC)
+        run: cmake -B build -S .
+
+      - name: Build Host Binary + Test Suite
+        run: cmake --build build --config Release
+
+      - name: Run Unit Test Suite (GoogleTest via CTest)
+        run: ctest --test-dir build/tests --output-on-failure -C Release
+
   # Job 2: Build firmware for target ESP32 and ESP32-S3 boards using official Espressif Docker Images.
   # This establishes compiler verification across multiple ESP-IDF versions and target architectures.
   build-esp-idf:
