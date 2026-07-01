@@ -42,10 +42,12 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 > (compiled, `-Wall -Wextra`-clean, self-test green) demonstrate otherwise. Roadmap reconciliation is
 > in scope for #164.
 >
-> **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating
-> the desktop/server product. PR #97 removed the install/quickstart deadweight and the desktop
-> framing; the host build + its CI test gate are retained until an on-target/QEMU harness replaces
-> them (open in #96). This affects the host-development items below.
+> **Direction (reversed 2026-07-01; see #96 for history):** the ESP32-only pivot (#96/#97) has been
+> **reversed**. Portability across x86/x86_64/ARM on both Linux and Windows is a product goal again:
+> PR #97's removals (install.sh, quickstart.sh/.bat, the ARMv7 musl cross-compile toolchain, the
+> desktop README sections) are restored, and the desktop/server build + ARMv7 cross-compile are
+> **permanent, first-class targets**. The Arduino-sketch removal (#112) stands — separate
+> deprecation, not reversed. The host-development items below are back in scope.
 
 #### 🟢 Issue #86: WAN Anchor: Optimize WS Event Task Stack Size
 * **Status**: ✅ Resolved (PR #101)
@@ -63,19 +65,18 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 
 ### 🟡 High Priority: Platform Compatibility & Host Development
 
-> **Note (#96/#97):** the ESP32-only pivot deprecates the desktop/server product, which
-> de-prioritizes the two host-media items below — they are likely **WON'T-DO** unless the host
-> build is kept as a full runtime target rather than just a dev/test harness. Pending the #96
-> test-harness decision.
+> **Note (updated 2026-07-01):** with the ESP32-only pivot reversed (see #96), the desktop/server
+> build is a full runtime target again and the two host-media items below are **back in scope** —
+> no longer de-scoped.
 
 #### 🟡 Issue #62: Real Desktop (host) Media Transport
-* **Status**: ⏳ Open / Planned (likely de-scoped by the ESP32-only pivot, #96/#97)
+* **Status**: ⏳ Open / Planned (back in scope — desktop is a first-class target again)
 * **Labels**: `api-integration`, `media`, `desktop`
 * **Severity**: High
 * **Description**: Currently, the `RtpSender` socket and pacing are gated behind `#if ESP_PLATFORM`, leaving desktop builds with no-op stubs. Implement standard POSIX UDP socket writes and a platform-independent 20ms pacing loop to support audio bridging on desktop (Linux/Windows) gateway installations.
 
 #### 🟡 Issue #87: WAN Anchor: Implement Desktop/Host Media Transport Support
-* **Status**: ⏳ Open / Planned (likely de-scoped by the ESP32-only pivot, #96/#97)
+* **Status**: ⏳ Open / Planned (back in scope — desktop is a first-class target again)
 * **Labels**: `api-integration`, `media`, `desktop`, `anchor`
 * **Severity**: High
 * **Description**: `ThreeCxAnchorClient` is currently completely stubbed out on host/desktop builds. Refactor the network socket, task, and HTTP/WebSocket client interfaces to use POSIX/Windows compatible headers (instead of `esp_websocket_client` / `esp_http_client`), allowing the WAN-anchor gateway integration to be testable and runnable on local PCs.

@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-pocket-dial is a self-contained SIP PBX that runs on a single ESP32-S3 (no router/SIP trunk needed). One C++17 SIP engine (`src/`) is compiled three ways: ESP-IDF firmware, ~~Arduino sketches,~~ and a host executable. *(~~Arduino sketches~~ removed under the ESP32-only pivot, #96.)* For LAN extension↔extension calls RTP media flows **peer-to-peer** between phones (the device only brokers signaling); when a call goes out the WAN trunk anchor, the device terminates the handset's RTP locally and bridges it (see the WAN-anchor notes below).
+pocket-dial is a self-contained SIP PBX that runs on a single ESP32-S3 (no router/SIP trunk needed). One C++17 SIP engine (`src/`) is compiled three ways: ESP-IDF firmware, ~~Arduino sketches,~~ and a host executable — desktop/server (Linux/Windows, x86/x86_64/ARM) plus the ARMv7 musl cross-compile. *(~~Arduino sketches~~ removed by #112; that deprecation stands independently of the reversed ESP32-only pivot.)* For LAN extension↔extension calls RTP media flows **peer-to-peer** between phones (the device only brokers signaling); when a call goes out the WAN trunk anchor, the device terminates the handset's RTP locally and bridges it (see the WAN-anchor notes below).
 
-> **Direction (in progress, #96/#97):** the project is pivoting to **ESP32-only** and deprecating the desktop/server product. PR #97 removed the install/quickstart deadweight and the "run it on a computer/Pi" framing. **The host build has NOT been removed** — `main.cpp` still exists and the host GoogleTest/cppcheck/HTTP-smoke job is still the blocking CI gate (`.github/workflows/ci.yml`). The open question (tracked in **#96**) is whether to gut the host harness entirely or port the suite to on-target Unity/QEMU; until on-target coverage replaces it, the host gate stays. Treat the "compiled three ways / Host is what CI gates on" framing below as a transitional state, not a permanent commitment.
+> **Direction (reversed 2026-07-01; see #96 for history):** the ESP32-only pivot (#96/#97) has been **reversed**. Portability across **x86/x86_64/ARM, on both Linux and Windows**, is a product goal: the desktop/server build and the ARMv7 musl cross-compile (#82) are **permanent, first-class targets** — not a transitional test harness. PR #97's removals (install.sh, quickstart.sh/.bat, the cross-compile toolchain file, the desktop README sections) have been restored. The Arduino-sketch removal (#112) stands — that was a separate deprecation and is not reversed.
 
 ## Build & test
 
 The engine is platform-abstracted with preprocessor guards. The same `src/` builds under all of:
 
-### Host / desktop (this is what CI gates on, and the fastest dev loop)
+### Host / desktop (first-class deployment target; also the CI gate and fastest dev loop)
 ```bash
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
@@ -49,7 +49,8 @@ idf.py -p COM4 -D SIP_TRANSPORT=display flash monitor
 - **eth board resourcing (S3R8 headless):** `sdkconfig.defaults` enables the 8 MB octal PSRAM (`CONFIG_SPIRAM=y`) and sets `CONFIG_LWIP_MAX_SOCKETS=16`. The W5500 runs in **MACRAW** mode, so the ESP32-S3's LWIP stack owns every socket (the chip's 8-socket HW TCP engine is unused) — and the **3CX WAN anchor opens three persistent TLS sockets** (control WS + GET + POST audio streams) on top of SIP/dashboard/SSH, so the default 10-socket pool starves (`sock < 0` / `create_ssl_handle failed`). `sdkconfig.defaults` only seeds a *fresh* `sdkconfig`; if an existing generated one has drifted (e.g. PSRAM-off), regenerate with `rm sdkconfig && idf.py -D SIP_TRANSPORT=eth build`.
 - **3CX call-control quirk:** every participant-action POST (`/callcontrol/{dn}/participants/{id}/{drop,answer,…}`) needs an `application/json` `"{}"` body — an empty/no-Content-Type POST is silently rejected (`ThreeCxAnchorClient::dropCall`/`answerCall`).
 
-### Cross-compile (Orbic ARMv7 musl static, issue #82)
+### Cross-compile (ARMv7 musl static — Orbic RC400L and other ARM Linux targets, issue #82)
+A first-class target (same `__linux__` code path as x86/x86_64 Linux):
 ```bash
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=cmake/armv7-linux-musleabihf.cmake -DBUILD_TESTING=OFF
 ```

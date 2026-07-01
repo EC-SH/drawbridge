@@ -49,6 +49,11 @@ Other supported boards (development and evaluation only — not for deployment):
 See [docs/HARDWARE.md](docs/HARDWARE.md) and [docs/HARDWARE_SELECTION.md](docs/HARDWARE_SELECTION.md)
 for pinouts, PoE wiring, and board-tier capacity details.
 
+DRAWBRIDGE also runs as a native desktop/server binary on **Linux and Windows — x86, x86_64,
+and ARM** (including a fully static ARMv7 musl build for Linux hotspot hardware such as the
+Orbic RC400L). The ESP32 board is the flagship deployment; the portable build is a permanent,
+first-class target for environments that already have a computer or ARM device on the LAN.
+
 ---
 
 ## Install (prebuilt firmware — the deployment path)
@@ -99,6 +104,20 @@ ssh drawbridge.local
 
 See [docs/FLASHING.md](docs/FLASHING.md) for first-flash detail and OTA update procedure.
 
+### Run on a computer or Raspberry Pi instead (no ESP32 needed)
+
+The same SIP engine builds as a desktop/server binary on Linux and Windows — x86, x86_64,
+and ARM. Needs CMake + a C++17 compiler:
+
+```bash
+# One-liner: download the latest release source, build, and run
+curl -fsSL https://raw.githubusercontent.com/EC-SH/drawbridge/main/install.sh | sh
+
+# …or from a clone:
+./quickstart.sh                 # Windows: quickstart.bat
+./quickstart.sh --service       # install as a systemd service (Linux)
+```
+
 ---
 
 ## Documentation
@@ -139,17 +158,35 @@ idf.py -D SIP_TRANSPORT=display build
 idf.py build
 ```
 
-### Host build (CI and dev loop)
+### Desktop / server build (Linux & Windows — x86, x86_64, ARM)
 
-The host binary is a development and CI artifact — it is not a product.
+The same engine builds natively on Linux and Windows. This is a permanent, first-class
+deployment target (and doubles as the CI gate + fastest dev loop):
 
 ```bash
-cmake -B build -S . && cmake --build build
-ctest --test-dir build/tests --output-on-failure
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+./build/SipServer --ip 192.168.1.10 --port 5060 --web 8080
+ctest --test-dir build/tests --output-on-failure   # GoogleTest suite
 ```
 
 When `IDF_PATH` is unset, CMake builds the host binary and GoogleTest suite. When `IDF_PATH`
 is set, it delegates to ESP-IDF. Unset `IDF_PATH` for host work.
+
+### ARMv7 cross-compile (Orbic RC400L and other ARM Linux hotspot targets)
+
+Fully static musl build (issue #82) — no runtime dependencies on the target:
+
+```bash
+cmake -B build_orbic -S . \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/armv7-linux-musleabihf.cmake \
+      -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build build_orbic --target SipServer
+```
+
+Needs an `arm-linux-musleabihf` cross toolchain on disk — see the header of
+[cmake/armv7-linux-musleabihf.cmake](cmake/armv7-linux-musleabihf.cmake) for expected
+locations and the `MUSL_TOOLCHAIN_DIR` override.
 
 ---
 
@@ -158,6 +195,9 @@ is set, it delegates to ESP-IDF. Unset `IDF_PATH` for host work.
 ```
 drawbridge/
 ├── CMakeLists.txt              # Dual-mode build: host (CMake) or ESP-IDF
+├── cmake/
+│   └── armv7-linux-musleabihf.cmake  # ARMv7 musl static cross-compile (Orbic, #82)
+├── install.sh / quickstart.*   # Desktop one-liner installer + build-and-run scripts
 ├── main/                       # ESP-IDF component — per-transport entry points
 │   ├── esp_main_eth.cpp        # T-ETH-ELITE (W5500, PoE)
 │   ├── esp_main.cpp            # Generic ESP32-S3 (Wi-Fi SoftAP)
