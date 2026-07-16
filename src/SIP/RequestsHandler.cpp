@@ -105,11 +105,12 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	// (no handler is dispatching yet), so these run without holding _mutex.
 	loadPbxConfig();
 	loadCdrRing();
-	// Task 2B: load the admin extension from NVS (defaults to "101" if absent).
+	// Task 2B: load the admin extension from NVS (defaults to "1001" if absent).
 	loadAdminExt();
 	// STAGE 2: load the registrar mode (defaults to the POCKETDIAL_OPEN_REGISTRAR
 	// seed) and the adopted-device registry from NVS.
 	loadRegistrarMode();
+	loadAdminHttpTtl();
 	loadDevices();
 	loadThreeCxConfig();
 	// #107: anchor TLS re-warm cadence (defaults to 60 min if the NVS key is absent).
@@ -5702,6 +5703,26 @@ void RequestsHandler::persistRegistrarMode()
 #endif
 }
 
+// ── Admin HTTP-open TTL persistence (PLAN_ADMIN_HTTP_ONLY.md Phase 2) ────────
+void RequestsHandler::loadAdminHttpTtl()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
+	{
+		return;
+	}
+	uint16_t v = 0;
+	esp_err_t err = nvs_get_u16(h, "admin_http_ttl", &v);
+	nvs_close(h);
+	if (err == ESP_OK && v > 0)
+	{
+		_adminHttpTtlSec.store(v, std::memory_order_relaxed);
+	}
+	// else: keep the compile-time default (600s).
+#endif
+}
+
 // ── #107: anchor TLS re-warm cadence persistence ────────────────────────────────
 void RequestsHandler::loadRewarmInterval()
 {
@@ -5931,7 +5952,7 @@ void RequestsHandler::loadAdminExt()
 	{
 		_adminExt = buf;
 	}
-	// else: keep the in-class default "101"
+	// else: keep the in-class default "1001"
 #endif
 }
 
@@ -6015,6 +6036,40 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 	// Admin gate fires only when the caller IS the admin extension.
 	if (callerExt == _adminExt && !seq.empty() && seq[0] == '*')
 	{
+		if (seq == "*4887")
+		{
+			// PLAN_ADMIN_HTTP_ONLY.md: dedicated star-code (spells HTTP on a phone
+			// keypad: H=4 T=8 T=8 P=7), no PIN. *<PIN>#010 does not work on real
+			// hardphones — '#' is bound to Send/Call on Yealink (and most SIP
+			// phones' keypads), both pre-dial and mid-call, so the sequence never
+			// reaches the phone's DTMF-relay path intact. Trust model: registered
+			// as the admin extension + signaling from that registration's bound
+			// IP is sufficient to open the transport. Opening the transport does
+			// NOT bypass PIN/session auth on the endpoints themselves once
+			// reachable — this only shortens the no-PIN-needed step to "have the
+			// admin handset."
+			auto adminClient = findClient(_adminExt);
+			bool sourceOk = adminClient.has_value() &&
+				data->getSource().sin_addr.s_addr ==
+				adminClient.value()->getAddress().sin_addr.s_addr;
+
+			if (!adminClient.has_value() || !sourceOk)
+			{
+				queueLog("[admin] HTTP-open DTMF trigger rejected: ext " + _adminExt +
+					(adminClient.has_value() ? " source IP mismatch" : " not registered"), true);
+			}
+			else
+			{
+				uint64_t untilMs = nowEpochMs() +
+					static_cast<uint64_t>(_adminHttpTtlSec.load()) * 1000ULL;
+				_adminHttpOpenUntilMs.store(untilMs, std::memory_order_release);
+				queueLog("[admin] HTTP admin plane opened via DTMF *4887, ext " + _adminExt +
+					", ttl=" + std::to_string(_adminHttpTtlSec.load()) + "s");
+			}
+			accum.digits.clear();
+			return;
+		}
+
 		// Format: '*' + PIN(>=4 digits) + '#' + 3-digit code [+ confirm digit].
 		// The '#' terminates the PIN so its length is unambiguous: we verify the
 		// PIN EXACTLY ONCE per completed code. (The old version looped over every
@@ -6114,7 +6169,6 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 					return;
 				}
 			}
-
 			if (adminMatched)
 			{
 				accum.digits.clear();

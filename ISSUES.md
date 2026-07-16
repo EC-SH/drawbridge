@@ -8,6 +8,12 @@ This document serves as the active issue tracker and architectural roadmap for *
 
 This backlog is prioritized by architectural dependency and deployment urgency.
 
+### 🟡 Issue #171: DTMF CLASS codes bypass `setDnd()`/`setForward()`, dashboard goes stale
+* **Status**: ⏳ Open / Planned
+* **Labels**: `concurrency`, `dashboard`, `tech-debt`
+* **Severity**: Medium
+* **Description**: `onDtmfInfo` (`RequestsHandler.cpp:5959`) runs inside `handle()`'s `_mutex` lock (`RequestsHandler.cpp:206`, non-recursive). `setDnd()`/`setForward()` (`RequestsHandler.cpp:3530`/`3611`) each independently take that same `_mutex`, so `onDtmfInfo` cannot call them without deadlocking — and doesn't. Instead, `*60`/`*80` (`RequestsHandler.cpp:6157`/`6167`) write `_dnd` directly, and `*73`/`*72NNNN` (`RequestsHandler.cpp:6176`/`6256`) write `_forwards` directly, bypassing the setters entirely (there's an acknowledging comment at `:6149`, "We're already inside `_mutex`"). Consequence: `_snapshot.dnd`/`_snapshot.forwards` (what the HTTP dashboard's status endpoint actually reads, `HttpServer.cpp:824-825`) are refreshed *only* inside those setters — so a DTMF-triggered DND/forward change never appears on the dashboard until an unrelated HTTP-side call happens to touch the same extension. Separately, `*72NNNN`'s inline path also skips a guard `setForward()` has (rejecting virtual extensions `777`/`999` as forward targets) — worth folding into the eventual fix. Found during the [admin-plane HTTP-only plan](docs/PLAN_ADMIN_HTTP_ONLY.md)'s Phase 1 audit (2026-07-15); explicitly out of that plan's scope (a real fix needs either a recursive mutex or lock-already-held internal setter variants, not a one-line patch) — tracked here instead. Also flagged in that audit: `*PIN#101`/`*PIN#999` perform raw NVS writes with no shared setter on either side, and `*999`'s DTMF path does a full `nvs_flash_erase()` where HTTP's factory-reset only erases 4 named keys — a real divergence in blast radius worth resolving alongside this.
+
 ### 🔴 Critical Priority: Commercial-Softswitch Call Control & Media Loopback (WAN Bridge)
 
 > **Status (2026-06-18):** The core WAN-anchor capability — RTP receive/decode (#61), the

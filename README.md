@@ -22,7 +22,10 @@ Built on the MIT-licensed **pocket-dial** open-source SIP registrar engine.
 - Attended and blind transfer (REFER/REFER+Replaces)
 - BLF/presence via SUBSCRIBE/NOTIFY
 - SSH TUI config interface — 80×24 ANSI terminal, port 22, primary config surface
-- Web dashboard — HTTP status, CDR, and OTA firmware updates
+- Web dashboard — HTTP status, CDR, and OTA firmware updates. Dark by default once
+  provisioned: reachable only for a bounded window (default 10 min) after `*4887`
+  (spells HTTP on the keypad) from the registered admin extension (default `1001`), a
+  fresh provisioning grace period, or a logged-in operator's 1-hour keep-alive
 - SIP digest authentication with open/learn/secure registrar modes
 - OTA updates with anti-rollback partition protection
 - Star codes: `*60`/`*80` DND on/off, `*72`/`*73` call forward, `*69` call return, `*11` echo test

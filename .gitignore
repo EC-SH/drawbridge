@@ -115,3 +115,6 @@ docs/internal/
 nvs_backup_*.bin
 *.nvs.bin
 nvs_*.bin
+# TAPI provisioning test configs — contain anchor slot secrets (s1sec=...). NEVER commit.
+pd_tapi_test_*.cfg
+pd_tapi_*.cfg

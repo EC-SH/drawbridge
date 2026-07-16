@@ -53,6 +53,7 @@ add_executable(sip_parser_tests
     # to a host header so the ESP-only impl's contract is testable), the telephony
     # credential table + provider registry, and the OTA session state machine.
     AdminAuth_test.cpp
+    AdminHttpGate_test.cpp
     ThreeCxAnchorLogic_test.cpp
     TelephonyApi_test.cpp
     OtaUpdater_test.cpp
@@ -82,6 +83,8 @@ add_executable(sip_parser_tests
     # !ESP_PLATFORM). RequestsHandler::onDtmfInfo references AdminAuth::verifyPin for
     # the DTMF *PIN# admin menu, so it must be linked into the host binary too.
     ../src/Helpers/AdminAuth.cpp
+    # AdminHttpGate_test.cpp (Phase 0 of docs/PLAN_ADMIN_HTTP_ONLY.md) needs HttpServer linked into this target for the first time.
+    ../src/Helpers/HttpServer.cpp
     ../src/SIP/SipMessage.cpp
     ../src/SIP/SipStatus.cpp
     # Media beachhead (RTP sender + 440 media extension). RtpSender.cpp compiles to
