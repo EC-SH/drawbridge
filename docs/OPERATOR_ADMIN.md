@@ -214,6 +214,11 @@ workflow.
 ### Prerequisites
 
 - Admin PIN set and a valid session cookie (`pd_session`).
+- **The HTTP admin plane must be open.** On a provisioned device the dashboard's listener
+  is dark by default — dial `*4887` from the admin extension (default `1001`) to open it
+  for a bounded window before running these curl steps; once authenticated,
+  `POST $DEVICE/api/admin/keepalive` extends the window by an hour if the upload needs it
+  (see THREAT_MODEL.md §5.6).
 - The update image: `build/SipServer.bin` (built with the same `SIP_TRANSPORT` as the
   running firmware).
 - Network access to the device on its LAN IP.

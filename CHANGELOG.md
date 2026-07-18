@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased (admin-http-gate) - 2026-07-16
+
+Admin-plane hardening: the HTTP dashboard goes dark by default on a provisioned
+device. **SSH/TUI is retained** — it remains the primary config surface; this change
+narrows the *second* admin surface only. Host-verified (284/284 GoogleTest, WSL).
+
+### Changed — dark-by-default HTTP dashboard
+
+- **Transport gate**: once an admin PIN is set, the HTTP listener is closed by
+  default. `HttpServer`'s bind/listen moved out of the constructor into
+  `openListenSocket()`/`closeListenSocket()`; the accept loop re-evaluates the gate
+  every ~250 ms and fails closed. An unprovisioned device listens immediately
+  (onboarding needs the web UI before any credential exists).
+- **DTMF trigger `*4887`** (spells HTTP, no PIN): opens the dashboard for a bounded
+  TTL (default 600 s), gated on caller ext == admin ext (default `1001`), currently
+  registered, and SIP INFO source IP matching the registration's bound IP.
+- **Provisioning grace window** on successful `POST /api/admin/set-pin`, so
+  first-run onboarding isn't cut off when provisioning flips the gate on.
+- **`POST /api/admin/keepalive`** (authenticated) extends the window by 1 hour;
+  "Keep open (1h)" button added to the dashboard.
+- **Admin PINs may not begin `4887`** (reserved for the star-code; enforced at
+  set-pin — pre-existing PINs with that prefix keep the collision, see ISSUES.md).
+- Threat analysis: THREAT_MODEL.md new §5.6 + EoP row E-3.
+
+### Fixed
+
+- Removed dead `persistAdminHttpTtl()` (no runtime path ever changed the TTL).
+- Stale comments claiming the admin extension defaults to `101` (actual: `1001`).
+- `.gitignore`: `pd_tapi_*.cfg` TAPI provisioning test configs (contain anchor slot
+  secrets) are now ignored alongside the NVS dump patterns.
+
+### Known gaps / decisions
+
+- **`_adminExt` is NVS-persisted here**: the compile-time default change `101`→`1001`
+  does not affect any already-provisioned device — the persisted value wins at boot.
+  Fielded units keep their existing admin extension until migrated or re-provisioned
+  (tracked in ISSUES.md).
+
 ## Unreleased - 2026-06-15
 
 WAN-anchor inbound PSTN, teardown reliability, performance hardening, and soak observability.

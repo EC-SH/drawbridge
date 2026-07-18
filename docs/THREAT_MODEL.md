@@ -143,6 +143,7 @@ Each row: threat → current mitigation → **residual risk**.
 |----|--------|-----------|---------------|
 | E-1 | Anonymous AP peer → full admin control | **FIXED**: PIN/session gate on all mutating endpoints. | First-run gap; physical/OTA paths (T-4/T-5). |
 | E-2 | Read endpoints leaking privileged actions | `/api/status`, `/api/wifi/scan`, `/api/admin/status` are read-only and intentionally unauthenticated (the dashboard needs them to render). `/api/admin/status` returns only booleans (`provisioned`, `authenticated`) — no secrets. | Low. SSID list / status are observable by any AP peer (already visible on an open AP anyway). |
+| E-3 | **Spoofed DTMF trigger opens the HTTP admin transport** — an attacker on the local link sends a crafted SIP INFO `*4887` claiming to be the admin extension | The HTTP dashboard is dark by default once provisioned (§5.6). The `*4887` trigger requires: caller extension == the admin extension, that extension **currently registered**, and the INFO's source IP matching the registration's bound IP (mirrors the dialog-source-IP check on BYE/teardown). No PIN in the sequence — `#` is bound to Send/Call on most SIP hardphones, so a PIN+`#` sequence never survives the phone's DTMF relay. | Anyone who can register as the admin extension from the right IP can open the *transport* without the PIN; opening it does not bypass PIN/session auth on the endpoints themselves (E-1). IP spoofing defeats the IP check the same way it defeats any IP-based check on the local link. |
 
 ---
 
@@ -197,6 +198,35 @@ fixes (SIP-over-TLS, SRTP) are expensive on a constrained MCU and add key-manage
 **link-layer fix (WPA2 on the SoftAP) encrypts everything — dashboard, SIP, and RTP — at
 once**, which is why it is the top recommendation below.
 
+### 5.6 HTTP admin plane: dark by default (transport gate + DTMF trigger)
+
+As of 2026-07-16 the HTTP dashboard on a **provisioned** device is unreachable at the
+transport level — the TCP listener itself is closed — except within a bounded open window
+(default 600 s). A window is granted by:
+
+1. **DTMF trigger `*4887`** (spells HTTP on the keypad) from the admin extension (default
+   `1001`), gated as described in E-3 above. No PIN in the sequence — see E-3 for why.
+2. **Provisioning grace** — a successful `POST /api/admin/set-pin` grants the same window,
+   so first-run onboarding (and PIN changes) aren't cut off the instant provisioning flips
+   the gate on.
+3. **Keep-alive** — an authenticated `POST /api/admin/keepalive` (dashboard "Keep open (1h)"
+   button) extends the window by 1 hour.
+
+An **unprovisioned** device listens unconditionally: onboarding needs the web UI before any
+credential exists (§5.1's first-run gap is unchanged). Fail-closed: if the gate state is
+ambiguous (no registrar attached, no deadline), the listener stays closed.
+
+What this buys: the dashboard's attack surface (PIN brute force §5.2 exposure window, session
+theft §5.3, any future HTTP parser bug) only exists while an operator has deliberately opened
+it. What it does **not** buy: traffic inside an open window is still plaintext HTTP (§6), and
+the **SSH sysop terminal is unaffected** — it remains this product's primary, always-on config
+surface with its own PIN gate and per-channel lockout (`AdminAuth` `Channel::Ssh`). The gate
+narrows the *second* admin surface; it does not reduce the first.
+
+Related constraint: **admin PINs may not begin `4887`** (enforced at set-pin) — a PIN with
+that prefix would be shadowed mid-entry by the star-code and could never complete a DTMF
+`*PIN#code` admin command. PINs provisioned before this guard keep the collision (ISSUES.md).
+
 ---
 
 ## 6. The TLS Question (HTTPS for the dashboard) — answered honestly
@@ -248,7 +278,12 @@ do it eyes-open about the warning UX and MCU cost.
 - **Mandatory admin PIN — DONE this phase** (PIN + server-side session on all mutating HTTP
   endpoints; lockout; factory reset clears the credential). Make setting the PIN the first
   onboarding step in the UI/docs.
+- **HTTP admin plane dark by default — DONE 2026-07-16** (see §5.6). The dashboard's TCP
+  listener is closed on a provisioned device outside a bounded window opened by the `*4887`
+  DTMF trigger, a provisioning grace, or an authenticated keep-alive. SSH is unaffected and
+  remains the primary config surface.
 - **Guidance/UX**: require a PIN of ≥6 alphanumeric chars; warn against 4-digit numeric PINs.
+  PINs may not begin `4887` (reserved for the HTTP-open star-code; enforced at set-pin).
 
 ### P1 — soon (meaningful, moderate effort)
 - **SIP authentication** (digest auth on REGISTER/INVITE) to stop extension spoofing and

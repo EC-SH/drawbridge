@@ -67,6 +67,17 @@ On a fresh unit, the TUI opens directly to the **FIRST RUN** screen. It shows th
 
 Once the PIN is set, the status chip for step [1] changes to `● SET` and SSH logins from this point forward require the PIN as the password.
 
+> **PIN constraint:** the PIN may not begin with `4887` — that digit string is reserved as
+> the web dashboard's DTMF open-code (below).
+>
+> **Web dashboard goes dark at this point.** Setting the PIN also puts the HTTP dashboard
+> into its dark-by-default mode: it stays reachable for a grace window so you can finish
+> onboarding, then the listener closes. To reopen it later, dial `*4887` (spells HTTP) from
+> a phone registered as the admin extension (default `1001`) — the dashboard becomes
+> reachable at `http://<device-ip>/` for a bounded window (default 10 min); a logged-in
+> session can extend it by an hour with the "Keep open (1h)" button. SSH is unaffected —
+> it stays available at all times. Details: `docs/THREAT_MODEL.md` §5.6.
+
 Press `2` to confirm the IP address and network mode (informational — no action needed for wired Ethernet).
 
 Press `Enter` to proceed to the hub.

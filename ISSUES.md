@@ -8,6 +8,26 @@ This document serves as the active issue tracker and architectural roadmap for *
 
 This backlog is prioritized by architectural dependency and deployment urgency.
 
+### 🟡 Issue #175: Fielded devices keep their NVS-persisted admin extension after the `101`→`1001` default change
+* **Status**: ⏳ Open / Decision needed
+* **Labels**: `security`, `provisioning`
+* **Severity**: Medium
+
+#### Description
+`_adminExt` is NVS-persisted here (`loadAdminExt()`/`saveAdminExt()`, ns `pbxcfg`, key `admin_ext`) — the persisted value wins at boot, so the admin-http-gate landing's compile-time default change `101`→`1001` has no effect on any already-provisioned unit. On such a unit the `*4887` HTTP-open trigger works from the **old** admin extension while the docs say `1001`. Decide: one-time NVS migration on upgrade, document-and-leave (least invasive), or re-provision at next field visit. Don't default into silently changing which handset can open the dashboard. GitHub #175.
+
+---
+
+### 🟡 Issue #176: Already-provisioned admin PINs beginning `4887` are shadowed by the `*4887` star-code
+* **Status**: ⏳ Open / Documented residual
+* **Labels**: `security`, `dtmf`
+* **Severity**: Low
+
+#### Description
+`*4887` is matched incrementally in `onDtmfInfo` before the `*PIN#code` parser, so a PIN beginning `4887` can never complete a DTMF admin command. Set-pin now rejects the prefix (new/changed PINs only); a device provisioned before the guard keeps the collision, and the salted+hashed store rules out a boot-time scan. Affects only the `Channel::Dtmf` menu — SSH/HTTP login with the same PIN are unaffected. Practical ceiling: documentation (CHANGELOG) + optionally a behavioral warning when the star-code fires and the call continues with `#`-digits. GitHub #176.
+
+---
+
 ### 🟡 Issue #171: DTMF CLASS codes bypass `setDnd()`/`setForward()`, dashboard goes stale
 * **Status**: ⏳ Open / Planned
 * **Labels**: `concurrency`, `dashboard`, `tech-debt`

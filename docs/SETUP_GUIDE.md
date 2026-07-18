@@ -35,7 +35,11 @@ For firmware installation from scratch, see [FLASHING.md](FLASHING.md) or
 > Use that IP address wherever this guide shows `drawbridge.local`.
 
 The SIP registrar listens on **UDP port 5060**. The SSH config surface is on **TCP port 22**.
-A read-only web status page is available at `http://drawbridge.local` (port 80).
+A web status page is available at `http://drawbridge.local` (port 80) — but note it is
+**dark by default once the admin PIN is set**: the HTTP listener is closed except within a
+bounded window opened by dialing `*4887` from the admin extension, a fresh provisioning
+grace period, or a logged-in session's keep-alive (see THREAT_MODEL.md §5.6). SSH is
+always available.
 
 ### Network placement note
 
@@ -76,7 +80,8 @@ until the PIN is set. **Set the PIN before doing anything else.**
 After the PIN is set, the SSH password is the admin PIN.
 
 > The web dashboard at `http://drawbridge.local` is available for read-only status and OTA
-> updates, but it is not the configuration path for field deployments.
+> updates, but it is not the configuration path for field deployments. On a provisioned
+> device it is dark by default — open it with `*4887` from the admin extension when needed.
 
 ---
 
