@@ -2,6 +2,12 @@
 
 **Status:** Living document | **Last updated:** 2026-06-12 | **Scope:** Engineering / product-capability only
 
+> **Staleness note (2026-07-22):** this file has drifted behind `ISSUES.md` and the current
+> source tree — several items shown below as "proposed" (attended transfer, session timers,
+> UPDATE, DND, ring groups) have since shipped. Treat `ISSUES.md` + a grep of `src/` as the
+> ground truth for what's actually missing; use this file for the historical design rationale
+> only, not as a current features-still-missing checklist.
+
 This is a prioritized **engineering** roadmap for DRAWBRIDGE: what exists, what is
 landing now, and what is worth building next. It is grounded in the current source tree
 and the existing design docs. It deliberately stays inside the project's "fast and light"

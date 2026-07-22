@@ -198,23 +198,31 @@ fixes (SIP-over-TLS, SRTP) are expensive on a constrained MCU and add key-manage
 **link-layer fix (WPA2 on the SoftAP) encrypts everything — dashboard, SIP, and RTP — at
 once**, which is why it is the top recommendation below.
 
-### 5.6 HTTP admin plane: dark by default (transport gate + DTMF trigger)
+### 5.6 HTTP admin plane: opt-in transport gate + DTMF trigger
 
-As of 2026-07-16 the HTTP dashboard on a **provisioned** device is unreachable at the
-transport level — the TCP listener itself is closed — except within a bounded open window
-(default 600 s). A window is granted by:
+As of `fb156ca` (2026-07-2x) the HTTP dashboard's dark-by-default gate is an **opt-in**
+hardening toggle, not the default state. On a fresh-provisioned device the dashboard's TCP
+listener is open unconditionally at `http://<device-ip>/`, same as an unprovisioned unit —
+no SSH or DTMF step required to reach it. `GET /api/admin/status` reports the current toggle
+state as `httpLockEnabled`.
+
+An operator can flip the Security panel's "Require dial-code (`*4887`) unlock" checkbox
+(`POST /api/admin/http-lock`, authenticated) to switch the device into the gated mode
+described below. Once enabled, the listener closes outside a bounded open window (default
+600 s), reopened by:
 
 1. **DTMF trigger `*4887`** (spells HTTP on the keypad) from the admin extension (default
    `1001`), gated as described in E-3 above. No PIN in the sequence — see E-3 for why.
 2. **Provisioning grace** — a successful `POST /api/admin/set-pin` grants the same window,
-   so first-run onboarding (and PIN changes) aren't cut off the instant provisioning flips
-   the gate on.
+   so first-run onboarding (and PIN changes) aren't cut off the instant the gate is enabled.
 3. **Keep-alive** — an authenticated `POST /api/admin/keepalive` (dashboard "Keep open (1h)"
    button) extends the window by 1 hour.
 
-An **unprovisioned** device listens unconditionally: onboarding needs the web UI before any
-credential exists (§5.1's first-run gap is unchanged). Fail-closed: if the gate state is
-ambiguous (no registrar attached, no deadline), the listener stays closed.
+Disabling the toggle (also authenticated) returns the listener to always-open. An
+**unprovisioned** device always listens unconditionally regardless of the toggle: onboarding
+needs the web UI before any credential exists (§5.1's first-run gap is unchanged).
+Fail-closed only applies *within* gated mode: if the gate state is ambiguous while the gate
+is enabled (no registrar attached, no deadline), the listener stays closed rather than open.
 
 What this buys: the dashboard's attack surface (PIN brute force §5.2 exposure window, session
 theft §5.3, any future HTTP parser bug) only exists while an operator has deliberately opened
@@ -278,10 +286,13 @@ do it eyes-open about the warning UX and MCU cost.
 - **Mandatory admin PIN — DONE this phase** (PIN + server-side session on all mutating HTTP
   endpoints; lockout; factory reset clears the credential). Make setting the PIN the first
   onboarding step in the UI/docs.
-- **HTTP admin plane dark by default — DONE 2026-07-16** (see §5.6). The dashboard's TCP
-  listener is closed on a provisioned device outside a bounded window opened by the `*4887`
-  DTMF trigger, a provisioning grace, or an authenticated keep-alive. SSH is unaffected and
-  remains the primary config surface.
+- **HTTP admin plane transport gate — DONE, now opt-in** (see §5.6). The dashboard is
+  reachable by default once provisioned; an operator can enable a Security-panel toggle to
+  close the TCP listener outside a bounded window opened by the `*4887` DTMF trigger, a
+  provisioning grace, or an authenticated keep-alive. Since it defaults off, it does not by
+  itself narrow the out-of-the-box attack surface described in E-1/E-2 — WPA2 on the SoftAP
+  (above) is the control that actually protects a fresh, un-hardened unit. SSH is unaffected
+  either way and remains the primary config surface.
 - **Guidance/UX**: require a PIN of ≥6 alphanumeric chars; warn against 4-digit numeric PINs.
   PINs may not begin `4887` (reserved for the HTTP-open star-code; enforced at set-pin).
 

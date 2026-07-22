@@ -22,10 +22,11 @@ Built on the MIT-licensed **pocket-dial** open-source SIP registrar engine.
 - Attended and blind transfer (REFER/REFER+Replaces)
 - BLF/presence via SUBSCRIBE/NOTIFY
 - SSH TUI config interface — 80×24 ANSI terminal, port 22, primary config surface
-- Web dashboard — HTTP status, CDR, and OTA firmware updates. Dark by default once
-  provisioned: reachable only for a bounded window (default 10 min) after `*4887`
-  (spells HTTP on the keypad) from the registered admin extension (default `1001`), a
-  fresh provisioning grace period, or a logged-in operator's 1-hour keep-alive
+- Web dashboard — HTTP status, CDR, and OTA firmware updates. Reachable by default
+  once provisioned; an optional Security-panel toggle locks it back down so it's only
+  reachable after `*4887` (spells HTTP on the keypad) from the registered admin
+  extension (default `1001`), a fresh provisioning grace period, or a logged-in
+  operator's 1-hour keep-alive
 - SIP digest authentication with open/learn/secure registrar modes
 - OTA updates with anti-rollback partition protection
 - Star codes: `*60`/`*80` DND on/off, `*72`/`*73` call forward, `*69` call return, `*11` echo test
@@ -94,11 +95,16 @@ Replace `COM3` with your serial port (`/dev/ttyUSB0` on Linux/macOS).
 ### 4. First boot
 
 Connect the PoE Ethernet cable. The board obtains a DHCP address and advertises
-`drawbridge.local` on the LAN. SSH in to complete the first-run setup:
+`drawbridge.local` on the LAN. Open the web dashboard to finish setup — it's
+reachable by default once provisioned, no SSH required:
 
-```bash
-ssh drawbridge.local
 ```
+http://drawbridge.local
+```
+
+SSH is still available (`ssh drawbridge.local`) for the full SSH TUI config surface,
+but it's no longer a required first step. If you've locked the dashboard down via the
+Security panel's HTTP-lock toggle, dial `*4887` from the admin extension to reopen it.
 
 See [docs/FLASHING.md](docs/FLASHING.md) for first-flash detail and OTA update procedure.
 

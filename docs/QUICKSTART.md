@@ -70,13 +70,14 @@ Once the PIN is set, the status chip for step [1] changes to `● SET` and SSH l
 > **PIN constraint:** the PIN may not begin with `4887` — that digit string is reserved as
 > the web dashboard's DTMF open-code (below).
 >
-> **Web dashboard goes dark at this point.** Setting the PIN also puts the HTTP dashboard
-> into its dark-by-default mode: it stays reachable for a grace window so you can finish
-> onboarding, then the listener closes. To reopen it later, dial `*4887` (spells HTTP) from
-> a phone registered as the admin extension (default `1001`) — the dashboard becomes
-> reachable at `http://<device-ip>/` for a bounded window (default 10 min); a logged-in
-> session can extend it by an hour with the "Keep open (1h)" button. SSH is unaffected —
-> it stays available at all times. Details: `docs/THREAT_MODEL.md` §5.6.
+> **Web dashboard stays reachable by default.** Setting the PIN does not change this — the
+> HTTP dashboard remains reachable at `http://<device-ip>/` after provisioning. If you want
+> to lock it down (recommended for units facing an untrusted LAN), open the Security panel
+> in the dashboard and enable "Require dial-code unlock." Once enabled, the dashboard goes
+> dark and only reopens after dialing `*4887` (spells HTTP) from a phone registered as the
+> admin extension (default `1001`) — reachable for a bounded window (default 10 min); a
+> logged-in session can extend it by an hour with the "Keep open (1h)" button. SSH is
+> unaffected either way — it stays available at all times. Details: `docs/THREAT_MODEL.md` §5.6.
 
 Press `2` to confirm the IP address and network mode (informational — no action needed for wired Ethernet).
 
