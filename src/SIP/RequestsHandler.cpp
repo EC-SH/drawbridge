@@ -2282,6 +2282,48 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 		_outbox.emplace_back(data->getSource(), std::move(accepted));
 	}
 
+	// Notify the transferor's ORIGINAL peer that the call is over. Every other teardown
+	// path in this file (transfer-bridge peer relay, park peer relay, the ordinary
+	// two-party BYE relay) explicitly BYEs the far side — endCall() below is silent,
+	// internal-only bookkeeping, never a wire message. This path alone skipped that
+	// step: the dropped party's phone kept showing an active call (RTP just went quiet)
+	// until they hung up manually, with no signal the transfer had happened. Must run
+	// BEFORE endCall() erases the session below.
+	{
+		auto callSession = getSession(callID);
+		if (callSession.has_value())
+		{
+			auto sess = callSession.value();
+			auto src = sess->getSrc();
+			auto dest = sess->getDest();
+			// dialogFrom/dialogTo are fixed to the ORIGINAL caller(src)/callee(dest)
+			// (captured from the 200 OK's From/To — see armSessionTimer), regardless of
+			// which one later sends this REFER. Resolve "the other party" + the
+			// corresponding From/To strings from THEIR perspective so the BYE looks
+			// correct whichever way transferor/peer map to src/dest.
+			std::shared_ptr<SipClient> otherParty;
+			std::string otherFrom, otherTo;
+			if (src && src->getNumber() == transferor->getNumber())
+			{
+				otherParty = dest;
+				otherFrom = sess->getDialogFrom();   // transferor's (src's) own identity
+				otherTo   = sess->getDialogTo();     // other party's (dest's) identity+tag
+			}
+			else if (dest && dest->getNumber() == transferor->getNumber())
+			{
+				otherParty = src;
+				otherFrom = sess->getDialogTo();     // transferor's (dest's) identity+tag
+				otherTo   = sess->getDialogFrom();   // other party's (src's) own identity
+			}
+			if (otherParty && !otherFrom.empty() && !otherTo.empty())
+			{
+				auto bye = buildServerBye(otherParty->getNumber(), otherParty->getAddress(),
+				                          stripHeaderName(callID), otherFrom, otherTo);
+				if (bye) _outbox.emplace_back(otherParty->getAddress(), std::move(bye));
+			}
+		}
+	}
+
 	// Blind transfer drops the transferor's ORIGINAL call. Tear that leg down FIRST,
 	// then drive the new INVITE — ordering is load-bearing: redirectInvite() reuses the
 	// Session stored under this Call-ID, so ending the call AFTER it (the previous
@@ -3558,15 +3600,7 @@ void RequestsHandler::setDnd(const std::string& extension, bool on)
 
 		// Refresh the DND view in the dashboard snapshot immediately so the UI
 		// reflects the change without waiting for the next tick().
-		{
-			std::lock_guard<std::mutex> snapLock(_snapshotMutex);
-			_snapshot.dnd.clear();
-			_snapshot.dnd.reserve(_dnd.size());
-			for (const auto& [ext, enabled] : _dnd)
-			{
-				if (enabled) _snapshot.dnd.push_back(ext);
-			}
-		}
+		refreshDndSnapshotLocked();
 
 		localLogs = std::move(_logQueue);
 		_logQueue.clear();
@@ -3576,6 +3610,17 @@ void RequestsHandler::setDnd(const std::string& extension, bool on)
 	{
 		if (log.first) std::cerr << log.second << std::endl;
 		else std::cout << log.second << std::endl;
+	}
+}
+
+void RequestsHandler::refreshDndSnapshotLocked()
+{
+	std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+	_snapshot.dnd.clear();
+	_snapshot.dnd.reserve(_dnd.size());
+	for (const auto& [ext, enabled] : _dnd)
+	{
+		if (enabled) _snapshot.dnd.push_back(ext);
 	}
 }
 
@@ -3652,15 +3697,7 @@ void RequestsHandler::setForward(const std::string& extension, const std::string
 		}
 
 		// Refresh the dashboard snapshot immediately (mirror setDnd).
-		{
-			std::lock_guard<std::mutex> snapLock(_snapshotMutex);
-			_snapshot.forwards.clear();
-			_snapshot.forwards.reserve(_forwards.size());
-			for (const auto& [ext, cfg] : _forwards)
-			{
-				_snapshot.forwards.emplace_back(ext, cfg.always, cfg.busy, cfg.noAnswer);
-			}
-		}
+		refreshForwardsSnapshotLocked();
 
 		localLogs = std::move(_logQueue);
 		_logQueue.clear();
@@ -3670,6 +3707,17 @@ void RequestsHandler::setForward(const std::string& extension, const std::string
 	{
 		if (log.first) std::cerr << log.second << std::endl;
 		else std::cout << log.second << std::endl;
+	}
+}
+
+void RequestsHandler::refreshForwardsSnapshotLocked()
+{
+	std::lock_guard<std::mutex> snapLock(_snapshotMutex);
+	_snapshot.forwards.clear();
+	_snapshot.forwards.reserve(_forwards.size());
+	for (const auto& [ext, cfg] : _forwards)
+	{
+		_snapshot.forwards.emplace_back(ext, cfg.always, cfg.busy, cfg.noAnswer);
 	}
 }
 
@@ -6245,6 +6293,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			_dnd[callerExt] = true;
 			queueLog("*60 SCR enabled for " + callerExt);
 		}
+		refreshDndSnapshotLocked();   // #171: DTMF path bypassed setDnd()'s snapshot refresh
 		accum.digits.clear();
 		return;
 	}
@@ -6254,6 +6303,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 	{
 		_dnd.erase(callerExt);
 		queueLog("*80 SCR disabled for " + callerExt);
+		refreshDndSnapshotLocked();   // #171
 		accum.digits.clear();
 		return;
 	}
@@ -6268,6 +6318,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			if (it->second.empty()) _forwards.erase(it);
 			persistForwards();
 		}
+		refreshForwardsSnapshotLocked();   // #171: DTMF path bypassed setForward()'s snapshot refresh
 		queueLog("*73 CFU disabled for " + callerExt);
 		accum.digits.clear();
 		return;
@@ -6343,6 +6394,7 @@ void RequestsHandler::onDtmfInfo(std::shared_ptr<SipMessage> data)
 			{
 				_forwards[callerExt].always = target;
 				persistForwards();
+				refreshForwardsSnapshotLocked();   // #171
 				queueLog("*72 CFU enabled: " + callerExt + " -> " + target);
 			}
 			accum.digits.clear();

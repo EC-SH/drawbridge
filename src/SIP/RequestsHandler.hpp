@@ -606,6 +606,18 @@ private:
 	void freeParkSlot(std::string_view callID);
 	// Mirror the orbit table into the dashboard snapshot (caller holds _mutex).
 	void refreshParkSnapshot();
+	// Issue #171: onDtmfInfo's CLASS star-codes (*60/*80 DND, *72/*73 CFU) mutate
+	// _dnd/_forwards directly rather than through setDnd()/setForward() — those two
+	// re-lock _mutex, which onDtmfInfo already holds, so calling them would deadlock
+	// (std::mutex is non-recursive). That left the DTMF path bypassing the snapshot
+	// refresh those setters do, so a DTMF-driven DND/forward change never showed up
+	// on the HTTP dashboard until some OTHER mutation (a setDnd/setForward call, or
+	// nothing at all) happened to rebuild it. These two mirror setDnd/setForward's
+	// inline snapshot-rebuild block exactly, callable from a context that already
+	// holds _mutex (onDtmfInfo, setDnd, setForward) — they only take _snapshotMutex,
+	// never _mutex, so nesting is safe regardless of caller.
+	void refreshDndSnapshotLocked();
+	void refreshForwardsSnapshotLocked();
 
 	// ── RFC 3261 §17 transaction helpers (all callers hold _mutex) ───────────
 	// Return InviteClient if `msg` is an outgoing INVITE request; None otherwise.
