@@ -55,6 +55,7 @@ add_executable(sip_parser_tests
     AdminAuth_test.cpp
     AdminHttpGate_test.cpp
     Metrics_test.cpp
+    Syslog_test.cpp
     ThreeCxAnchorLogic_test.cpp
     TelephonyApi_test.cpp
     OtaUpdater_test.cpp
@@ -86,6 +87,10 @@ add_executable(sip_parser_tests
     ../src/Helpers/AdminAuth.cpp
     # AdminHttpGate_test.cpp (Phase 0 of docs/PLAN_ADMIN_HTTP_ONLY.md) needs HttpServer linked into this target for the first time.
     ../src/Helpers/HttpServer.cpp
+    # Syslog is self-contained (real UDP socket even under !ESP_PLATFORM — host has
+    # real sockets, unlike NVS). RequestsHandler::recordCdr/onRegister call
+    # Syslog::send, so it must be linked into the host test binary too.
+    ../src/Helpers/Syslog.cpp
     ../src/SIP/SipMessage.cpp
     ../src/SIP/SipStatus.cpp
     # Media beachhead (RTP sender + 440 media extension). RtpSender.cpp compiles to

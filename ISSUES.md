@@ -371,11 +371,6 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 
 ### 🔵 Low Priority: Diagnostics & Observability
 
-#### 🔵 Issue #129: RFC 5424 syslog over UDP for centralized log aggregation
-* **Status**: ⏳ Open
-* **Labels**: `diagnostics`, `priority-medium`
-* **Description**: Add a syslog sink alongside the current serial log: when `syslog_host` NVS key is set, emit RFC 5424-formatted UDP syslog datagrams (facility=LOCAL0, structured data for call events). Zero-alloc: format into a stack buffer; fire-and-forget `sendto`. No TCP/TLS — plain UDP syslog only (reliable delivery is the aggregator's concern).
-
 #### 🔵 Issue #133: NVS schema versioning and migration framework
 * **Status**: ⏳ Open
 * **Labels**: `reliability`, `priority-low`
@@ -505,6 +500,11 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 ---
 
 ## Resolved Issues
+
+### 🟢 Issue #129: RFC 5424 syslog over UDP for centralized log aggregation
+* **Status**: ✅ Resolved (2026-07-22) — 298/298 host gtest suite (4 new tests in `Syslog_test.cpp`, real UDP wire-format verification), ESP-IDF eth build + hardware-confirmed no regression on COM5
+* **Labels**: `diagnostics`, `priority-medium`
+* **Description**: Added a new self-contained `Syslog` module (`src/Helpers/Syslog.hpp`/`.cpp`) alongside the existing serial log: `Syslog::loadFromNvs()` reads `syslog_host` (+ optional numeric `syslog_port`, default 514) from NVS ns `pbxcfg` at `RequestsHandler` construction; if set, `Syslog::send()` emits RFC 5424 datagrams (facility LOCAL0) on a persistent, pre-connected UDP socket — zero-alloc (fixed stack buffer), fire-and-forget, no TCP/TLS/retry, matching the issue's own spec. Wired to two call-event sites: `onRegister()` emits `pbx-register` on genuinely new bindings (not lease refreshes), and `recordCdr()` emits `pbx-call` with caller/callee/duration/result mirroring the CDR record. Host tests bind a real UDP listener on loopback and assert the actual wire bytes (`<134>1 - - drawbridge pbx-call - - caller=...`) rather than mocking. **Known limitation, not yet addressed**: `syslog_host`/`syslog_port` are NVS-only — there's no HTTP dashboard or SSH TUI field to set them yet (parity with several other backend-only NVS knobs in this codebase), so turning this on today requires a raw NVS write. A TUI/HTTP config surface is a natural follow-up, not filed as a separate issue since it's a small addition once someone actually needs it operationally. Also not validated: genuine end-to-end delivery to a real syslog aggregator from the COM5 hardware (the host gtest's real-socket test covers the wire format; hardware validation this pass was limited to confirming no regression — board still boots/registers/serves `/metrics` normally with the new code linked in).
 
 ### 🟢 Issue #128: /metrics — Prometheus text-format endpoint for external scraping
 * **Status**: ✅ Resolved (2026-07-22) — 294/294 host gtest suite (2 new tests in `Metrics_test.cpp`), hardware-confirmed on COM5

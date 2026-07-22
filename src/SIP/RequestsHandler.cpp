@@ -15,6 +15,7 @@
 #include "CallDetailRecord.hpp"
 #include "PbxConfig.hpp"
 #include "AdminAuth.hpp"
+#include "Syslog.hpp"
 #include "SipDigest.hpp"
 #include "SipSecretStore.hpp"
 #include "ArpLookup.hpp"
@@ -107,6 +108,8 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	loadCdrRing();
 	// Task 2B: load the admin extension from NVS (defaults to "1001" if absent).
 	loadAdminExt();
+	// Issue #129: opt-in RFC 5424 syslog sink — no-op unless syslog_host is set in NVS.
+	Syslog::loadFromNvs();
 	// STAGE 2: load the registrar mode (defaults to the POCKETDIAL_OPEN_REGISTRAR
 	// seed) and the adopted-device registry from NVS.
 	loadRegistrarMode();
@@ -465,6 +468,8 @@ void RequestsHandler::onRegister(std::shared_ptr<SipMessage> data)
 			if (isNewBinding)
 			{
 				_totalRegistrations.fetch_add(1, std::memory_order_relaxed);
+				Syslog::send(Syslog::Severity::Info, "pbx-register",
+				             "ext=" + std::string(fromNumber) + " event=new_binding");
 			}
 			// Register beep: on a brand-new binding ONLY (never a lease refresh —
 			// phones re-REGISTER every lease period), send the registering phone a
@@ -3247,6 +3252,14 @@ void RequestsHandler::recordCdr(const std::shared_ptr<Session>& session,
 	rec.startMs = startMs;
 	rec.durationSec = durationSec;
 	rec.result = result;
+
+	// Issue #129: structured call-event syslog line, mirroring the CDR fields.
+	// Emitted from the locals rather than `rec` — `rec` is moved-from immediately
+	// below.
+	Syslog::send(Syslog::Severity::Info, "pbx-call",
+	             "caller=" + std::string(srcNumber) + " callee=" + std::string(destNumber) +
+	             " duration=" + std::to_string(durationSec) +
+	             " result=" + cdrResultToString(result));
 
 	// Fixed ring write: overwrite the oldest slot once full (no heap growth).
 	_cdrRing[_cdrHead] = std::move(rec);
