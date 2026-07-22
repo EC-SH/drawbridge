@@ -89,3 +89,78 @@ TEST(AdminAuthLockout, CorrectPinResetsItsChannelCounter)
     EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Ssh));
     EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Ssh));
 }
+
+// --- Issue #130: per-source-IP lockout scoping within the Http channel ---------
+
+namespace {
+constexpr uint32_t kAttackerIp = 0x0A000001;  // 10.0.0.1
+constexpr uint32_t kAdminIp    = 0x0A000002;  // 10.0.0.2
+
+void tripLockoutForIp(uint32_t ip) {
+    for (int i = 0; i < AdminAuth::kMaxFailedAttempts; ++i) {
+        EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, ip));
+    }
+}
+} // namespace
+
+// An attacker IP spraying wrong PINs must not lock out a different IP's admin —
+// the whole point of issue #130 (D-3 in THREAT_MODEL.md: a shared global HTTP
+// lockout let an attacker self-DoS the legitimate admin).
+TEST(AdminAuthLockout, AttackerIpDoesNotLockOutAdminIp)
+{
+    resetAuth();
+    tripLockoutForIp(kAttackerIp);
+
+    EXPECT_TRUE(AdminAuth::isLockedOut(Channel::Http, kAttackerIp))
+        << "the attacker's own IP must be locked after kMaxFailedAttempts";
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http, kAdminIp))
+        << "a different source IP must remain unlocked";
+
+    EXPECT_TRUE(AdminAuth::verifyPin(kPin, Channel::Http, kAdminIp))
+        << "the legitimate admin, from a different IP, can still log in";
+}
+
+// Passing sourceIp == 0 (the default) must fall back to the legacy channel-wide
+// counter untouched by any per-IP activity — this is what every pre-#130 caller
+// (and any test that doesn't care about IP scoping) still gets.
+TEST(AdminAuthLockout, ZeroIpFallsBackToChannelWideLockout)
+{
+    resetAuth();
+    tripLockoutForIp(kAttackerIp);
+
+    // The per-IP table is separate from the legacy channel-wide counters, so a
+    // caller that never passes an IP (sourceIp == 0) is unaffected by the above.
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http))
+        << "channel-wide (IP-less) lockout state must be independent of per-IP state";
+    EXPECT_TRUE(AdminAuth::verifyPin(kPin, Channel::Http));
+}
+
+// A correct PIN from a given IP resets ONLY that IP's counter, not others'.
+TEST(AdminAuthLockout, CorrectPinResetsOnlyItsOwnIpCounter)
+{
+    resetAuth();
+    for (int i = 0; i < AdminAuth::kMaxFailedAttempts - 1; ++i) {
+        EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, kAttackerIp));
+    }
+    EXPECT_TRUE(AdminAuth::verifyPin(kPin, Channel::Http, kAttackerIp));  // resets it
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http, kAttackerIp));
+
+    // One more wrong try from that same IP must not immediately re-lock it.
+    EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, kAttackerIp));
+    EXPECT_FALSE(AdminAuth::isLockedOut(Channel::Http, kAttackerIp));
+}
+
+// The per-IP table is bounded (kMaxIpLockoutEntries): spraying from more distinct
+// IPs than the table can hold must not crash, hang, or grow without bound — the
+// oldest entries are evicted to make room (same discipline as RequestsHandler's
+// per-source-IP rate-limit buckets).
+TEST(AdminAuthLockout, PerIpTableIsBoundedUnderManyDistinctIps)
+{
+    resetAuth();
+    for (uint32_t i = 0; i < static_cast<uint32_t>(AdminAuth::kMaxIpLockoutEntries) * 4; ++i) {
+        uint32_t ip = 0xC0A80000u + i;  // 192.168.0.0 + i, all distinct, never 0
+        EXPECT_FALSE(AdminAuth::verifyPin(kWrong, Channel::Http, ip));
+    }
+    // The legitimate admin (an IP not in the flood) is still unaffected.
+    EXPECT_TRUE(AdminAuth::verifyPin(kPin, Channel::Http, kAdminIp));
+}

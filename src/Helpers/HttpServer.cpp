@@ -1600,6 +1600,24 @@ void HttpServer::sendApiAdminSetPin(int sock, const HttpRequest& req)
 	             "{\"status\":\"ok\",\"provisioned\":true}");
 }
 
+// Issue #130: raw peer IPv4 as a host-order uint32_t, for AdminAuth's per-IP HTTP
+// lockout table. Returns 0 (meaning "unknown / fall back to channel-wide lockout")
+// on any failure or non-IPv4 peer — never blocks the request over this.
+static uint32_t getPeerIpU32(int sock)
+{
+	sockaddr_in peer{};
+#if defined _WIN32 || defined _WIN64
+	int peerLen = sizeof(peer);
+#else
+	socklen_t peerLen = sizeof(peer);
+#endif
+	if (getpeername(sock, reinterpret_cast<struct sockaddr*>(&peer), &peerLen) != 0)
+	{
+		return 0;
+	}
+	return ntohl(peer.sin_addr.s_addr);
+}
+
 void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
 {
 	if (!AdminAuth::isProvisioned())
@@ -1610,10 +1628,14 @@ void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
 		return;
 	}
 
+	uint32_t peerIp = getPeerIpU32(sock);
+
 	// Reject while locked out before doing any hashing work. Issue #57: the HTTP
-	// login throttle is now scoped to the Http channel, so SSH/DTMF brute-force no
-	// longer locks the dashboard out (and vice-versa).
-	if (AdminAuth::isLockedOut(AdminAuth::Channel::Http))
+	// login throttle is scoped to the Http channel so SSH/DTMF brute-force no longer
+	// locks the dashboard out (and vice-versa). Issue #130: within the Http channel,
+	// it's further scoped to the caller's own source IP, so one attacker IP can't
+	// lock out the legitimate admin's IP.
+	if (AdminAuth::isLockedOut(AdminAuth::Channel::Http, peerIp))
 	{
 		sendResponse(sock, 429, "Too Many Requests", "application/json",
 		             "{\"error\":\"too many failed attempts; try again later\"}");
@@ -1621,10 +1643,10 @@ void HttpServer::sendApiAdminLogin(int sock, const HttpRequest& req)
 	}
 
 	std::string pin = getFormParam(req.body, "pin");
-	if (!AdminAuth::verifyPin(pin, AdminAuth::Channel::Http))
+	if (!AdminAuth::verifyPin(pin, AdminAuth::Channel::Http, peerIp))
 	{
 		// verifyPin may have just engaged the lockout on this attempt.
-		if (AdminAuth::isLockedOut(AdminAuth::Channel::Http))
+		if (AdminAuth::isLockedOut(AdminAuth::Channel::Http, peerIp))
 		{
 			sendResponse(sock, 429, "Too Many Requests", "application/json",
 			             "{\"error\":\"too many failed attempts; try again later\"}");

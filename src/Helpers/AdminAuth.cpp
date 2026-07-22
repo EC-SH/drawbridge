@@ -18,6 +18,7 @@
 #include <array>
 #include <mutex>
 #include <vector>
+#include <unordered_map>
 #include <cstring>
 #include <chrono>
 
@@ -331,7 +332,45 @@ namespace
 		std::array<uint64_t, kChannels> lockoutUntilMs{};   // value-init -> all 0
 
 		std::array<Session, AdminAuth::kMaxSessions> sessions{};
+
+		// Per-source-IP lockout for the Http channel (issue #130): bounded so an
+		// attacker can't grow this unbounded by spraying from many source IPs.
+		// Evicts the least-recently-seen entry on overflow, same pattern as
+		// RequestsHandler::_rateBuckets.
+		struct IpLockout
+		{
+			int      failedAttempts  = 0;
+			uint64_t lockoutUntilMs  = 0;
+			uint64_t lastSeenMs      = 0;
+		};
+		std::unordered_map<uint32_t, IpLockout> ipLockouts;
 	};
+
+	// Caller must hold state().mutex. Finds (or creates, evicting the
+	// least-recently-seen entry if the table is at capacity) the IpLockout entry
+	// for `ip`, stamps it as just-seen, and returns a pointer to it.
+	AuthState::IpLockout& ipEntryLocked(AuthState& s, uint32_t ip, uint64_t now)
+	{
+		auto it = s.ipLockouts.find(ip);
+		if (it == s.ipLockouts.end())
+		{
+			if (s.ipLockouts.size() >= AdminAuth::kMaxIpLockoutEntries)
+			{
+				auto oldest = s.ipLockouts.begin();
+				for (auto e = s.ipLockouts.begin(); e != s.ipLockouts.end(); ++e)
+				{
+					if (e->second.lastSeenMs < oldest->second.lastSeenMs)
+					{
+						oldest = e;
+					}
+				}
+				s.ipLockouts.erase(oldest);
+			}
+			it = s.ipLockouts.emplace(ip, AuthState::IpLockout{}).first;
+		}
+		it->second.lastSeenMs = now;
+		return it->second;
+	}
 
 	// Function-local static: avoids a static-initialization-order fiasco and is
 	// thread-safe to initialize under C++11+.
@@ -460,13 +499,27 @@ namespace AdminAuth
 		// legitimately re-proved control, so all surfaces get a fresh window.
 		s.failedAttempts.fill(0);
 		s.lockoutUntilMs.fill(0);
+		s.ipLockouts.clear();   // issue #130: also clear per-IP HTTP lockouts
 		return true;
 	}
 
-	bool isLockedOut(Channel channel)
+	bool isLockedOut(Channel channel, uint32_t sourceIp)
 	{
 		AuthState& s = state();
 		std::lock_guard<std::mutex> lock(s.mutex);
+
+		if (channel == Channel::Http && sourceIp != 0)
+		{
+			// Issue #130: per-IP lockout check. A read-only lookup — don't create an
+			// entry (and don't touch lastSeenMs) just because someone asked.
+			auto it = s.ipLockouts.find(sourceIp);
+			if (it == s.ipLockouts.end())
+			{
+				return false;
+			}
+			return it->second.lockoutUntilMs != 0 && nowMs() < it->second.lockoutUntilMs;
+		}
+
 		const size_t c = static_cast<size_t>(channel);
 		if (c >= s.lockoutUntilMs.size())
 		{
@@ -475,7 +528,7 @@ namespace AdminAuth
 		return s.lockoutUntilMs[c] != 0 && nowMs() < s.lockoutUntilMs[c];
 	}
 
-	bool verifyPin(const std::string& pin, Channel channel)
+	bool verifyPin(const std::string& pin, Channel channel, uint32_t sourceIp)
 	{
 		AuthState& s = state();
 		std::lock_guard<std::mutex> lock(s.mutex);
@@ -490,6 +543,43 @@ namespace AdminAuth
 		if (c >= s.failedAttempts.size())
 		{
 			return false;   // defensive: reject an unknown channel rather than UB
+		}
+
+		// Issue #130: per-source-IP lockout accounting for the Http channel, so one
+		// attacker IP can't lock out the legitimate admin's own IP. Falls through to
+		// the legacy channel-wide accounting for every other case (sourceIp == 0, or
+		// a non-Http channel — SSH/DTMF stay as-is, issue #57).
+		if (channel == Channel::Http && sourceIp != 0)
+		{
+			uint64_t now = nowMs();
+			AuthState::IpLockout& entry = ipEntryLocked(s, sourceIp, now);
+
+			if (entry.lockoutUntilMs != 0 && now < entry.lockoutUntilMs)
+			{
+				return false;
+			}
+
+			std::string candidate = hashPin(s.salt, pin);
+			bool ok = constantTimeEquals(candidate, s.hash);
+
+			if (ok)
+			{
+				entry.failedAttempts = 0;
+				entry.lockoutUntilMs = 0;
+			}
+			else
+			{
+				if (entry.failedAttempts < kMaxFailedAttempts)
+				{
+					++entry.failedAttempts;
+				}
+				if (entry.failedAttempts >= kMaxFailedAttempts)
+				{
+					entry.lockoutUntilMs = now + kLockoutMs;
+					entry.failedAttempts = 0;
+				}
+			}
+			return ok;
 		}
 
 		// Honor THIS channel's lockout without hashing while it is engaged. Other
@@ -634,6 +724,7 @@ namespace AdminAuth
 		s.loaded = true;          // we know the (now empty) state; don't reload
 		s.failedAttempts.fill(0);
 		s.lockoutUntilMs.fill(0);
+		s.ipLockouts.clear();     // issue #130
 
 		for (auto& sess : s.sessions)
 		{

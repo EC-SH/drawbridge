@@ -289,11 +289,6 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Labels**: `sip-engine`, `security`, `priority-high`
 * **Description**: REGISTER digest challenge (RFC 2617 MD5) is shipped in Secure mode. INVITE challenges are not uniformly applied — an attacker who can reach the UDP port can call any extension without credentials. Extend the challenge machinery to INVITE: 401 challenge on first attempt, accept only if the digest matches the registered extension's HA1.
 
-#### 🟡 Issue #130: Security: per-source-IP brute-force lockout on /api/admin/login
-* **Status**: ⏳ Open
-* **Labels**: `security`, `priority-high`
-* **Description**: The current global 5-attempt / 60-second lockout lets an attacker on the LAN self-DoS the legitimate admin (D-3 in THREAT_MODEL.md). Replace with a per-IP `unordered_map<uint32_t, LockoutState>` bounded to 64 entries (evict oldest on overflow). Each IP gets its own independent window.
-
 #### 🟡 Issue #131: OTA: bind upload to admin session + local-link-only gate
 * **Status**: ⏳ Open
 * **Labels**: `ota`, `security`, `priority-high`
@@ -515,6 +510,11 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 ---
 
 ## Resolved Issues
+
+### 🟢 Issue #130: Security: per-source-IP brute-force lockout on /api/admin/login
+* **Status**: ✅ Resolved (2026-07-22) — 292/292 host gtest suite (8 new tests in `AdminAuthLockout_test.cpp`), hardware-confirmed on COM5 (5 wrong PINs → `401`×4 then `429`, matching `kMaxFailedAttempts`)
+* **Labels**: `security`, `priority-high`
+* **Description**: The prior global 5-attempt/60-second lockout on the `Http` channel let an attacker on the LAN self-DoS the legitimate admin (D-3 in THREAT_MODEL.md) — one flood of wrong PINs from any IP locked out every other IP for 60s, repeatable indefinitely. **Fix**: added a bounded (`kMaxIpLockoutEntries` = 64) `std::unordered_map<uint32_t, IpLockout>` in `AdminAuth.cpp`, keyed by source IP, evicting the least-recently-seen entry on overflow (same discipline as `RequestsHandler::_rateBuckets`). `AdminAuth::verifyPin()`/`isLockedOut()` gained a defaulted `sourceIp` parameter: passing a non-zero IP on the `Http` channel routes lockout accounting through the per-IP table instead of the legacy channel-wide counter; every other existing caller (SSH, DTMF, or any test that doesn't pass an IP) is source-compatible and unaffected. `HttpServer::sendApiAdminLogin()` now resolves the caller's peer IP via a new `getPeerIpU32()` helper (`getpeername()`) and threads it through. Setting/clearing the admin credential also clears the per-IP table, matching the existing per-channel reset behavior.
 
 ### 🟢 Issue #178: Blind transfer never notified the transferred-away party (silent drop, no BYE)
 * **Status**: ✅ Resolved (`5eeb2af`, 2026-07-22) — confirmed via `.smoke/office_smoke.py` on WSL host build (10/10 across 3 runs) and hardware-validated on COM5

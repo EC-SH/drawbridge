@@ -35,6 +35,7 @@ namespace AdminAuth
 	constexpr int      kMaxFailedAttempts = 5;        // consecutive failures before lockout
 	constexpr uint64_t kLockoutMs         = 60ULL * 1000ULL;           // 60 s cooldown
 	constexpr uint32_t kHashIterations    = 50000;    // PBKDF-style iterated SHA-256 rounds
+	constexpr size_t   kMaxIpLockoutEntries = 64;     // bounded per-IP lockout table (issue #130)
 
 	// Authentication channel for brute-force lockout accounting. Each channel keeps
 	// an INDEPENDENT failure counter + cooldown so a flood of wrong PINs on one
@@ -67,11 +68,21 @@ namespace AdminAuth
 	// channel's lockout. Returns false if not provisioned. The default `Http` keeps
 	// every existing caller (and the on-device DTMF/SSH paths pass their own channel)
 	// source-compatible.
-	bool verifyPin(const std::string& pin, Channel channel = Channel::Http);
+	//
+	// `sourceIp` (issue #130): when non-zero AND channel == Http, lockout accounting
+	// is scoped to THIS caller's source IP instead of the channel-wide counter, via a
+	// bounded (kMaxIpLockoutEntries) table that evicts the least-recently-seen entry
+	// on overflow. This stops one attacker IP from tripping a lockout that blocks the
+	// legitimate admin's own IP (THREAT_MODEL.md D-3). Leaving `sourceIp` at its
+	// default of 0 (or using a non-Http channel) keeps the original channel-wide
+	// behavior — existing callers that don't have/need an IP are unaffected.
+	bool verifyPin(const std::string& pin, Channel channel = Channel::Http, uint32_t sourceIp = 0);
 
 	// True while the given channel's brute-force lockout is engaged (cooldown not yet
-	// elapsed). Channels are independent (issue #57).
-	bool isLockedOut(Channel channel = Channel::Http);
+	// elapsed). Channels are independent (issue #57). See verifyPin() for `sourceIp`
+	// (issue #130): non-zero + Http checks that IP's own lockout instead of the
+	// channel-wide one.
+	bool isLockedOut(Channel channel = Channel::Http, uint32_t sourceIp = 0);
 
 	// Create a new server-side session and return its opaque random token
 	// (kSessionTokenHex hex chars). Evicts the oldest/expired entry if the table
