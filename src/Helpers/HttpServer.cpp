@@ -502,6 +502,13 @@ void HttpServer::handleClient(int clientSock)
 	{
 		sendApiStatus(clientSock);
 	}
+	else if (req.method == "GET" && req.path == "/metrics")
+	{
+		// Issue #128: intentionally unauthenticated, same rationale as /api/status —
+		// a scraper (Prometheus) needs this reachable without a login flow, and it
+		// exposes only aggregate counts, no secrets (mirrors E-2 in THREAT_MODEL.md).
+		sendApiMetrics(clientSock);
+	}
 	else if (req.method == "POST" && req.path == "/api/kill")
 	{
 		if (!isSameOrigin(req))
@@ -1063,6 +1070,68 @@ void HttpServer::sendApiStatus(int sock)
 	json << "}";
 
 	sendResponse(sock, 200, "OK", "application/json", json.str());
+}
+
+// GET /metrics (issue #128): Prometheus text-exposition format. Reuses the same
+// thread-safe getters as /api/status (getTelemetry(), getClientCount()/getSessionCount())
+// rather than adding a parallel data path. `_total` counters are monotonic since boot
+// (Prometheus counters); everything else is a point-in-time gauge.
+void HttpServer::sendApiMetrics(int sock)
+{
+	uint64_t uptimeSec = (currentTimeMs() - _startTime) / 1000;
+
+	RequestsHandler::Telemetry telem;
+	uint64_t packets = 0, dropped = 0;
+	size_t clientsUsed = 0, sessionsUsed = 0;
+
+	RequestsHandler* handler = _handler.load(std::memory_order_acquire);
+	if (handler != nullptr)
+	{
+		telem = handler->getTelemetry();
+		packets = handler->getPacketsProcessed();
+		dropped = handler->getPacketsDropped();
+		clientsUsed = handler->getClientCount();
+		sessionsUsed = handler->getSessionCount();
+	}
+
+	uint64_t freeHeap = 0, psramFree = 0;
+#if defined(ESP_PLATFORM)
+	freeHeap  = esp_get_free_heap_size();
+	psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+#endif
+
+	std::ostringstream out;
+	auto gauge = [&out](const char* name, const char* help, uint64_t value) {
+		out << "# HELP " << name << " " << help << "\n";
+		out << "# TYPE " << name << " gauge\n";
+		out << name << " " << value << "\n";
+	};
+	auto counter = [&out](const char* name, const char* help, uint64_t value) {
+		out << "# HELP " << name << " " << help << "\n";
+		out << "# TYPE " << name << " counter\n";
+		out << name << " " << value << "\n";
+	};
+
+	gauge("uptime_seconds", "Seconds since this boot.", uptimeSec);
+	gauge("sip_registrations_active", "Currently registered extensions.", clientsUsed);
+	gauge("sip_calls_active", "Currently active call sessions (includes internal/ring-back legs).", sessionsUsed);
+	gauge("anchor_calls_active", "1 if a WAN-anchor (PSTN trunk) call is bridged right now, else 0.",
+	      telem.mediaActive ? 1 : 0);
+	gauge("anchor_connected", "1 if the WAN anchor control link is up, else 0.",
+	      telem.anchorConnected ? 1 : 0);
+	gauge("heap_free_bytes", "Free internal heap (0 on host build).", freeHeap);
+	gauge("psram_free_bytes", "Free PSRAM (0 on host build or a board without PSRAM).", psramFree);
+	counter("sip_registrations_total", "New-binding registrations since boot (lease refreshes not counted).",
+	        telem.totalRegistrations);
+	counter("sip_calls_total", "Call sessions allocated since boot (includes internal/ring-back legs).",
+	        telem.totalCallsStarted);
+	counter("rtp_playout_underruns_total", "Media playout buffer underruns since boot.", telem.playoutUnderruns);
+	counter("rtp_playout_overruns_total", "Media playout buffer overruns since boot.", telem.playoutOverruns);
+	counter("packets_processed_total", "SIP packets processed since boot.", packets);
+	counter("packets_dropped_total", "SIP packets dropped (rate-limited/blocked) since boot.", dropped);
+
+	// text/plain; version=0.0.4 is the Prometheus exposition-format content type.
+	sendResponse(sock, 200, "OK", "text/plain; version=0.0.4", out.str());
 }
 
 void HttpServer::sendApiKill(int sock, const std::string& body)

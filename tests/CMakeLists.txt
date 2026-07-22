@@ -54,6 +54,7 @@ add_executable(sip_parser_tests
     # credential table + provider registry, and the OTA session state machine.
     AdminAuth_test.cpp
     AdminHttpGate_test.cpp
+    Metrics_test.cpp
     ThreeCxAnchorLogic_test.cpp
     TelephonyApi_test.cpp
     OtaUpdater_test.cpp

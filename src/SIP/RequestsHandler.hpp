@@ -111,6 +111,8 @@ public:
 		size_t   sessionsCap      = 0;       // POCKETDIAL_MAX_SESSIONS
 		uint32_t tlsFullHandshakes    = 0;   // media-stream opens that paid a full TLS handshake
 		uint32_t tlsResumedHandshakes = 0;   // ...that resumed a cached session (the fast path)
+		uint64_t totalRegistrations   = 0;   // monotonic since-boot new-binding count (#128)
+		uint64_t totalCallsStarted    = 0;   // monotonic since-boot allocateSession() count (#128)
 	};
 	Telemetry getTelemetry();
 
@@ -847,6 +849,16 @@ private:
 
 	std::atomic<uint64_t> _packetsProcessed{0};
 	std::atomic<uint64_t> _packetsDropped{0};
+
+	// Monotonic since-boot counters for /metrics (issue #128). Deliberately separate
+	// from the *Used gauges above: those reflect current pool occupancy, these never
+	// decrease. _totalRegistrations counts only genuinely NEW bindings (not lease
+	// refreshes — see the isNewBinding check in onRegister); _totalCallsStarted
+	// counts every allocateSession() success, including internal/ring-back legs, so
+	// it's "sessions ever allocated" rather than strictly "calls a human placed" —
+	// documented at the /metrics endpoint itself.
+	std::atomic<uint64_t> _totalRegistrations{0};
+	std::atomic<uint64_t> _totalCallsStarted{0};
 
 	struct RegistrarSnapshot
 	{

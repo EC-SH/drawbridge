@@ -462,6 +462,10 @@ void RequestsHandler::onRegister(std::shared_ptr<SipMessage> data)
 		if (newClient)
 		{
 			registerClient(newClient);
+			if (isNewBinding)
+			{
+				_totalRegistrations.fetch_add(1, std::memory_order_relaxed);
+			}
 			// Register beep: on a brand-new binding ONLY (never a lease refresh —
 			// phones re-REGISTER every lease period), send the registering phone a
 			// brief intercom auto-answer INVITE so it plays its own tone, then tear
@@ -4348,6 +4352,8 @@ RequestsHandler::Telemetry RequestsHandler::getTelemetry()
 	// TLS handshake split (full ECDHE vs resumed) on the POST media stream — shows resumption
 	// holding and reveals 3CX's session-ticket lifetime over idle gaps.
 	if (_anchorClient) _anchorClient->getTlsHandshakeStats(t.tlsFullHandshakes, t.tlsResumedHandshakes);
+	t.totalRegistrations = _totalRegistrations.load(std::memory_order_relaxed);
+	t.totalCallsStarted  = _totalCallsStarted.load(std::memory_order_relaxed);
 	return t;
 }
 
@@ -5470,6 +5476,7 @@ std::shared_ptr<Session> RequestsHandler::allocateSession(std::string callID, st
 		if (slotId.empty() || _sessions.find(slotId) == _sessions.end())
 		{
 			session->reset(std::move(callID), src);
+			_totalCallsStarted.fetch_add(1, std::memory_order_relaxed);
 			return session;
 		}
 	}

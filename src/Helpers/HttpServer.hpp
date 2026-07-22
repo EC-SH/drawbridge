@@ -84,6 +84,7 @@ private:
 	void sendRedirect(int sock, const std::string& location);
 	void sendHtml(int sock);
 	void sendApiStatus(int sock);
+	void sendApiMetrics(int sock);   // GET /metrics — Prometheus text format (issue #128)
 	void sendApiKill(int sock, const std::string& body);
 	// Phase 2: read-only Call Detail Records (newest first). Ungated like /api/status.
 	void sendApiCdr(int sock);

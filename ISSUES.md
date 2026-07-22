@@ -371,11 +371,6 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 
 ### 🔵 Low Priority: Diagnostics & Observability
 
-#### 🔵 Issue #128: /metrics — Prometheus text-format endpoint for external scraping
-* **Status**: ⏳ Open
-* **Labels**: `diagnostics`, `api`, `priority-medium`
-* **Description**: Add `GET /metrics` returning Prometheus text format (no auth required for scraping): `sip_registrations_total`, `sip_calls_active`, `sip_calls_total`, `anchor_calls_active`, `heap_free_bytes` (internal + PSRAM), `uptime_seconds`, `rtp_packets_tx/rx`. Enables integration with Grafana/Prometheus in managed deployments.
-
 #### 🔵 Issue #129: RFC 5424 syslog over UDP for centralized log aggregation
 * **Status**: ⏳ Open
 * **Labels**: `diagnostics`, `priority-medium`
@@ -510,6 +505,11 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 ---
 
 ## Resolved Issues
+
+### 🟢 Issue #128: /metrics — Prometheus text-format endpoint for external scraping
+* **Status**: ✅ Resolved (2026-07-22) — 294/294 host gtest suite (2 new tests in `Metrics_test.cpp`), hardware-confirmed on COM5
+* **Labels**: `diagnostics`, `api`, `priority-medium`
+* **Description**: Added `GET /metrics` (unauthenticated, same rationale as `/api/status` — aggregate counts, no secrets) returning Prometheus text-exposition format. Reuses the existing thread-safe `RequestsHandler::getTelemetry()`/`getClientCount()`/`getSessionCount()` getters rather than a parallel data path. Two new monotonic since-boot counters were added to support this: `_totalRegistrations` (incremented in `onRegister()` only on a genuinely NEW binding — lease refreshes don't count, so the metric isn't just "time since boot / registration-expiry interval") and `_totalCallsStarted` (incremented in `allocateSession()`, the single choke point every call-type handler routes through — includes internal/ring-back legs, documented as such rather than silently presented as "calls a human placed"). Exposes: `uptime_seconds`, `sip_registrations_active`/`_total`, `sip_calls_active`/`_total`, `anchor_calls_active`, `anchor_connected`, `heap_free_bytes`, `psram_free_bytes`, `rtp_playout_under/overruns_total`, `packets_processed/dropped_total`. `rtp_packets_tx/rx` from the original ask were not added — no such counters exist yet on the RTP send/receive path and adding them would touch the hot media loop, out of scope for this pass.
 
 ### 🟢 Issue #130: Security: per-source-IP brute-force lockout on /api/admin/login
 * **Status**: ✅ Resolved (2026-07-22) — 292/292 host gtest suite (8 new tests in `AdminAuthLockout_test.cpp`), hardware-confirmed on COM5 (5 wrong PINs → `401`×4 then `429`, matching `kMaxFailedAttempts`)
