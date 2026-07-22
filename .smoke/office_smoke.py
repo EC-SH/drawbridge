@@ -416,6 +416,20 @@ class Phone:
             self._send(req)
             time.sleep(inter_digit_delay)
 
+    def send_dtmf_reliable(self, digits, verify_fn, retries=3, settle=0.3):
+        """send_dtmf() has no retransmission — each digit is one irreplaceable UDP
+        datagram, and losing even a single one (observed under background load from
+        several other phones' threads/sockets) corrupts the whole accumulated sequence,
+        silently. A real handset user facing a star-code that "didn't take" just dials
+        it again; do the same here rather than reporting a false failure. verify_fn()
+        should check server-visible state (e.g. poll /api/status) and return bool."""
+        for attempt in range(retries):
+            self.send_dtmf(digits)
+            time.sleep(settle)
+            if verify_fn():
+                return True
+        return False
+
     # ── outbound: REFER (blind + attended) ───────────────────────────────────
     def refer(self, callid, refer_to, replaces=None):
         """replaces, if given, is (callid_bare, from_tag, to_tag) for attended transfer."""
@@ -506,6 +520,14 @@ def report(name, ok, detail):
 
 def scenario_registration(phones):
     ok = all(p.register() for p in phones.values())
+    # Settle: a brand-new registration observed unreliable inbound delivery to the
+    # phone for a brief window right after REGISTER succeeds (missed register-beep,
+    # missed park-orbit response) when testing across a real NAT/bridge hop to real
+    # hardware — not reproduced against the WSL host build over loopback, so this
+    # looks like a network-path settling quirk rather than a product bug. A short
+    # pause here benefits every scenario that follows, not just the one that first
+    # exposed it.
+    time.sleep(1.0)
     report("Office registration", ok,
            "%d/%d extensions registered" % (sum(1 for p in phones.values()), len(phones)))
     return ok
@@ -598,6 +620,7 @@ def scenario_blind_transfer(board_ip, local_ip):
             report("Blind transfer", False, "setup: dedicated phone %s failed to register" % p.ext)
             for q in phones.values(): q.close()
             return False
+    time.sleep(1.0)   # settle — see scenario_registration's comment
     a = phones["A"]; b = phones["B"]; c = phones["C"]
     try:
         return _scenario_blind_transfer_body(a, b, c)
@@ -611,6 +634,7 @@ def _scenario_blind_transfer_body(a, b, c):
         report("Blind transfer", False, "setup: A->B got status=%s" % status)
         return False
 
+    refer_t = now_ms()
     resp = a.refer(ab_callid, c.ext)
     if not resp or resp.status != 202:
         report("Blind transfer", False, "REFER got status=%s (expected 202)" %
@@ -621,8 +645,11 @@ def _scenario_blind_transfer_body(a, b, c):
     # B's original leg should be torn down (server BYEs B).
     b_byed = b.wait_event("REQUEST", timeout=3.0,
                            match=lambda e: e["method"] == "BYE" and e["callid"] == ab_callid)
-    # C should receive a fresh INVITE (the redirected leg).
-    c_invited = c.wait_event("INCOMING_CALL", timeout=3.0)
+    # C should receive a fresh INVITE (the redirected leg) — filtered to AFTER the REFER
+    # (t >= refer_t), not just "C has ever received any INVITE": every phone gets an
+    # INCOMING_CALL-shaped event for its own register-beep at registration time, which
+    # would otherwise match here as a false positive on any already-registered C.
+    c_invited = c.wait_event("INCOMING_CALL", timeout=3.0, match=lambda e: e["t"] >= refer_t)
 
     # Best-effort cleanup: the redirected A->C leg reuses ab_callid server-side (a real
     # desk phone would ACK it as an ordinary call), but our simplified A never tracked
@@ -649,6 +676,7 @@ def scenario_attended_transfer(board_ip, local_ip):
             report("Attended transfer", False, "setup: dedicated phone %s failed to register" % p.ext)
             for q in phones.values(): q.close()
             return False
+    time.sleep(1.0)   # settle — see scenario_registration's comment
     a = phones["A"]; b = phones["B"]; c = phones["C"]
     try:
         return _scenario_attended_transfer_body(a, b, c)
@@ -699,11 +727,12 @@ def _scenario_attended_transfer_body(a, b, c):
 
 def scenario_dnd(phones, board_ip, http_port):
     d = phones["D"]
-    d.send_dtmf("*60")
-    time.sleep(0.3)
-    st = http_get_json(board_ip, "/api/status", http_port)
-    dnd_list = st.get("dnd", []) if isinstance(st, dict) else []
-    in_dnd = d.ext in dnd_list
+
+    def dnd_is_set():
+        st = http_get_json(board_ip, "/api/status", http_port)
+        return d.ext in (st.get("dnd", []) if isinstance(st, dict) else [])
+
+    in_dnd = d.send_dtmf_reliable("*60", dnd_is_set)
 
     caller = phones["A"]
     callid, status, _ = caller.invite(d.ext)
@@ -714,11 +743,7 @@ def scenario_dnd(phones, board_ip, http_port):
     if status not in (0, 480):
         caller.bye(callid)  # unexpected answer — clean up
 
-    d.send_dtmf("*80")
-    time.sleep(0.3)
-    st2 = http_get_json(board_ip, "/api/status", http_port)
-    dnd_list2 = st2.get("dnd", []) if isinstance(st2, dict) else []
-    cleared = d.ext not in dnd_list2
+    cleared = d.send_dtmf_reliable("*80", lambda: not dnd_is_set())
 
     ok = in_dnd and got_480 and cleared
     report("DND (*60/*80)", ok,
@@ -727,21 +752,44 @@ def scenario_dnd(phones, board_ip, http_port):
     return ok
 
 
-def scenario_call_forward(phones):
-    e = phones["E"]; target = phones["F"]
-    e.send_dtmf("*72" + target.ext)
-    time.sleep(0.3)
-    caller = phones["A"]
-    callid, status, sdp = caller.invite(e.ext)
-    # A forwarded call rings the TARGET, not E — expect a fresh INCOMING_CALL on F.
-    f_invited = target.wait_event("INCOMING_CALL", timeout=3.0)
-    if status == 200:
-        caller.bye(callid)
-    e.send_dtmf("*73")
-    ok = f_invited is not None
-    report("Call forward (*72/*73)", ok,
-           "call to E redirected to F=%s (final status=%s)" % (f_invited is not None, status))
-    return ok
+def scenario_call_forward(phones, board_ip, local_ip, http_port):
+    # onDtmfInfo's *72NNNN handler requires the target to be AT LEAST 4 DIGITS
+    # (`target.size() >= 4`, a deliberate disambiguation rule, not a bug) — the shared
+    # office's 3-digit extensions (301-306) can never satisfy that, so *72 forwarding
+    # to one of them silently never completes (it just keeps waiting for a 4th digit
+    # that never comes). Use a dedicated 4-digit target extension for this scenario so
+    # it actually exercises the feature as designed.
+    e = phones["E"]
+    target = Phone(board_ip, "4002", phone_source_ip(local_ip))
+    if not target.register():
+        report("Call forward (*72/*73)", False, "setup: dedicated 4-digit target failed to register")
+        target.close()
+        return False
+    time.sleep(1.0)   # settle — see scenario_registration's comment
+    try:
+        def forward_is_set():
+            st = http_get_json(board_ip, "/api/status", http_port)
+            fwds = st.get("forwards", []) if isinstance(st, dict) else []
+            return any(f.get("extension") == e.ext and f.get("always") == target.ext for f in fwds)
+
+        set_ok = e.send_dtmf_reliable("*72" + target.ext, forward_is_set)
+
+        caller = phones["A"]
+        redirect_t = now_ms()
+        callid, status, sdp = caller.invite(e.ext)
+        # A forwarded call rings the TARGET, not E — expect a fresh INCOMING_CALL on F,
+        # filtered to after we triggered the redirect (see the blind-transfer comment on
+        # why an unfiltered check would false-positive on the target's own register-beep).
+        f_invited = target.wait_event("INCOMING_CALL", timeout=3.0, match=lambda ev: ev["t"] >= redirect_t)
+        if status == 200:
+            caller.bye(callid)
+        e.send_dtmf_reliable("*73", lambda: not forward_is_set())
+        ok = set_ok and f_invited is not None
+        report("Call forward (*72/*73)", ok,
+               "call to E redirected to F=%s (final status=%s)" % (f_invited is not None, status))
+        return ok
+    finally:
+        target.close()
 
 
 def scenario_ring_group(phones, board_ip, http_port):
@@ -752,9 +800,12 @@ def scenario_ring_group(phones, board_ip, http_port):
         report("Ring group", False, "POST /api/group failed status=%s body=%s" % (status, resp))
         return False
     caller = phones["A"]
+    dial_t = now_ms()
     callid, cstatus, _ = caller.invite("850")
-    b_invited = phones["B"].wait_event("INCOMING_CALL", timeout=3.0)
-    c_invited = phones["C"].wait_event("INCOMING_CALL", timeout=3.0)
+    # Filtered to after we dialed — see the blind-transfer comment: an unfiltered check
+    # would false-positive on B/C's own register-beep INCOMING_CALL event.
+    b_invited = phones["B"].wait_event("INCOMING_CALL", timeout=3.0, match=lambda e: e["t"] >= dial_t)
+    c_invited = phones["C"].wait_event("INCOMING_CALL", timeout=3.0, match=lambda e: e["t"] >= dial_t)
     if cstatus == 200:
         caller.bye(callid)
     ok = b_invited is not None and c_invited is not None
@@ -766,9 +817,12 @@ def scenario_ring_group(phones, board_ip, http_port):
 
 def scenario_page(phones):
     caller = phones["A"]
+    page_t = now_ms()
     callid, status, _ = caller.invite("999")
+    # Filtered to after we dialed — see the blind-transfer comment: an unfiltered check
+    # would false-positive on each phone's own register-beep INCOMING_CALL event.
     others_invited = all(
-        phones[k].wait_event("INCOMING_CALL", timeout=3.0) is not None
+        phones[k].wait_event("INCOMING_CALL", timeout=3.0, match=lambda e: e["t"] >= page_t) is not None
         for k in phones if k != "A"
     )
     if status == 200:
@@ -812,7 +866,7 @@ def main():
             scenario_blind_transfer(board_ip, local_ip)
             scenario_attended_transfer(board_ip, local_ip)
             scenario_dnd(phones, board_ip, http_port)
-            scenario_call_forward(phones)
+            scenario_call_forward(phones, board_ip, local_ip, http_port)
             scenario_ring_group(phones, board_ip, http_port)
             scenario_page(phones)
             scenario_cdr(board_ip, http_port, before_count)
