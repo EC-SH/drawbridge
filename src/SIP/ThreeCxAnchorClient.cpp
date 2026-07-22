@@ -230,6 +230,10 @@ bool ThreeCxAnchorClient::start()
 	// 3. Pre-establish the control-plane TLS session so the first makecall
 	// doesn't pay the handshake during post-dial delay.
 	warmCtrlConnection();
+	// 3b. Same idea for the status-GET connection (getLegStatus/reconcile/caller-lookup/device
+	// resolve) — without this the FIRST post-boot status check still cold-handshakes even though
+	// every later one on this handle resumes.
+	warmStatusConnection();
 
 	// 4. #100: cold-prime EVERY call slot's POST TLS session (keep-alive) in the background so a
 	// cold-start concurrent burst RESUMES each per-call POST open instead of paying the S3's ~1s
@@ -271,6 +275,7 @@ void ThreeCxAnchorClient::shutdownImpl()
 	stopAllMediaStreams();
 	closePostClient();   // free every slot's persistent warm POST/GET handle
 	closeCtrlClient();
+	closeStatusClient();
 
 	if (_wsClient)
 	{
@@ -684,6 +689,8 @@ void ThreeCxAnchorClient::freeSlotLocked(CallSlot& slot)
 	slot.outboundActive.store(false, std::memory_order_release);
 	slot.outboundAnswered.store(false, std::memory_order_release);
 	slot.outboundActiveSetUs = 0;
+	slot.upsetInFlight.store(false, std::memory_order_release);
+	slot.upsetPending.store(false, std::memory_order_release);
 }
 
 // ── Private Helper Functions ───────────────────────────────────────────────
@@ -895,6 +902,14 @@ bool ThreeCxAnchorClient::connectWs()
 // blocking I/O lock-free. close()+cleanup() on every exit path. Returns true only on a 2xx with a
 // clean body read; *statusOut carries the HTTP status (or -1) so callers can distinguish "no
 // evidence" (transient/non-200) from a definitive answer.
+// #107/pcap-driven fix: was a fresh esp_http_client_init+cleanup EVERY call — save_client_session
+// bought nothing because destroying the handle throws the cached ticket away with it. Now mirrors
+// performCtrl/postClient: one persistent _statusClient, closed (not cleaned up) between calls so a
+// reopen RESUMES, rebuilt+retried once on a stale/broken handle. Every caller (getLegStatus,
+// reconcileParticipantId, getParticipantCaller, resolveDevice, resolveOutboundLeg's fallback) hits
+// this same path, so a burst of N concurrent calls each resolving their own leg's status now pays
+// N sequential ~100-150ms resumed opens instead of N concurrent ~800ms-1s cold ECDHEs fighting the
+// S3's single crypto-bound core for CPU.
 bool ThreeCxAnchorClient::httpGetBody(const std::string& url, std::string& bodyOut, int* statusOut)
 {
 	if (statusOut) *statusOut = -1;
@@ -906,46 +921,73 @@ bool ThreeCxAnchorClient::httpGetBody(const std::string& url, std::string& bodyO
 		token = _accessToken;
 	}
 
-	esp_http_client_handle_t client = makeAuthedClient(url, HTTP_METHOD_GET, 1024, token);
-	if (!client)
-	{
-		ESP_LOGE(TAG, "httpGetBody: failed to init HTTP client");
-		return false;
-	}
+	std::lock_guard<std::mutex> statusLock(_statusMutex);
 
 	bool ok = false;
-	esp_err_t err = esp_http_client_open(client, 0);
-	if (err == ESP_OK)
+	for (int attempt = 0; attempt < 2; ++attempt)
 	{
-		esp_http_client_fetch_headers(client);
-		int status = esp_http_client_get_status_code(client);
-		if (statusOut) *statusOut = status;
-
-		// Drain the whole body regardless of status so the connection is left clean.
-		std::vector<char> buffer;
-		char tempBuf[512];
-		int readBytes = 0;
-		while ((readBytes = esp_http_client_read(client, tempBuf, sizeof(tempBuf))) > 0)
+		if (!_statusClient)
 		{
-			buffer.insert(buffer.end(), tempBuf, tempBuf + readBytes);
-		}
-		if (readBytes < 0)
-		{
-			ESP_LOGE(TAG, "httpGetBody: HTTP read error %d (status=%d)", readBytes, status);
+			_statusClient = makeAuthedClient(url, HTTP_METHOD_GET, 1024, token);
+			if (!_statusClient)
+			{
+				ESP_LOGE(TAG, "httpGetBody: failed to init HTTP client");
+				return false;
+			}
 		}
 		else
 		{
-			bodyOut.assign(buffer.begin(), buffer.end());
-			ok = (status >= 200 && status < 300);
+			esp_http_client_set_url(_statusClient, url.c_str());
+			esp_http_client_set_method(_statusClient, HTTP_METHOD_GET);
+			// Token may have rotated since the handle was created.
+			if (!token.empty())
+			{
+				std::string authHeader = "Bearer " + token;
+				esp_http_client_set_header(_statusClient, "Authorization", authHeader.c_str());
+			}
 		}
-		esp_http_client_close(client);
-	}
-	else
-	{
-		ESP_LOGE(TAG, "httpGetBody: open failed: %s", esp_err_to_name(err));
+
+		esp_err_t err = esp_http_client_open(_statusClient, 0);
+		if (err == ESP_OK)
+		{
+			esp_http_client_fetch_headers(_statusClient);
+			int status = esp_http_client_get_status_code(_statusClient);
+
+			// Drain the whole body regardless of status so the connection is left clean.
+			std::vector<char> buffer;
+			char tempBuf[512];
+			int readBytes = 0;
+			while ((readBytes = esp_http_client_read(_statusClient, tempBuf, sizeof(tempBuf))) > 0)
+			{
+				buffer.insert(buffer.end(), tempBuf, tempBuf + readBytes);
+			}
+			esp_http_client_close(_statusClient);   // keep handle+session warm; NOT cleanup
+
+			if (readBytes < 0)
+			{
+				ESP_LOGE(TAG, "httpGetBody: HTTP read error %d (status=%d)", readBytes, status);
+			}
+			else
+			{
+				if (statusOut) *statusOut = status;
+				bodyOut.assign(buffer.begin(), buffer.end());
+				ok = (status >= 200 && status < 300);
+				break;
+			}
+		}
+		else
+		{
+			ESP_LOGW(TAG, "httpGetBody: open failed (%s)%s", esp_err_to_name(err),
+			         attempt == 0 ? " — reconnecting" : "");
+		}
+
+		// Open or read failed: the reused handle may be riding a connection the server already
+		// idled out. Rebuild fresh and retry once (degrades to a cold handshake, never a failed
+		// call) rather than leaving a poisoned handle warm for next time.
+		esp_http_client_cleanup(_statusClient);
+		_statusClient = nullptr;
 	}
 
-	esp_http_client_cleanup(client);
 	return ok;
 }
 
@@ -1864,6 +1906,22 @@ void ThreeCxAnchorClient::warmCtrlConnection()
 	ESP_LOGI(TAG, "Control connection pre-warmed (HTTP %d)", status);
 }
 
+void ThreeCxAnchorClient::warmStatusConnection()
+{
+	// Prime the persistent status-GET session (getLegStatus/reconcileParticipantId/
+	// getParticipantCaller/resolveDevice all share it) ahead of the first real call, same
+	// rationale as warmCtrlConnection: pay the cold ECDHE at boot, not mid-call.
+	std::string url;
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		url = _baseUrl + "/callcontrol/" + _sourceDn + "/participants";
+	}
+	std::string body;
+	int status = 0;
+	httpGetBody(url, body, &status);
+	ESP_LOGI(TAG, "Status connection pre-warmed (HTTP %d)", status);
+}
+
 void ThreeCxAnchorClient::closeCtrlClient()
 {
 	std::lock_guard<std::mutex> ctrlLock(_ctrlMutex);
@@ -1871,6 +1929,16 @@ void ThreeCxAnchorClient::closeCtrlClient()
 	{
 		esp_http_client_cleanup(_ctrlClient);
 		_ctrlClient = nullptr;
+	}
+}
+
+void ThreeCxAnchorClient::closeStatusClient()
+{
+	std::lock_guard<std::mutex> statusLock(_statusMutex);
+	if (_statusClient)
+	{
+		esp_http_client_cleanup(_statusClient);
+		_statusClient = nullptr;
 	}
 }
 
@@ -2030,14 +2098,16 @@ void ThreeCxAnchorClient::stopWsWorkers()
 	for (int i = 0; i < kWsWorkers; ++i) _wsWorkerHandles[i] = nullptr;
 }
 
-void ThreeCxAnchorClient::enqueueWsWork(WsWorkItem* item)
+bool ThreeCxAnchorClient::enqueueWsWork(WsWorkItem* item)
 {
-	if (!item) return;
+	if (!item) return false;
 	if (!_wsWorkQueue || xQueueSend(_wsWorkQueue, &item, 0) != pdTRUE)
 	{
 		// Queue not ready or full — drop it (3CX repeats the upset every ~750 ms). No leak.
 		delete item;
+		return false;
 	}
+	return true;
 }
 
 void ThreeCxAnchorClient::wsWorkerTrampoline(void* arg)
@@ -2132,131 +2202,165 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	// process time the slots are stable: if the surfaced partId now owns a slot, IT is the control
 	// leg; otherwise keep handleWsEvent's far-leg/inbound mapping (issue #40). A slot that is
 	// outboundActive is one of OUR outbound calls; anything else is an INBOUND PSTN call.
+	//
+	// The whole body below runs inside a single-flight loop keyed on the slot's upsetInFlight/
+	// upsetPending pair (set at enqueue time in handleWsEvent). A repeat upset that lands while
+	// this worker is mid status-check does NOT spawn a second worker — it just flags upsetPending,
+	// and the tail of this loop rechecks once more before releasing the flight flag. This is what
+	// collapses "3CX repeats the upset every ~750ms" into ONE getLegStatus()/startMediaStreams()
+	// pass instead of up to kWsWorkers concurrent cold-handshake passes for the same still-pending
+	// call, while still catching a Dialing->Connected transition that arrives mid-check (a blanket
+	// drop-the-repeat gate would silently lose that transition instead).
 	std::string controlLeg = w.controlLeg;
-	bool outbound = false;
+	for (;;)
 	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		if (slotForLocked(w.partId)) controlLeg = w.partId;
-		CallSlot* s = slotForLocked(controlLeg);
-		outbound = s && s->outboundActive.load(std::memory_order_acquire);
-	}
-
-	if (!outbound)
-	{
-		// INBOUND. A 3CX ROUTE POINT connects the PSTN leg immediately, so the very first upset is
-		// already 'Connected' — we must NOT fall into the outbound "Answered" path (that bridges
-		// dead air to a phone that never rang). Announce ONCE (per-slot flag) so the engine rings
-		// the local extensions, then pre-warm BOTH media streams during ringing so audio cuts
-		// through the instant the handset answers. No audio is written until a handset bridges
-		// (MediaBridge), so 3CX just sees an idle stream meanwhile. answerCall() opens media when a
-		// local handset answers, so there is exactly one inbound media starter and no race here.
-		bool announce = false;
+		bool outbound = false;
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
-			// Find-or-claim the inbound slot so the announce-once flag lives on it (keyed by the
-			// surfaced leg). All slots busy => no slot => no announce (graceful at capacity).
-			CallSlot* s = allocSlotLocked(controlLeg);
-			if (s)
-			{
-				announce = (s->inboundSignaledPartId != controlLeg);
-				if (announce) s->inboundSignaledPartId = controlLeg;
-			}
+			if (slotForLocked(w.partId)) controlLeg = w.partId;
+			CallSlot* s = slotForLocked(controlLeg);
+			outbound = s && s->outboundActive.load(std::memory_order_acquire);
 		}
-		if (announce)
-		{
-			// Caller ID: the WS event's attached_data is often null on a route point, so fall
-			// back to the participant resource (party_caller_id/name) for a real number/name
-			// instead of the generic "PSTN" label. Blocking GET — fine on this worker task.
-			std::string caller = w.callerId;
-			if (caller.empty()) caller = getParticipantCaller(controlLeg);
-			ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
-			         _sourceDn.c_str(), controlLeg.c_str(), caller.c_str());
-			if (evCb)
-			{
-				CallEvent ev{CallEvent::Incoming, controlLeg, "", caller};
-				evCb(ev);
-			}
-		}
-		startMediaStreams(controlLeg);
-		return;
-	}
 
-	// OUTBOUND. Re-apply the throttle the original code ran synchronously: 3CX repeats the upset
-	// every ~750 ms, and with the work deferred several can queue before our first
-	// startMediaStreams() completes. Skip only once THIS slot is fully up (POST live AND Answered
-	// already fired) — media is pre-warmed during dialing, so postLive alone is true BEFORE connect
-	// and using it as the sole skip would swallow the Connected->Answered transition.
-	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		CallSlot* s = slotForLocked(controlLeg);
-		if (s && s->postLive.load(std::memory_order_acquire) &&
-		    s->outboundAnswered.load(std::memory_order_acquire))
+		if (!outbound)
 		{
-			return;   // call already fully up
-		}
-	}
-
-	// Authoritative status from the LIST (GET /participants -> find leg), never getParticipantStatus(id)
-	// which 403s for a non-controlled leg (issue #40).
-	std::string statusStr = getLegStatus(controlLeg);
-	ESP_LOGI(TAG, "Upset %s -> control leg %s status '%s'", w.partId.c_str(), controlLeg.c_str(), statusStr.c_str());
-
-	// Helper to read THIS slot's postLive (slot pointer stays valid — fixed array — but re-fetch the
-	// flag rather than caching across the blocking calls below).
-	auto slotPostLive = [this](const std::string& leg) {
-		std::lock_guard<std::mutex> lock(_mutex);
-		CallSlot* s = slotForLocked(leg);
-		return s && s->postLive.load(std::memory_order_acquire);
-	};
-
-	if (statusStr == "Connected")
-	{
-		// The PSTN leg answered. Media is usually already up from the dialing pre-warm; open it now
-		// as a fallback if a pre-answer stream open was rejected. Then fire Answered EXACTLY ONCE
-		// (the per-slot one-shot decouples the answer signal from "media is streaming", which
-		// pre-warm makes true early). Control + media key off OUR leg (controlLeg).
-		bool live = slotPostLive(controlLeg);
-		if (!live)
-		{
-			startMediaStreams(controlLeg);
-			live = slotPostLive(controlLeg);
-		}
-		if (live)
-		{
-			bool fire = false;
+			// INBOUND. A 3CX ROUTE POINT connects the PSTN leg immediately, so the very first upset is
+			// already 'Connected' — we must NOT fall into the outbound "Answered" path (that bridges
+			// dead air to a phone that never rang). Announce ONCE (per-slot flag) so the engine rings
+			// the local extensions, then pre-warm BOTH media streams during ringing so audio cuts
+			// through the instant the handset answers. No audio is written until a handset bridges
+			// (MediaBridge), so 3CX just sees an idle stream meanwhile. answerCall() opens media when a
+			// local handset answers, so there is exactly one inbound media starter and no race here.
+			bool announce = false;
 			{
 				std::lock_guard<std::mutex> lock(_mutex);
-				CallSlot* s = slotForLocked(controlLeg);
+				// Find-or-claim the inbound slot so the announce-once flag lives on it (keyed by the
+				// surfaced leg). All slots busy => no slot => no announce (graceful at capacity).
+				CallSlot* s = allocSlotLocked(controlLeg);
 				if (s)
 				{
-					fire = !s->outboundAnswered.exchange(true, std::memory_order_acq_rel);
-					// Record far-leg id so a Remove naming the external party maps back to us.
-					if (s->farPartId.empty() && w.partId != controlLeg)
-						s->farPartId = w.partId;
+					announce = (s->inboundSignaledPartId != controlLeg);
+					if (announce) s->inboundSignaledPartId = controlLeg;
 				}
 			}
-			if (fire && evCb)
+			if (announce)
 			{
-				CallEvent ev{CallEvent::Answered, controlLeg, "", ""};
-				evCb(ev);
+				// Caller ID: the WS event's attached_data is often null on a route point, so fall
+				// back to the participant resource (party_caller_id/name) for a real number/name
+				// instead of the generic "PSTN" label. Blocking GET — fine on this worker task.
+				std::string caller = w.callerId;
+				if (caller.empty()) caller = getParticipantCaller(controlLeg);
+				ESP_LOGI(TAG, "Inbound call on DN %s: participant %s caller '%s'",
+				         _sourceDn.c_str(), controlLeg.c_str(), caller.c_str());
+				if (evCb)
+				{
+					CallEvent ev{CallEvent::Incoming, controlLeg, "", caller};
+					evCb(ev);
+				}
 			}
+			startMediaStreams(controlLeg);
 		}
 		else
 		{
-			ESP_LOGE(TAG, "Failed to start media streams for participant %s", controlLeg.c_str());
-			stopMediaStreams(controlLeg);
+			// OUTBOUND. Re-apply the throttle the original code ran synchronously: 3CX repeats the
+			// upset every ~750 ms, and with the work deferred several can queue before our first
+			// startMediaStreams() completes. Skip only once THIS slot is fully up (POST live AND
+			// Answered already fired) — media is pre-warmed during dialing, so postLive alone is true
+			// BEFORE connect and using it as the sole skip would swallow the Connected->Answered
+			// transition.
+			bool fullyUp = false;
+			{
+				std::lock_guard<std::mutex> lock(_mutex);
+				CallSlot* s = slotForLocked(controlLeg);
+				fullyUp = s && s->postLive.load(std::memory_order_acquire) &&
+				          s->outboundAnswered.load(std::memory_order_acquire);
+			}
+
+			if (!fullyUp)
+			{
+				// Authoritative status from the LIST (GET /participants -> find leg), never
+				// getParticipantStatus(id) which 403s for a non-controlled leg (issue #40).
+				std::string statusStr = getLegStatus(controlLeg);
+				ESP_LOGI(TAG, "Upset %s -> control leg %s status '%s'", w.partId.c_str(), controlLeg.c_str(), statusStr.c_str());
+
+				// Helper to read THIS slot's postLive (slot pointer stays valid — fixed array — but
+				// re-fetch the flag rather than caching across the blocking calls below).
+				auto slotPostLive = [this](const std::string& leg) {
+					std::lock_guard<std::mutex> lock(_mutex);
+					CallSlot* s = slotForLocked(leg);
+					return s && s->postLive.load(std::memory_order_acquire);
+				};
+
+				if (statusStr == "Connected")
+				{
+					// The PSTN leg answered. Media is usually already up from the dialing pre-warm;
+					// open it now as a fallback if a pre-answer stream open was rejected. Then fire
+					// Answered EXACTLY ONCE (the per-slot one-shot decouples the answer signal from
+					// "media is streaming", which pre-warm makes true early). Control + media key off
+					// OUR leg (controlLeg).
+					bool live = slotPostLive(controlLeg);
+					if (!live)
+					{
+						startMediaStreams(controlLeg);
+						live = slotPostLive(controlLeg);
+					}
+					if (live)
+					{
+						bool fire = false;
+						{
+							std::lock_guard<std::mutex> lock(_mutex);
+							CallSlot* s = slotForLocked(controlLeg);
+							if (s)
+							{
+								fire = !s->outboundAnswered.exchange(true, std::memory_order_acq_rel);
+								// Record far-leg id so a Remove naming the external party maps back to us.
+								if (s->farPartId.empty() && w.partId != controlLeg)
+									s->farPartId = w.partId;
+							}
+						}
+						if (fire && evCb)
+						{
+							CallEvent ev{CallEvent::Answered, controlLeg, "", ""};
+							evCb(ev);
+						}
+					}
+					else
+					{
+						ESP_LOGE(TAG, "Failed to start media streams for participant %s", controlLeg.c_str());
+						stopMediaStreams(controlLeg);
+					}
+				}
+				else
+				{
+					// Our own OUTBOUND leg, not yet Connected (dialing/ringing): pre-warm the GET
+					// stream ONLY. 3CX streams ringback/early-media on the GET during dialing, so it
+					// works pre-connect and the 3CX->handset direction cuts through at answer. But
+					// 3CX does NOT route a POST (device->3CX) stream opened before the leg is
+					// Connected — it accepts the writes then silently drops them (hardware-confirmed).
+					// So the POST is opened in the Connected branch above, to the now-Connected leg.
+					// (Inbound differs: its route-point leg is already Connected during the local
+					// ring, so the inbound gate pre-warms BOTH streams there.)
+					startRxIfNeeded(controlLeg);
+				}
+			}
 		}
-	}
-	else
-	{
-		// Our own OUTBOUND leg, not yet Connected (dialing/ringing): pre-warm the GET stream ONLY.
-		// 3CX streams ringback/early-media on the GET during dialing, so it works pre-connect and
-		// the 3CX->handset direction cuts through at answer. But 3CX does NOT route a POST
-		// (device->3CX) stream opened before the leg is Connected — it accepts the writes then
-		// silently drops them (hardware-confirmed). So the POST is opened in the Connected branch
-		// above, to the now-Connected leg. (Inbound differs: its route-point leg is already
-		// Connected during the local ring, so the inbound gate pre-warms BOTH streams there.)
-		startRxIfNeeded(controlLeg);
+
+		// Single-flight tail: a repeat that arrived while the pass above was running set
+		// upsetPending instead of spawning a new worker. Recheck once more (cheap: getLegStatus on a
+		// now-warm control connection) rather than waiting up to ~750ms for the next natural repeat —
+		// that's how a Connected transition that lands mid-check still gets picked up immediately.
+		CallSlot* s = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			s = slotForLocked(controlLeg);
+		}
+		if (!s) break;   // slot vanished (teardown race) — nothing left to flush
+		if (s->upsetPending.exchange(false, std::memory_order_acq_rel))
+		{
+			continue;
+		}
+		s->upsetInFlight.store(false, std::memory_order_release);
+		break;
 	}
 }
 
@@ -2410,6 +2514,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 										// for OUTBOUND keep letting upserts through until Answered fires, or the
 										// Connected upset is dropped and the handset rings forever. A not-yet-
 										// existing inbound slot is never "fully up", so it always enqueues.
+										bool alreadyQueued = false;
 										{
 											std::lock_guard<std::mutex> lock(_mutex);
 											CallSlot* s = slotForLocked(controlLeg);
@@ -2419,19 +2524,51 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 											{
 												continue;   // already fully up
 											}
+											// Single-flight per slot: 3CX repeats an unresolved upset every ~750ms,
+											// and without this gate each repeat spawned its OWN worker — with
+											// kWsWorkers==POCKETDIAL_MAX_ANCHOR_CALLS, up to 4 running concurrently,
+											// each paying its own cold getLegStatus() handshake for the SAME
+											// still-pending call. If a worker is already resolving this leg, don't
+											// spawn a second one; flag upsetPending so the in-flight worker rechecks
+											// once more after it finishes (processWsWork), so a Dialing->Connected
+											// transition landing mid-check is coalesced, never dropped.
+											if (s)
+											{
+												if (s->upsetInFlight.exchange(true, std::memory_order_acq_rel))
+												{
+													s->upsetPending.store(true, std::memory_order_release);
+													alreadyQueued = true;
+												}
+											}
 										}
+										if (alreadyQueued) continue;
 										// #43: the status check + media start are blocking TLS HTTP — hand
 										// them to the worker pool so the WS event task stays free for PINGs.
 										// placement new(nothrow) returns an initialized pointer; cppcheck misparses it.
 										// cppcheck-suppress legacyUninitvar
 										auto* item = new (std::nothrow) WsWorkItem{};
+										bool handedOff = false;
 										if (item)
 										{
 											item->kind       = WsWork::Upset;
 											item->controlLeg = controlLeg;
 											item->partId     = partId;
 											item->callerId   = callerId;   // same caller for all (only inbound uses it)
-											enqueueWsWork(item);
+											handedOff = enqueueWsWork(item);
+										}
+										if (!handedOff)
+										{
+											// Claimed upsetInFlight above but never actually got a worker to clear
+											// it (alloc failed, or the queue — depth kWsQueueDepth=16 — was full).
+											// Without this release the coalescing dedup wedges the leg: every later
+											// repeat just sets upsetPending with nobody left in flight to notice.
+											std::lock_guard<std::mutex> lock(_mutex);
+											CallSlot* s = slotForLocked(controlLeg);
+											if (s)
+											{
+												s->upsetInFlight.store(false, std::memory_order_release);
+												s->upsetPending.store(false, std::memory_order_release);
+											}
 										}
 									}
 								}

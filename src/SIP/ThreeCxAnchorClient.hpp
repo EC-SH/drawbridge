@@ -135,6 +135,16 @@ private:
 		int64_t                  outboundActiveSetUs = 0; // guarded by _mutex
 		std::string              inboundSignaledPartId;   // Incoming fired once (guarded by _mutex)
 		std::string              farPartId;               // far-leg participant id — populated at Connected so Remove can match it (guarded by _mutex)
+		// 3CX repeats an unresolved Upset every ~750ms. Without these, each repeat spawned its own
+		// worker, and kWsWorkers==POCKETDIAL_MAX_ANCHOR_CALLS let up to 4 run truly concurrently —
+		// each paying its OWN cold getLegStatus() handshake (a fresh esp_http_client per call, so
+		// TLS session resumption never kicks in) for what is the SAME still-pending call. upsetInFlight
+		// gates this to one status check at a time per slot; a repeat that lands mid-check sets
+		// upsetPending instead of spawning a duplicate, and the in-flight worker rechecks once more
+		// before clearing the flag — so a genuine Dialing->Connected transition that arrives mid-check
+		// is never silently dropped (only identical-phase repeats are collapsed).
+		std::atomic<bool>        upsetInFlight{false};
+		std::atomic<bool>        upsetPending{false};
 		esp_http_client_handle_t postClient = nullptr;
 		std::atomic<bool>        postLive{false};         // guarded by postMutex
 		esp_http_client_handle_t getClient  = nullptr;
@@ -160,6 +170,22 @@ private:
 	// examples. Guarded by _ctrlMutex; never touched under _mutex.
 	esp_http_client_handle_t      _ctrlClient = nullptr;
 	std::mutex                    _ctrlMutex;
+
+	// Persistent GET connection for the read-body status calls (getLegStatus, reconcileParticipantId,
+	// getParticipantCaller, resolveDevice's /devices fallback, resolveOutboundLeg's legacy-path
+	// GET) — everything that used to go through httpGetBody() on a fresh esp_http_client each time.
+	// A fresh client every call meant save_client_session bought NOTHING (destroying the handle
+	// throws the cached ticket away with it), so N concurrent callers (e.g. N outbound calls each
+	// resolving their own leg's status under a burst) each paid their own full ~800ms-1s software
+	// ECDHE, contending for the S3's single crypto-bound core on top of the media streams' own cold
+	// opens — hardware-confirmed as the dominant chunk of the dead-air-to-bridge delay under
+	// concurrency. Same fix shape as _postClient/_ctrlClient: keep the handle warm (close, not
+	// cleanup, between calls) so a reconnect RESUMES instead of re-doing the ECDHE. One handle
+	// serializes these reads across concurrent calls, which is a non-issue here — the S3 can't
+	// parallelize the crypto anyway, so serializing turns N concurrent cold handshakes into N
+	// sequential ~100-150ms resumed ones instead. Guarded by _statusMutex; never touched under _mutex.
+	esp_http_client_handle_t      _statusClient = nullptr;
+	std::mutex                    _statusMutex;
 
 	// #100: the rx task handle, its done-sem, and the stopMediaStreams() single-entry gate are now
 	// per-CallSlot (rxTaskHandle / rxDoneSem / tearingDown in the struct above) — one rx pump per
@@ -213,7 +239,11 @@ private:
 	SemaphoreHandle_t _wsWorkerDoneSem = nullptr;
 	bool startWsWorkers();
 	void stopWsWorkers();
-	void enqueueWsWork(WsWorkItem* item);          // takes ownership; deletes on enqueue failure
+	// Takes ownership; deletes + returns false on enqueue failure (alloc-null, queue not
+	// ready/full). Callers that claimed a slot's upsetInFlight before enqueueing MUST release
+	// it on a false return — otherwise a dropped item wedges that leg (the coalescing dedup
+	// then swallows every later repeat with nothing left to un-stick it).
+	bool enqueueWsWork(WsWorkItem* item);
 	static void wsWorkerTrampoline(void* arg);
 	void runWsWorker();
 	void processWsWork(const WsWorkItem& w);       // the blocking body, off the WS task
@@ -250,8 +280,10 @@ private:
 	// nullptr for an empty-body POST.
 	bool performCtrl(const std::string& url, const char* contentType, const std::string& body, int* statusCodeOut = nullptr);
 	void warmCtrlConnection();   // pre-establish the control TLS session (boot/reconnect)
+	void warmStatusConnection(); // pre-establish the status-GET TLS session (boot/reconnect)
 	void closeCtrlClient();      // teardown under _ctrlMutex
 	void closePostClient();      // free the persistent warm _postClient (full teardown only), under _postMutex
+	void closeStatusClient();    // free the persistent warm _statusClient (full teardown only), under _statusMutex
 	bool readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out);
 
 	// Live-state GET helpers (reconcile watchdog + drop-fallback + device resolve). Snapshot
