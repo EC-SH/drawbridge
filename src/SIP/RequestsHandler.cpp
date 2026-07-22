@@ -111,6 +111,7 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	// seed) and the adopted-device registry from NVS.
 	loadRegistrarMode();
 	loadAdminHttpTtl();
+	loadAdminHttpLockEnabled();
 	loadDevices();
 	loadThreeCxConfig();
 	// #107: anchor TLS re-warm cadence (defaults to 60 min if the NVS key is absent).
@@ -5720,6 +5721,39 @@ void RequestsHandler::loadAdminHttpTtl()
 		_adminHttpTtlSec.store(v, std::memory_order_relaxed);
 	}
 	// else: keep the compile-time default (600s).
+#endif
+}
+
+void RequestsHandler::loadAdminHttpLockEnabled()
+{
+#if defined(ESP_PLATFORM) || defined(ESP32)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) != ESP_OK)
+	{
+		return;
+	}
+	uint8_t v = 0;
+	esp_err_t err = nvs_get_u8(h, "http_lock_en", &v);
+	nvs_close(h);
+	if (err == ESP_OK)
+	{
+		_adminHttpLockEnabled.store(v != 0, std::memory_order_relaxed);
+	}
+	// else: keep the compile-time default (false — dashboard reachable by default).
+#endif
+}
+
+void RequestsHandler::setAdminHttpLockEnabled(bool enabled)
+{
+	_adminHttpLockEnabled.store(enabled, std::memory_order_release);
+#if defined(ESP_PLATFORM) || defined(ESP32)
+	nvs_handle_t h;
+	if (nvs_open(NVS_PBX_NS, NVS_READWRITE, &h) == ESP_OK)
+	{
+		nvs_set_u8(h, "http_lock_en", enabled ? 1 : 0);
+		nvs_commit(h);
+		nvs_close(h);
+	}
 #endif
 }
 

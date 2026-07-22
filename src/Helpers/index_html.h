@@ -405,6 +405,12 @@ R"html1(    <div class="stat"><span class="k">Jacks</span><span class="v" id="s-
           <div class="field"><label>New PIN (min 4 chars)</label><input type="password" id="adm-changepin-val" inputmode="numeric" autocomplete="off"></div>
           <button class="btn primary" onclick="adminSetPin('change')">Save</button>
         </div>
+        <div class="note" style="margin-top:10px">
+          <label><input type="checkbox" id="adm-http-lock" onchange="adminToggleHttpLock()"> Require dial-code (*4887) unlock to reach this dashboard</label><br>
+          Off by default — the dashboard is reachable like a freshly-onboarded device.
+          Turning this ON goes dark until the admin extension dials *4887 (or a
+          logged-in session extends the window); PIN login below is unaffected either way.
+        </div>
       </div>
       <div class="msg" id="admin-msg"></div>
 
@@ -477,7 +483,7 @@ R"html1(    <div class="stat"><span class="k">Jacks</span><span class="v" id="s-
 <script>
 "use strict";
 var statusData={ip:"0.0.0.0",port:5060,uptime:0,clients:[],sessions:[],dnd:[],forwards:[],groups:[],packetsProcessed:0};
-var adminState={provisioned:false,authenticated:false};
+var adminState={provisioned:false,authenticated:false,httpLockEnabled:false};
 var otaUploading=false;
 var selectedSSID="";
 var selectedJack=null;
@@ -728,6 +734,7 @@ window.addEventListener("resize",function(){clearTimeout(rsTimer);rsTimer=setTim
 function fetchAdminStatus(){
   return fetch("/api/admin/status",{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(d){
     adminState.provisioned=!!d.provisioned;adminState.authenticated=!!d.authenticated;
+    adminState.httpLockEnabled=!!d.httpLockEnabled;
     renderAdminPanel();applyAuthGating();
   }).catch(function(){});
 }
@@ -737,7 +744,7 @@ function renderAdminPanel(){
   $("admin-loggedin").style.display="none";
   if(!adminState.provisioned)$("admin-setpin").style.display="block";
   else if(!adminState.authenticated)$("admin-login").style.display="block";
-  else $("admin-loggedin").style.display="block";
+  else{$("admin-loggedin").style.display="block";$("adm-http-lock").checked=!!adminState.httpLockEnabled;}
 }
 function controlsUnlocked(){return !adminState.provisioned||adminState.authenticated;}
 function applyAuthGating(){
@@ -785,6 +792,16 @@ function adminKeepAlive(){
   }).catch(function(e){setMsg("admin-msg","Error: "+e.message,"err");});
 }
 function toggleChangePin(){var cp=$("admin-changepin");cp.style.display=cp.style.display==="block"?"none":"block";if(cp.style.display==="block")$("adm-changepin-val").focus();}
+function adminToggleHttpLock(){
+  var cb=$("adm-http-lock");var want=cb.checked;
+  fetch("/api/admin/http-lock",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"enabled="+(want?"true":"false")})
+    .then(function(r){
+      if(r.status===401){cb.checked=!want;handleAuthExpired();return;}
+      if(!r.ok){cb.checked=!want;setMsg("admin-msg","Failed (HTTP "+r.status+").","err");return;}
+      adminState.httpLockEnabled=want;
+      setMsg("admin-msg",want?"Dial-code lock enabled — dashboard will go dark once this session ends.":"Dial-code lock disabled — dashboard stays reachable.","ok");
+    }).catch(function(e){cb.checked=!want;setMsg("admin-msg","Error: "+e.message,"err");});
+}
 
 /* ════ OTA ════ */
 function fetchOtaStatus(){

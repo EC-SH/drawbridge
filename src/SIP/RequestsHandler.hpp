@@ -171,6 +171,21 @@ public:
 		return _adminHttpOpenUntilMs.load(std::memory_order_acquire);
 	}
 
+	// Whether the opt-in hardening toggle is on — HttpServer's accept-loop only
+	// applies the dark-by-default/DTMF-gate behavior when this is true AND the
+	// device is provisioned; otherwise the dashboard stays reachable like an
+	// unprovisioned device (PIN/session auth on the endpoints is unaffected either
+	// way). Lock-free: read from HttpServer's accept-loop thread.
+	bool getAdminHttpLockEnabled() const
+	{
+		return _adminHttpLockEnabled.load(std::memory_order_acquire);
+	}
+
+	// Flip the toggle + persist to NVS. Called only from the isAuthed()-gated
+	// /api/admin/http-lock endpoint — an operator must already be logged in to
+	// turn this on (or back off) for themselves.
+	void setAdminHttpLockEnabled(bool enabled);
+
 	// Called by HttpServer's /api/admin/set-pin handler on a successful PIN
 	// set/change. Without this, the operator who just used the web UI to
 	// provision the device would lose HTTP access on the very next accept-loop
@@ -897,6 +912,20 @@ private:
 	std::atomic<uint64_t> _adminHttpOpenUntilMs{0};
 	std::atomic<uint16_t> _adminHttpTtlSec{600};
 	void loadAdminHttpTtl();              // boot-time reload from NVS; caller holds _mutex
+
+	// ── Admin HTTP lock toggle (opt-in hardening) ─────────────────────────────────
+	// Default OFF: the dashboard is reachable like an unprovisioned device even once
+	// a PIN is set — PIN/session auth (isAuthed()) still gates the actual admin
+	// endpoints, this flag only controls whether HttpServer's LISTEN SOCKET itself
+	// stays dark until a DTMF *4887 trigger / grace window opens it. An operator who
+	// wants that extra hardening back turns it on from inside the dashboard's
+	// Security screen (POST /api/admin/http-lock, isAuthed()-gated — you must
+	// already be logged in to enable/disable the lock on yourself). Atomic so
+	// HttpServer's accept-loop thread can read it lock-free (same discipline as
+	// _adminHttpTtlSec/_adminHttpOpenUntilMs — it is the only thread that touches
+	// the listen socket). NVS-persisted ("pbxcfg"/"http_lock_en", u8 0/1).
+	std::atomic<bool> _adminHttpLockEnabled{false};
+	void loadAdminHttpLockEnabled();      // boot-time reload from NVS; caller holds _mutex
 
 	// ── #107: anchor TLS re-warm cadence (minutes) ──────────────────────────────────
 	// PBX-wide cadence at which the WAN anchor re-warms its IDLE media TLS session so even the

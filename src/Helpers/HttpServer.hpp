@@ -109,6 +109,12 @@ private:
 	// 1 hour from an already-logged-in session, so an operator doing extended
 	// configuration work doesn't get cut off by the DTMF trigger's shorter TTL.
 	void sendApiAdminKeepAlive(int sock, const HttpRequest& req);
+	// Opt-in hardening toggle: whether the dashboard's listen socket goes dark
+	// until a DTMF *4887 trigger/grace-window opens it (see RequestsHandler::
+	// getAdminHttpLockEnabled). Default off — the dashboard is reachable like an
+	// unprovisioned device. isAuthed()-gated: you must already be logged in to
+	// flip this on (or back off) for yourself.
+	void sendApiAdminHttpLock(int sock, const HttpRequest& req);
 
 	// --- OTA firmware-update endpoints (see OtaUpdater.hpp + docs/OTA.md) ---
 	// Streams the request body straight into the inactive OTA slot. This MUST

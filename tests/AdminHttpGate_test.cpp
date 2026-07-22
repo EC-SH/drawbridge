@@ -240,10 +240,13 @@ TEST(AdminHttpGate, SetPin_GrantsGraceWindow_StaysReachable)
 	AdminAuth::clearCredential();
 }
 
-TEST(AdminHttpGate, Boot_Provisioned_DoesNotListen)
+TEST(AdminHttpGate, Boot_Provisioned_WithoutLockToggle_ListensByDefault)
 {
-	// A provisioned device (a PIN has been set) must NOT accept connections
-	// without a live admin-open deadline — invariant I1, fail closed.
+	// Revised default: the dark-by-default gate is now opt-in hardening
+	// (RequestsHandler::getAdminHttpLockEnabled(), default false), not automatic
+	// on provisioning. A provisioned device with the toggle untouched (or no
+	// handler at all to hold it) stays reachable exactly like an unprovisioned
+	// one — PIN/session auth on the endpoints themselves is unaffected.
 	AdminAuth::clearCredential();
 	ASSERT_TRUE(AdminAuth::setPin("123456"));
 	ASSERT_TRUE(AdminAuth::isProvisioned());
@@ -251,7 +254,28 @@ TEST(AdminHttpGate, Boot_Provisioned_DoesNotListen)
 	HttpServer server("127.0.0.1", 18081, nullptr);
 	server.start();
 	std::this_thread::sleep_for(std::chrono::milliseconds(300));
-	EXPECT_FALSE(canConnect(18081));
+	EXPECT_TRUE(canConnect(18081));
+
+	AdminAuth::clearCredential();
+}
+
+TEST(AdminHttpGate, Boot_Provisioned_WithLockToggle_DoesNotListen)
+{
+	// The opt-in hardening path: a provisioned device with the toggle explicitly
+	// turned on reproduces the OLD dark-by-default behavior — invariant I1, fail
+	// closed, without a live admin-open deadline.
+	AdminAuth::clearCredential();
+	ASSERT_TRUE(AdminAuth::setPin("123456"));
+	ASSERT_TRUE(AdminAuth::isProvisioned());
+
+	RequestsHandler handler("192.168.4.1", 5060,
+		[](const sockaddr_in&, std::shared_ptr<SipMessage>) {});
+	handler.setAdminHttpLockEnabled(true);
+
+	HttpServer server("127.0.0.1", 18087, &handler);
+	server.start();
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	EXPECT_FALSE(canConnect(18087));
 
 	AdminAuth::clearCredential();
 }
@@ -323,6 +347,9 @@ TEST(AdminHttpGate, Trigger_ExpiresAfterTtl_ClosesAutomatically)
 
 	RequestsHandler handler("192.168.4.1", 5060,
 		[](const sockaddr_in&, std::shared_ptr<SipMessage>) {});
+	// The dark gate is opt-in now — exercise it explicitly so this test still
+	// pins the TTL-expiry mechanics under the hardened path.
+	handler.setAdminHttpLockEnabled(true);
 
 	HttpServer server("127.0.0.1", 18082, nullptr);
 	server.attachHandler(&handler);
@@ -457,6 +484,67 @@ TEST(AdminHttpGate, SetPin_RejectsReservedStarCodePrefix)
 	// four digits collide with the star-code.
 	EXPECT_EQ(httpPostStatus(18086, "/api/admin/set-pin", "pin=14887"), 200);
 	EXPECT_TRUE(AdminAuth::isProvisioned());
+
+	AdminAuth::clearCredential();
+}
+
+// ── Opt-in hardening toggle (POST /api/admin/http-lock) ─────────────────────
+// The dark-by-default gate is no longer automatic on provisioning — an operator
+// turns it on (or back off) for themselves from inside the already-reached
+// dashboard, which necessarily means they must already be authenticated.
+
+TEST(AdminHttpGate, HttpLock_Unauthenticated_Rejected401)
+{
+	AdminAuth::clearCredential();
+	ASSERT_FALSE(AdminAuth::isProvisioned());
+
+	RequestsHandler handler("192.168.4.1", 5060,
+		[](const sockaddr_in&, std::shared_ptr<SipMessage>) {});
+	HttpServer server("127.0.0.1", 18088, nullptr);
+	server.attachHandler(&handler);
+	server.start();
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	ASSERT_EQ(httpPostStatus(18088, "/api/admin/set-pin", "pin=123456"), 200);
+
+	EXPECT_EQ(httpPostStatus(18088, "/api/admin/http-lock", "enabled=true"), 401);
+	EXPECT_FALSE(handler.getAdminHttpLockEnabled())
+		<< "an unauthenticated caller must not be able to flip the toggle either direction";
+
+	AdminAuth::clearCredential();
+}
+
+TEST(AdminHttpGate, HttpLock_Authenticated_TogglesAndGrantsGraceWindow)
+{
+	AdminAuth::clearCredential();
+	ASSERT_FALSE(AdminAuth::isProvisioned());
+
+	RequestsHandler handler("192.168.4.1", 5060,
+		[](const sockaddr_in&, std::shared_ptr<SipMessage>) {});
+	HttpServer server("127.0.0.1", 18089, nullptr);
+	server.attachHandler(&handler);
+	server.start();
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	ASSERT_EQ(httpPostStatus(18089, "/api/admin/set-pin", "pin=123456"), 200);
+
+	std::string loginResp = httpPostRaw(18089, "/api/admin/login", "pin=123456");
+	ASSERT_EQ(statusOf(loginResp), 200);
+	std::string cookie = cookieOf(loginResp, "pd_session");
+	ASSERT_FALSE(cookie.empty());
+
+	ASSERT_FALSE(handler.getAdminHttpLockEnabled()) << "off by default";
+
+	std::string enableResp = httpPostRaw(18089, "/api/admin/http-lock", "enabled=true",
+	                                      "pd_session=" + cookie);
+	EXPECT_EQ(statusOf(enableResp), 200);
+	EXPECT_TRUE(handler.getAdminHttpLockEnabled());
+	EXPECT_NE(handler.getAdminHttpOpenUntilMs(), 0u)
+		<< "enabling must grant a grace window so the operator doesn't lock themselves "
+		   "out mid-session before the next accept-loop tick applies the new gate";
+
+	std::string disableResp = httpPostRaw(18089, "/api/admin/http-lock", "enabled=false",
+	                                       "pd_session=" + cookie);
+	EXPECT_EQ(statusOf(disableResp), 200);
+	EXPECT_FALSE(handler.getAdminHttpLockEnabled());
 
 	AdminAuth::clearCredential();
 }

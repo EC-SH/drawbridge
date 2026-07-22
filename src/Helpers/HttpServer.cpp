@@ -56,12 +56,16 @@ HttpServer::HttpServer(const std::string& ip, int port, RequestsHandler* handler
 	WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
 
-	// PLAN_ADMIN_HTTP_ONLY.md: dark by default once provisioned. An unprovisioned
-	// device must keep today's behavior exactly (listen immediately — onboarding
-	// needs the web UI reachable before any admin credential exists). A
-	// provisioned device stays dark; acceptLoop()'s per-tick check is what opens
-	// it once a live admin-open deadline exists (invariant I1: fail closed).
-	if (!AdminAuth::isProvisioned())
+	// PLAN_ADMIN_HTTP_ONLY.md, revised: the dark-by-default gate is now OPT-IN
+	// hardening (RequestsHandler::getAdminHttpLockEnabled()), not the default. The
+	// dashboard listens immediately regardless of provisioned state UNLESS an
+	// operator has explicitly turned the lock on from inside the (already-reached)
+	// dashboard's Security screen — PIN/session auth on the endpoints themselves is
+	// unaffected either way. A missing handler can't hold the toggle, so it
+	// resolves to "not locked" (open) — the fail-safe direction flipped along with
+	// the default; see acceptLoop() for the identical per-tick predicate.
+	bool lockEnabled = AdminAuth::isProvisioned() && handler && handler->getAdminHttpLockEnabled();
+	if (!lockEnabled)
 	{
 		if (!openListenSocket())
 		{
@@ -152,20 +156,22 @@ void HttpServer::acceptLoop()
 {
 	while (_running)
 	{
-		// PLAN_ADMIN_HTTP_ONLY.md Phase 2: recompute open/closed every tick.
-		// Unprovisioned devices always stay open (matches the constructor's
-		// initial state). A provisioned device is open only within a live
-		// admin-open deadline; ambiguous/missing handler resolves to closed
-		// (invariant I1 — fail closed).
+		// PLAN_ADMIN_HTTP_ONLY.md Phase 2, revised: recompute open/closed every
+		// tick. The dark gate only applies when the operator has opted into it
+		// (getAdminHttpLockEnabled()) on a provisioned device; otherwise (the new
+		// default) the dashboard stays open exactly like an unprovisioned device.
+		// Ambiguous/missing handler resolves to NOT locked (open) — matches the
+		// constructor's identical predicate.
+		RequestsHandler* handler = _handler.load(std::memory_order_acquire);
+		bool lockEnabled = AdminAuth::isProvisioned() && handler && handler->getAdminHttpLockEnabled();
 		bool shouldBeOpen;
-		if (!AdminAuth::isProvisioned())
+		if (!lockEnabled)
 		{
 			shouldBeOpen = true;
 		}
 		else
 		{
-			RequestsHandler* handler = _handler.load(std::memory_order_acquire);
-			uint64_t deadline = handler ? handler->getAdminHttpOpenUntilMs() : 0;
+			uint64_t deadline = handler->getAdminHttpOpenUntilMs();
 			shouldBeOpen = (deadline != 0) && (currentTimeMs() < deadline);
 		}
 
@@ -684,6 +690,18 @@ void HttpServer::handleClient(int clientSock)
 		else
 		{
 			sendApiAdminKeepAlive(clientSock, req);
+		}
+	}
+	else if (req.method == "POST" && req.path == "/api/admin/http-lock")
+	{
+		if (!isSameOrigin(req))
+		{
+			sendResponse(clientSock, 403, "Forbidden", "application/json",
+			             "{\"error\":\"cross-origin request rejected\"}");
+		}
+		else
+		{
+			sendApiAdminHttpLock(clientSock, req);
 		}
 	}
 	else if (req.method == "GET" && req.path == "/api/ota/status")
@@ -1517,9 +1535,12 @@ void HttpServer::sendApiAdminStatus(int sock, const HttpRequest& req)
 {
 	bool provisioned = AdminAuth::isProvisioned();
 	bool authenticated = isAuthed(req);
+	RequestsHandler* handler = _handler.load(std::memory_order_acquire);
+	bool httpLockEnabled = handler && handler->getAdminHttpLockEnabled();
 	std::ostringstream json;
 	json << "{\"provisioned\":" << (provisioned ? "true" : "false")
-	     << ",\"authenticated\":" << (authenticated ? "true" : "false") << "}";
+	     << ",\"authenticated\":" << (authenticated ? "true" : "false")
+	     << ",\"httpLockEnabled\":" << (httpLockEnabled ? "true" : "false") << "}";
 	sendResponse(sock, 200, "OK", "application/json", json.str());
 }
 
@@ -1665,6 +1686,38 @@ void HttpServer::sendApiAdminKeepAlive(int sock, const HttpRequest& req)
 	handler->extendAdminHttpWindowOneHour();
 	sendResponse(sock, 200, "OK", "application/json",
 	             "{\"status\":\"ok\",\"extendedSeconds\":3600}");
+}
+
+void HttpServer::sendApiAdminHttpLock(int sock, const HttpRequest& req)
+{
+	// You must already be logged in to flip this on (or back off) for yourself —
+	// an unauthenticated caller can't touch it either direction.
+	if (!isAuthed(req))
+	{
+		sendResponse(sock, 401, "Unauthorized", "application/json",
+		             "{\"error\":\"authentication required\"}");
+		return;
+	}
+	RequestsHandler* handler = _handler.load(std::memory_order_acquire);
+	if (!handler)
+	{
+		sendResponse(sock, 503, "Service Unavailable", "application/json",
+		             "{\"error\":\"registrar not ready\"}");
+		return;
+	}
+	std::string val = getFormParam(req.body, "enabled");
+	bool enabled = (val == "1" || val == "true");
+	handler->setAdminHttpLockEnabled(enabled);
+	if (enabled)
+	{
+		// Same reasoning as sendApiAdminSetPin's grace-window grant: the very next
+		// accept-loop tick (up to ~250ms) will start honoring the lock, and without
+		// this the operator who just turned hardening ON would be the first person
+		// locked out by it, mid-session, before they can even confirm it worked.
+		handler->grantAdminHttpGraceWindow();
+	}
+	sendResponse(sock, 200, "OK", "application/json",
+	             std::string("{\"status\":\"ok\",\"httpLockEnabled\":") + (enabled ? "true" : "false") + "}");
 }
 
 bool HttpServer::streamBody(int sock, const char* prefix, size_t prefixLen,
