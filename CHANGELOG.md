@@ -167,14 +167,14 @@ capture (a switched LAN hides the phone↔device unicast from a normal pcap).
 ### Fixed
 - **SIP Engine Defects**: Resolved 27 concurrency, locking, memory, and code quality issues identified in the SIP Engine defects sweep (commits `30691f9` and `21175ce`).
   - **Memory Safety**: Implement carry buffer for odd-length PCM16 reads to eliminate full-scale white noise on handset (Issue #2).
-  - **Thread-Safety**: Guard `_rxTaskHandle` and `_activeParticipantId` under `_mutex` in `ThreeCxAnchorClient.cpp` (Issue #22).
-  - **Concurrency**: Lock `_postClient` lifecycle operations with `_postMutex` in `ThreeCxAnchorClient.cpp` (Issue #23).
-  - **Deadlock Mitigation**: Use `try_lock` in `vTaskDelete` cleanup loop in `ThreeCxAnchorClient.cpp` to prevent deadlocks (Issue #26).
+  - **Thread-Safety**: Guard `_rxTaskHandle` and `_activeParticipantId` under `_mutex` in `TelephonyAnchorClient.cpp` (Issue #22).
+  - **Concurrency**: Lock `_postClient` lifecycle operations with `_postMutex` in `TelephonyAnchorClient.cpp` (Issue #23).
+  - **Deadlock Mitigation**: Use `try_lock` in `vTaskDelete` cleanup loop in `TelephonyAnchorClient.cpp` to prevent deadlocks (Issue #26).
   - **RTP & Media**: Replace open-coded mu-law encode loop with a symmetric `RtpSender::ulawEncodeBuffer` helper in `MediaBridge.cpp` (Issue #27).
   - **Deadlock Prevention**: Refactor `dropCall` thread spawning outside lock in `LoopbackAnchorClient.cpp` to prevent Registrar deadlock (Issue #28).
   - **Resource Management**: Guard ensureToken's media-streams-active check under `_mutex` (Issue #13).
   - **WS Reconnection**: Fix WS Auth header refresh to use updated tokens instead of re-sending dead boot token (Issue #14).
-  - **JSON Parsing**: Extract `readJsonStringField` helper to deduplicate JSON parsing in `ThreeCxAnchorClient.cpp` (Issue #16).
+  - **JSON Parsing**: Extract `readJsonStringField` helper to deduplicate JSON parsing in `TelephonyAnchorClient.cpp` (Issue #16).
 
 ## v1.2.0 - 2026-06-04
 

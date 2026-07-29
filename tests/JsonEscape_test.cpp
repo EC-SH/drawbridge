@@ -1,5 +1,5 @@
 // JsonEscape_test.cpp — coverage for the header-only RFC 8259 string-content
-// escaper (src/Helpers/JsonEscape.hpp), used at the 3CX anchor boundary to escape
+// escaper (src/Helpers/JsonEscape.hpp), used at the Telephony anchor boundary to escape
 // a caller-supplied makecall destination before it is concatenated into the JSON
 // control-plane POST body (issue #56). The function returns ESCAPED CONTENT (no
 // surrounding quotes). Pure/host-compilable, no deps.

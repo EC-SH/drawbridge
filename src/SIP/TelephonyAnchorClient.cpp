@@ -1,68 +1,68 @@
-#include "ThreeCxAnchorClient.hpp"
+#include "TelephonyAnchorClient.hpp"
 
 #if !defined(ESP_PLATFORM) && !defined(ESP32)
 
 // ── Host stubs: compile-compatible no-ops for host tests ──────────────────
-ThreeCxAnchorClient::ThreeCxAnchorClient() = default;
-ThreeCxAnchorClient::~ThreeCxAnchorClient() = default;
+TelephonyAnchorClient::TelephonyAnchorClient() = default;
+TelephonyAnchorClient::~TelephonyAnchorClient() = default;
 
-bool ThreeCxAnchorClient::init(const std::string&, const std::string&, const std::string&, const std::string&)
+bool TelephonyAnchorClient::init(const std::string&, const std::string&, const std::string&, const std::string&)
 {
 	return false;
 }
 
-bool ThreeCxAnchorClient::start()
+bool TelephonyAnchorClient::start()
 {
 	return false;
 }
 
-void ThreeCxAnchorClient::stop()
+void TelephonyAnchorClient::stop()
 {
 }
 
-bool ThreeCxAnchorClient::isConnected() const
-{
-	return false;
-}
-
-bool ThreeCxAnchorClient::isStreaming() const
+bool TelephonyAnchorClient::isConnected() const
 {
 	return false;
 }
 
-bool ThreeCxAnchorClient::makeCall(const std::string&, std::string*)
+bool TelephonyAnchorClient::isStreaming() const
 {
 	return false;
 }
 
-bool ThreeCxAnchorClient::answerCall(const std::string&)
+bool TelephonyAnchorClient::makeCall(const std::string&, std::string*)
 {
 	return false;
 }
 
-bool ThreeCxAnchorClient::dropCall(const std::string&)
+bool TelephonyAnchorClient::answerCall(const std::string&)
 {
 	return false;
 }
 
-void ThreeCxAnchorClient::setEventCallback(EventCallback)
-{
-}
-
-bool ThreeCxAnchorClient::writeAudio(const std::string&, const int16_t*, size_t)
+bool TelephonyAnchorClient::dropCall(const std::string&)
 {
 	return false;
 }
 
-void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback)
+void TelephonyAnchorClient::setEventCallback(EventCallback)
 {
 }
 
-void ThreeCxAnchorClient::tick()
+bool TelephonyAnchorClient::writeAudio(const std::string&, const int16_t*, size_t)
+{
+	return false;
+}
+
+void TelephonyAnchorClient::registerAudioRxCallback(AudioRxCallback)
 {
 }
 
-void ThreeCxAnchorClient::setRewarmIntervalSec(uint32_t)
+void TelephonyAnchorClient::tick()
+{
+}
+
+void TelephonyAnchorClient::setRewarmIntervalSec(uint32_t)
 {
 }
 
@@ -82,10 +82,10 @@ void ThreeCxAnchorClient::setRewarmIntervalSec(uint32_t)
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
-#include "ThreeCxAnchorLogic.hpp"   // host-tested entity-path tokenizer + URL builders (issue #49)
+#include "TelephonyAnchorLogic.hpp"   // host-tested entity-path tokenizer + URL builders (issue #49)
 #include "PsramTask.hpp"            // #100: PSRAM-backed task stacks (off the scarce internal-RAM heap)
 
-static const char* TAG = "ThreeCxAnchor";
+static const char* TAG = "TelephonyAnchor";
 
 // RAII guard: cJSON_Delete on scope exit. Shared by the WS event parser and the
 // live-state reconcile/device GET helpers so every parse path frees on every return.
@@ -97,14 +97,14 @@ struct CJsonDeleter
 };
 } // namespace
 
-// 3CX Call Control WS event_type is a NUMERIC enum, not a string. From the 3CX
+// Telephony Call Control WS event_type is a NUMERIC enum, not a string. From the Telephony
 // call-control-examples (server/src/types.ts):
 //   enum EventType { Upset, Remove, DTMFstring, PromptPlaybackFinished }
 // TypeScript auto-numbers these 0..3. The earlier parser compared event_type to
 // the strings "Upset"/"Remove"/"DTMFstring", but cJSON gives a number there
 // (valuestring == NULL), so every event was silently dropped — the device never
 // saw a call answer, so it never sent 200 OK / started media / dropped the leg.
-enum ThreeCxEventType {
+enum TelephonyEventType {
 	TCX_EV_UPSET       = 0,
 	TCX_EV_REMOVE      = 1,
 	TCX_EV_DTMF        = 2,
@@ -113,7 +113,7 @@ enum ThreeCxEventType {
 
 // Fallback token lifetime when the JWT can't be decoded: 50 minutes. This is
 // deliberately the JWT's real ~1h validity minus margin, NOT the OAuth
-// expires_in (3CX reports 60s there, which is wrong and would cause a refresh
+// expires_in (Telephony reports 60s there, which is wrong and would cause a refresh
 // storm that kills the active media streams).
 static constexpr int64_t kTokenFallbackLifetimeUs = 50LL * 60 * 1000000;
 
@@ -165,9 +165,9 @@ static int64_t decodeJwtLifetimeUs(const std::string& jwt)
 	return lifetimeUs;
 }
 
-ThreeCxAnchorClient::ThreeCxAnchorClient() = default;
+TelephonyAnchorClient::TelephonyAnchorClient() = default;
 
-ThreeCxAnchorClient::~ThreeCxAnchorClient()
+TelephonyAnchorClient::~TelephonyAnchorClient()
 {
 	shutdownImpl();   // non-virtual: never dispatch a virtual call from a destructor
 	// #100: free each slot's done-sem (a raw FreeRTOS handle — CallSlot's dtor won't reclaim it).
@@ -181,7 +181,7 @@ ThreeCxAnchorClient::~ThreeCxAnchorClient()
 	}
 }
 
-bool ThreeCxAnchorClient::init(const std::string& baseUrl,
+bool TelephonyAnchorClient::init(const std::string& baseUrl,
                                const std::string& clientId,
                                const std::string& clientSecret,
                                const std::string& sourceDn)
@@ -194,7 +194,7 @@ bool ThreeCxAnchorClient::init(const std::string& baseUrl,
 	return true;
 }
 
-bool ThreeCxAnchorClient::start()
+bool TelephonyAnchorClient::start()
 {
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
@@ -238,7 +238,7 @@ bool ThreeCxAnchorClient::start()
 	// 4. #100: cold-prime EVERY call slot's POST TLS session (keep-alive) in the background so a
 	// cold-start concurrent burst RESUMES each per-call POST open instead of paying the S3's ~1s
 	// software ECDHE. One-shot, off this task. (GET stays cold per call — see prewarmAllSlots.)
-	if (xTaskCreateWithCaps(&ThreeCxAnchorClient::prewarmTaskTrampoline, "3cx_prewarm", 6144, this, 4, nullptr, PD_TASK_STACK_CAPS) != pdPASS)
+	if (xTaskCreateWithCaps(&TelephonyAnchorClient::prewarmTaskTrampoline, "3cx_prewarm", 6144, this, 4, nullptr, PD_TASK_STACK_CAPS) != pdPASS)
 	{
 		ESP_LOGW(TAG, "start: failed to spawn slot pre-warm worker (first concurrent burst pays cold handshakes)");
 	}
@@ -246,12 +246,12 @@ bool ThreeCxAnchorClient::start()
 	return true;
 }
 
-void ThreeCxAnchorClient::stop()
+void TelephonyAnchorClient::stop()
 {
 	shutdownImpl();
 }
 
-void ThreeCxAnchorClient::shutdownImpl()
+void TelephonyAnchorClient::shutdownImpl()
 {
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
@@ -288,12 +288,12 @@ void ThreeCxAnchorClient::shutdownImpl()
 	_audioCb = nullptr;
 }
 
-bool ThreeCxAnchorClient::isConnected() const
+bool TelephonyAnchorClient::isConnected() const
 {
 	return _connected.load(std::memory_order_acquire);
 }
 
-bool ThreeCxAnchorClient::isStreaming() const
+bool TelephonyAnchorClient::isStreaming() const
 {
 	// "Streaming" = ANY call slot's POST stream is live (#100), NOT merely that a persistent warm
 	// handle exists (kept alive between calls for TLS resumption). postLive is atomic and the slot
@@ -305,7 +305,7 @@ bool ThreeCxAnchorClient::isStreaming() const
 	return false;
 }
 
-bool ThreeCxAnchorClient::makeCall(const std::string& destination, std::string* ownLegOut)
+bool TelephonyAnchorClient::makeCall(const std::string& destination, std::string* ownLegOut)
 {
 	if (ownLegOut) ownLegOut->clear();
 	{
@@ -318,7 +318,7 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination, std::string* 
 		if (!_running.load(std::memory_order_acquire) ||
 		    !_connected.load(std::memory_order_acquire))
 		{
-			ESP_LOGW(TAG, "Cannot make call: anchor not running/connected to 3CX");
+			ESP_LOGW(TAG, "Cannot make call: anchor not running/connected to Telephony");
 			return false;
 		}
 	}
@@ -345,7 +345,7 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination, std::string* 
 		deviceId = _deviceId;
 	}
 
-	// Prefer the device-specific makecall endpoint (the recommended 3CX transport) over the legacy
+	// Prefer the device-specific makecall endpoint (the recommended Telephony transport) over the legacy
 	// /callcontrol/{dn}/makecall. Resolve the device_id lazily — makeCall runs on the 3cx_makecall
 	// worker, so the blocking GET is fine here.
 	if (deviceId.empty() && resolveDevice())
@@ -370,10 +370,10 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination, std::string* 
 	// #100: the per-call slot is keyed by the participant id, which we only learn from the makecall
 	// response (result.id). So we mark "outbound in flight" on the slot AFTER resolveOutboundLeg
 	// below (keyed by ownLeg), not before the POST. resolveOutboundLeg parses the POST response
-	// synchronously, so the slot exists before 3CX's WS upset for it arrives.
+	// synchronously, so the slot exists before Telephony's WS upset for it arrives.
 
 	// Capture the makecall RESPONSE BODY (not just the status) so we can read result.id — the
-	// initiator's OWN leg on our DN, which is the leg 3CX authorizes us to stream/drop. (httpPostBody
+	// initiator's OWN leg on our DN, which is the leg Telephony authorizes us to stream/drop. (httpPostBody
 	// uses a fresh client; performCtrl's persistent handle does not expose the body.)
 	int status = 0;
 	std::string respBody;
@@ -412,7 +412,7 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination, std::string* 
 		// Select the leg WE control: makecall result.id, else the direct_control leg in the live
 		// participant list (audit #76 — NOT a destination digit-suffix match, which selects the
 		// uncontrollable far leg and re-triggers the #40 403). We deliberately do NOT adopt the
-		// participant id 3CX later surfaces over the WS — that can be the far leg, on which a
+		// participant id Telephony later surfaces over the WS — that can be the far leg, on which a
 		// specific-id GET/drop returns 403 (issue #40). Drop/media key off this owned id.
 		std::string ownLeg = resolveOutboundLeg(respBody, destination);
 		if (ownLegOut) *ownLegOut = ownLeg;   // #100: let the engine bind this call's session now
@@ -451,7 +451,7 @@ bool ThreeCxAnchorClient::makeCall(const std::string& destination, std::string* 
 	return success;
 }
 
-bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
+bool TelephonyAnchorClient::dropCall(const std::string& participantId)
 {
 	std::string baseUrl, sourceDn;
 	{
@@ -465,7 +465,7 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 	}
 
 	// Resolve which leg to drop. The caller passes the session's own participant id; only the
-	// rare registration-miss path (no id ever correlated) falls back to asking 3CX which
+	// rare registration-miss path (no id ever correlated) falls back to asking Telephony which
 	// participant is live on the DN (single-leg best effort — see reconcileParticipantId).
 	std::string partId = participantId;
 	if (partId.empty())
@@ -493,11 +493,11 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 	std::string dropUrl = baseUrl + "/callcontrol/" + sourceDn + "/participants/" + partId + "/drop";
 
 	int status = 0;
-	// The 3CX participant-action endpoint requires an application/json body — the
+	// The Telephony participant-action endpoint requires an application/json body — the
 	// reference client/server posts "{}" with Content-Type application/json (see the
 	// call-control-examples server controlParticipant()). An empty body with no
 	// Content-Type (the old call) is rejected, so the drop silently never fired and
-	// the PSTN leg lingered until 3CX's own timeout. makeCall already does this right.
+	// the PSTN leg lingered until Telephony's own timeout. makeCall already does this right.
 	bool success = performCtrl(dropUrl, "application/json", "{}", &status);
 	if (success)
 	{
@@ -510,7 +510,7 @@ bool ThreeCxAnchorClient::dropCall(const std::string& participantId)
 	return success;
 }
 
-bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
+bool TelephonyAnchorClient::answerCall(const std::string& participantId)
 {
 	std::string partId = participantId, baseUrl, sourceDn;
 	{
@@ -529,7 +529,7 @@ bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
 
 	// Answer the inbound participant the route point is offering us: POST
 	// /callcontrol/{dn}/participants/{id}/answer on the persistent control connection.
-	// 3CX then connects the PSTN leg, flips the participant to Connected, and the
+	// Telephony then connects the PSTN leg, flips the participant to Connected, and the
 	// existing Upset→Connected path opens the PCM streams (startMediaStreams).
 	//
 	// NOTE: a route point configured as an *External Call Flow* app may instead expect
@@ -554,7 +554,7 @@ bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
 
 	// Media is normally already up: the inbound classifier pre-warms BOTH streams during the
 	// local ring so audio cuts through at pickup. This is the FALLBACK — open them now only if
-	// that pre-open hasn't taken (e.g. 3CX rejected a pre-answer stream and only accepts it now,
+	// that pre-open hasn't taken (e.g. Telephony rejected a pre-answer stream and only accepts it now,
 	// post-/answer). The startMediaStreams re-check makes a concurrent pre-warm safe. Runs on
 	// the 3cx_answer worker (12 KB stack, TLS-capable).
 	// Open the streams only if THIS slot isn't already live (the inbound classifier pre-warms both
@@ -574,13 +574,13 @@ bool ThreeCxAnchorClient::answerCall(const std::string& participantId)
 	return true;
 }
 
-void ThreeCxAnchorClient::setEventCallback(EventCallback cb)
+void TelephonyAnchorClient::setEventCallback(EventCallback cb)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
 	_eventCb = cb;
 }
 
-bool ThreeCxAnchorClient::writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count)
+bool TelephonyAnchorClient::writeAudio(const std::string& participantId, const int16_t* pcmSamples, size_t count)
 {
 	if (pcmSamples == nullptr || count == 0)
 	{
@@ -613,7 +613,7 @@ bool ThreeCxAnchorClient::writeAudio(const std::string& participantId, const int
 	// does NOT add the chunk framing it promised (reads are auto-de-chunked,
 	// writes are not; verified in esp_http_client.c:1887). So we frame each write
 	// ourselves per RFC 9112 §7.1:   <size-hex>\r\n <payload> \r\n
-	// Without this, 3CX's HTTP parser reads the first PCM bytes as a chunk-size
+	// Without this, Telephony's HTTP parser reads the first PCM bytes as a chunk-size
 	// line, gets garbage, and silently discards the stream — the far end hears
 	// nothing while every write reports success. One buffer + one write keeps a
 	// whole chunk per TCP segment (helps the spec's "minimize jitter" note). The
@@ -645,14 +645,14 @@ bool ThreeCxAnchorClient::writeAudio(const std::string& participantId, const int
 	return (written == total);
 }
 
-void ThreeCxAnchorClient::registerAudioRxCallback(AudioRxCallback cb)
+void TelephonyAnchorClient::registerAudioRxCallback(AudioRxCallback cb)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
 	_audioCb = cb;
 }
 
 // ── #100: per-call slot helpers (caller holds _mutex) ───────────────────────────
-ThreeCxAnchorClient::CallSlot* ThreeCxAnchorClient::slotForLocked(const std::string& participantId)
+TelephonyAnchorClient::CallSlot* TelephonyAnchorClient::slotForLocked(const std::string& participantId)
 {
 	if (participantId.empty()) return nullptr;
 	for (auto& s : _calls)
@@ -662,7 +662,7 @@ ThreeCxAnchorClient::CallSlot* ThreeCxAnchorClient::slotForLocked(const std::str
 	return nullptr;
 }
 
-ThreeCxAnchorClient::CallSlot* ThreeCxAnchorClient::allocSlotLocked(const std::string& participantId)
+TelephonyAnchorClient::CallSlot* TelephonyAnchorClient::allocSlotLocked(const std::string& participantId)
 {
 	if (participantId.empty()) return nullptr;
 	// Re-entrant upset for an already-tracked participant: reuse its slot.
@@ -681,7 +681,7 @@ ThreeCxAnchorClient::CallSlot* ThreeCxAnchorClient::allocSlotLocked(const std::s
 	return nullptr;   // all POCKETDIAL_MAX_ANCHOR_CALLS slots busy
 }
 
-void ThreeCxAnchorClient::freeSlotLocked(CallSlot& slot)
+void TelephonyAnchorClient::freeSlotLocked(CallSlot& slot)
 {
 	slot.participantId.clear();
 	slot.inboundSignaledPartId.clear();
@@ -695,7 +695,7 @@ void ThreeCxAnchorClient::freeSlotLocked(CallSlot& slot)
 
 // ── Private Helper Functions ───────────────────────────────────────────────
 
-bool ThreeCxAnchorClient::fetchToken()
+bool TelephonyAnchorClient::fetchToken()
 {
 	std::string tokenUrl;
 	std::string clientId, clientSecret;
@@ -769,7 +769,7 @@ bool ThreeCxAnchorClient::fetchToken()
 	return success;
 }
 
-bool ThreeCxAnchorClient::tokenExpiringSoon() const
+bool TelephonyAnchorClient::tokenExpiringSoon() const
 {
 	if (_tokenObtainedUs == 0 || _tokenLifetimeUs == 0) return true; // no token yet
 	// Refresh once we're within 5 minutes of the JWT's declared expiry.
@@ -778,14 +778,14 @@ bool ThreeCxAnchorClient::tokenExpiringSoon() const
 	return age >= (_tokenLifetimeUs - kRefreshMarginUs);
 }
 
-bool ThreeCxAnchorClient::ensureToken()
+bool TelephonyAnchorClient::ensureToken()
 {
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
 		if (!tokenExpiringSoon()) return true;
 	}
 
-	// Never re-issue a token while media streams are live: 3CX invalidates the
+	// Never re-issue a token while media streams are live: Telephony invalidates the
 	// previous token the instant a new one is granted, which would tear down the
 	// chunked GET/POST streams holding the old token mid-call. Refresh only
 	// happens between calls (makeCall is invoked before any stream is opened).
@@ -810,7 +810,7 @@ bool ThreeCxAnchorClient::ensureToken()
 	return fetchToken();
 }
 
-bool ThreeCxAnchorClient::connectWs()
+bool TelephonyAnchorClient::connectWs()
 {
 	// Convert base https:// URL to wss:// for call control websocket
 	std::string wsUrl;
@@ -838,7 +838,7 @@ bool ThreeCxAnchorClient::connectWs()
 	// is what feeds the handshake request. esp_websocket_client_set_headers() does
 	// NOT work for handshake auth — it early-returns ESP_ERR_INVALID_ARG unless the
 	// client is already CONNECTED, so calling it before start() silently set no
-	// header and 3CX rejected the unauthenticated upgrade with HTTP 401. Each header
+	// header and Telephony rejected the unauthenticated upgrade with HTTP 401. Each header
 	// line must be CRLF-terminated. init() strdup's this string, so the local is safe.
 	std::string authHeader = "Authorization: Bearer " + token + "\r\n";
 
@@ -868,7 +868,7 @@ bool ThreeCxAnchorClient::connectWs()
 	}
 
 	esp_err_t err = esp_websocket_register_events(wsClient, WEBSOCKET_EVENT_ANY,
-	                                               &ThreeCxAnchorClient::wsEventTrampoline, this);
+	                                               &TelephonyAnchorClient::wsEventTrampoline, this);
 	if (err != ESP_OK)
 	{
 		esp_websocket_client_destroy(wsClient);
@@ -910,7 +910,7 @@ bool ThreeCxAnchorClient::connectWs()
 // this same path, so a burst of N concurrent calls each resolving their own leg's status now pays
 // N sequential ~100-150ms resumed opens instead of N concurrent ~800ms-1s cold ECDHEs fighting the
 // S3's single crypto-bound core for CPU.
-bool ThreeCxAnchorClient::httpGetBody(const std::string& url, std::string& bodyOut, int* statusOut)
+bool TelephonyAnchorClient::httpGetBody(const std::string& url, std::string& bodyOut, int* statusOut)
 {
 	if (statusOut) *statusOut = -1;
 	bodyOut.clear();
@@ -995,7 +995,7 @@ bool ThreeCxAnchorClient::httpGetBody(const std::string& url, std::string& bodyO
 // makecall, whose result.id we need to read. Uses a fresh client (the persistent _ctrlClient that
 // performCtrl drives via esp_http_client_perform does not surface the body). close()+cleanup() on
 // every path; *statusOut carries the HTTP status (or -1).
-bool ThreeCxAnchorClient::httpPostBody(const std::string& url, const char* contentType, const std::string& body, std::string& respBody, int* statusOut)
+bool TelephonyAnchorClient::httpPostBody(const std::string& url, const char* contentType, const std::string& body, std::string& respBody, int* statusOut)
 {
 	if (statusOut) *statusOut = -1;
 	respBody.clear();
@@ -1062,7 +1062,7 @@ bool ThreeCxAnchorClient::httpPostBody(const std::string& url, const char* conte
 
 // The first participant id currently on our DN, or "" if none / on any error. Drives the drop
 // fallback when no WS upset ever correlated an id (dropCall) and the wedge watchdog (tick worker).
-std::string ThreeCxAnchorClient::reconcileParticipantId()
+std::string TelephonyAnchorClient::reconcileParticipantId()
 {
 	std::string url;
 	{
@@ -1115,9 +1115,9 @@ std::string ThreeCxAnchorClient::reconcileParticipantId()
 }
 
 // Status of one specific leg, read from the participant LIST (GET /callcontrol/{dn}/participants
-// then find id). This is the controllable-scope read 3CX honours, unlike GET .../participants/{id}
+// then find id). This is the controllable-scope read Telephony honours, unlike GET .../participants/{id}
 // which 403s for a leg this DN does not directly control (issue #40). "" if the leg isn't listed.
-std::string ThreeCxAnchorClient::getLegStatus(const std::string& legId)
+std::string TelephonyAnchorClient::getLegStatus(const std::string& legId)
 {
 	if (legId.empty()) return "";
 	std::string url;
@@ -1155,7 +1155,7 @@ std::string ThreeCxAnchorClient::getLegStatus(const std::string& legId)
 	return "";   // leg not on the DN (gone, or an id we don't own)
 }
 
-std::string ThreeCxAnchorClient::getParticipantCaller(const std::string& legId)
+std::string TelephonyAnchorClient::getParticipantCaller(const std::string& legId)
 {
 	// Best-effort caller display for an inbound leg, from the live participant list: the
 	// number (party_caller_id) first — that is literally the caller ID — then a CNAM
@@ -1201,20 +1201,20 @@ static std::string legIdOf(cJSON* elem)
 	return "";
 }
 
-// Resolve the leg WE control for an outbound makecall. This is the only id 3CX lets us
+// Resolve the leg WE control for an outbound makecall. This is the only id Telephony lets us
 // stream/drop — a specific-id GET/drop on a leg we don't control returns 403 (issue #40).
 //   1) result.id from the device-makecall response (the initiator's OWN leg on our DN). The
 //      production path; present today.
 //   2) Legacy fallback (no result.id — bare /makecall, or a deregistered source DN): pick the
 //      CONTROLLABLE leg from the live participant list, i.e. one with direct_control == true
-//      (3CX only acts on legs we directly control — see HTTP API §7.4). Among controllable
+//      (Telephony only acts on legs we directly control — see HTTP API §7.4). Among controllable
 //      legs, prefer the one whose party_dn matches _sourceDn (our own initiator leg).
 //
 // We deliberately do NOT fall back to a destination digit-suffix match (audit #76): that keys
 // on the callee/FAR leg — exactly the leg class that 403'd in #40 — so a legacy-path guess could
 // re-trigger the wrong-leg 403. If no controllable leg is found we FAIL CLOSED (return "") and
 // let the reconcile/watchdog teardown handle it, rather than drop a guessed id.
-std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallRespBody, const std::string& /*destination*/)
+std::string TelephonyAnchorClient::resolveOutboundLeg(const std::string& makecallRespBody, const std::string& /*destination*/)
 {
 	// 1) result.id from the makecall response.
 	if (!makecallRespBody.empty())
@@ -1263,7 +1263,7 @@ std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallR
 	{
 		if (!cJSON_IsObject(elem)) continue;
 		cJSON* dc = cJSON_GetObjectItem(elem, "direct_control");
-		// Only consider legs 3CX authorizes us to control. A missing field is treated as
+		// Only consider legs Telephony authorizes us to control. A missing field is treated as
 		// NOT controllable — fail closed rather than guess (audit #76).
 		if (!cJSON_IsBool(dc) || !cJSON_IsTrue(dc)) continue;
 
@@ -1298,10 +1298,10 @@ std::string ThreeCxAnchorClient::resolveOutboundLeg(const std::string& makecallR
 	return firstControllable;   // controllable leg (or "" → fail closed)
 }
 
-// Parse a 3CX /devices array, returning the best device_id: prefer a device that advertises a
+// Parse a Telephony /devices array, returning the best device_id: prefer a device that advertises a
 // user_agent (a real registered endpoint) over a bare slot; otherwise the first device_id present.
 // "" if none / on parse error.
-std::string ThreeCxAnchorClient::pickDeviceId(const std::string& body)
+std::string TelephonyAnchorClient::pickDeviceId(const std::string& body)
 {
 	cJSON* root = cJSON_Parse(body.c_str());
 	if (!root) return "";
@@ -1328,7 +1328,7 @@ std::string ThreeCxAnchorClient::pickDeviceId(const std::string& body)
 }
 
 // GET /callcontrol/{dn}/devices → pickDeviceId → cache in _deviceId. Returns true on success.
-bool ThreeCxAnchorClient::resolveDevice()
+bool TelephonyAnchorClient::resolveDevice()
 {
 	std::string url;
 	{
@@ -1359,7 +1359,7 @@ bool ThreeCxAnchorClient::resolveDevice()
 	return true;
 }
 
-void ThreeCxAnchorClient::setRewarmIntervalSec(uint32_t sec)
+void TelephonyAnchorClient::setRewarmIntervalSec(uint32_t sec)
 {
 	// #107: live-applicable — the next idle tick uses the new cadence (0 disables). Reset the
 	// stamp so a freshly-set interval is measured from now, not from the previous schedule.
@@ -1368,7 +1368,7 @@ void ThreeCxAnchorClient::setRewarmIntervalSec(uint32_t sec)
 	ESP_LOGI(TAG, "TLS re-warm interval set to %u s (%s)", sec, sec ? "enabled" : "disabled");
 }
 
-void ThreeCxAnchorClient::tick()
+void TelephonyAnchorClient::tick()
 {
 	// Runs inline on the SIP task at ≤1 Hz — MUST be non-blocking: only atomic reads, one timer
 	// read, and (rarely) a worker spawn. No logging or allocation on the common path.
@@ -1381,7 +1381,7 @@ void ThreeCxAnchorClient::tick()
 	    !_restartInFlight.load(std::memory_order_acquire))
 	{
 		_restartInFlight.store(true, std::memory_order_release);
-		if (xTaskCreate(&ThreeCxAnchorClient::restartTaskTrampoline, "3cx_restart", 6144, this, 5, nullptr) != pdPASS)
+		if (xTaskCreate(&TelephonyAnchorClient::restartTaskTrampoline, "3cx_restart", 6144, this, 5, nullptr) != pdPASS)
 		{
 			ESP_LOGE(TAG, "tick: failed to spawn anchor-restart worker");
 			_restartInFlight.store(false, std::memory_order_release);
@@ -1425,7 +1425,7 @@ void ThreeCxAnchorClient::tick()
 			// Stamp BEFORE the spawn so the next-due math is correct even if the worker is slow.
 			_lastRewarmUs.store(now, std::memory_order_release);
 			_rewarmInFlight.store(true, std::memory_order_release);
-			if (xTaskCreate(&ThreeCxAnchorClient::rewarmTaskTrampoline, "3cx_rewarm", 6144, this, 5, nullptr) != pdPASS)
+			if (xTaskCreate(&TelephonyAnchorClient::rewarmTaskTrampoline, "3cx_rewarm", 6144, this, 5, nullptr) != pdPASS)
 			{
 				ESP_LOGE(TAG, "tick: failed to spawn TLS re-warm worker");
 				_rewarmInFlight.store(false, std::memory_order_release);
@@ -1471,7 +1471,7 @@ void ThreeCxAnchorClient::tick()
 
 	// Claim the one-shot slot BEFORE the spawn so a second tick can't double-spawn the worker.
 	_reconcileInFlight.store(true, std::memory_order_release);
-	if (xTaskCreate(&ThreeCxAnchorClient::reconcileTaskTrampoline, "3cx_reconcile", 6144, this, 5, nullptr) != pdPASS)
+	if (xTaskCreate(&TelephonyAnchorClient::reconcileTaskTrampoline, "3cx_reconcile", 6144, this, 5, nullptr) != pdPASS)
 	{
 		// Rare error path (not the hot path): release the slot, else the watchdog wedges forever.
 		ESP_LOGE(TAG, "tick: failed to spawn reconcile worker");
@@ -1479,12 +1479,12 @@ void ThreeCxAnchorClient::tick()
 	}
 }
 
-// One-shot worker: if _outboundActive has been stuck past the grace window, ask 3CX what is
+// One-shot worker: if _outboundActive has been stuck past the grace window, ask Telephony what is
 // actually on the DN and clear the flag ONLY on definitive evidence the DN is empty. Off-SIP so
 // the blocking GET is safe here.
-void ThreeCxAnchorClient::reconcileTaskTrampoline(void* arg)
+void TelephonyAnchorClient::reconcileTaskTrampoline(void* arg)
 {
-	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	auto* self = static_cast<TelephonyAnchorClient*>(arg);
 
 	std::string url;
 	{
@@ -1556,19 +1556,19 @@ void ThreeCxAnchorClient::reconcileTaskTrampoline(void* arg)
 }
 
 // #107: one-shot worker spawned by tick() when the anchor is idle. Reopens the persistent
-// POST handle so its cached TLS session RESUMES (abbreviated handshake) and 3CX issues a
+// POST handle so its cached TLS session RESUMES (abbreviated handshake) and Telephony issues a
 // fresh ticket — extending validity so the next real call's /stream open also resumes. Runs
 // off the SIP task because the open/close blocks on TLS I/O.
-void ThreeCxAnchorClient::rewarmTaskTrampoline(void* arg)
+void TelephonyAnchorClient::rewarmTaskTrampoline(void* arg)
 {
-	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	auto* self = static_cast<TelephonyAnchorClient*>(arg);
 	self->rewarmPostSession();
 	// Single exit: release the one-shot slot so tick() can re-arm, then self-delete.
 	self->_rewarmInFlight.store(false, std::memory_order_release);
 	vTaskDelete(nullptr);
 }
 
-void ThreeCxAnchorClient::rewarmPostSession()
+void TelephonyAnchorClient::rewarmPostSession()
 {
 	std::string baseUrl, sourceDn, token;
 	{
@@ -1652,14 +1652,14 @@ void ThreeCxAnchorClient::rewarmPostSession()
 // need the TLS HANDSHAKE to complete (the HTTP status is irrelevant) — afterwards CLOSE but KEEP each
 // handle so its cached session resumes on the real call. Sequential + off the SIP task (16 cold
 // handshakes ≈ ~16 s at idle); spawned once from start().
-void ThreeCxAnchorClient::prewarmTaskTrampoline(void* arg)
+void TelephonyAnchorClient::prewarmTaskTrampoline(void* arg)
 {
-	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	auto* self = static_cast<TelephonyAnchorClient*>(arg);
 	self->prewarmAllSlots();
 	vTaskDeleteWithCaps(nullptr);
 }
 
-void ThreeCxAnchorClient::prewarmAllSlots()
+void TelephonyAnchorClient::prewarmAllSlots()
 {
 	std::string baseUrl, sourceDn, token;
 	{
@@ -1721,9 +1721,9 @@ void ThreeCxAnchorClient::prewarmAllSlots()
 // poisoned), but a full stop()/start() drops the anchor's live socket footprint to
 // zero and rebuilds it clean, so the pool recovers headroom. Runs off the SIP task
 // because stop()/start() block on TLS teardown/handshake.
-void ThreeCxAnchorClient::restartTaskTrampoline(void* arg)
+void TelephonyAnchorClient::restartTaskTrampoline(void* arg)
 {
-	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	auto* self = static_cast<TelephonyAnchorClient*>(arg);
 
 	ESP_LOGW(TAG, "anchor restart: reclaiming socket pool after %d leaked GET handle(s)",
 	         self->_leakedGetClients.load(std::memory_order_relaxed));
@@ -1768,7 +1768,7 @@ void ThreeCxAnchorClient::restartTaskTrampoline(void* arg)
 	vTaskDelete(nullptr);
 }
 
-esp_http_client_handle_t ThreeCxAnchorClient::makeAuthedClient(const std::string& url, esp_http_client_method_t method, int txBufSize, const std::string& token)
+esp_http_client_handle_t TelephonyAnchorClient::makeAuthedClient(const std::string& url, esp_http_client_method_t method, int txBufSize, const std::string& token)
 {
 	esp_http_client_config_t config = {};
 	config.url = url.c_str();
@@ -1804,7 +1804,7 @@ esp_http_client_handle_t ThreeCxAnchorClient::makeAuthedClient(const std::string
 	return client;
 }
 
-bool ThreeCxAnchorClient::performAuthedRequest(esp_http_client_handle_t client, int* statusCodeOut)
+bool TelephonyAnchorClient::performAuthedRequest(esp_http_client_handle_t client, int* statusCodeOut)
 {
 	esp_err_t err = esp_http_client_perform(client);
 	int status = -1;
@@ -1828,7 +1828,7 @@ bool ThreeCxAnchorClient::performAuthedRequest(esp_http_client_handle_t client, 
 	}
 }
 
-bool ThreeCxAnchorClient::performCtrl(const std::string& url, const char* contentType, const std::string& body, int* statusCodeOut)
+bool TelephonyAnchorClient::performCtrl(const std::string& url, const char* contentType, const std::string& body, int* statusCodeOut)
 {
 	std::string token;
 	{
@@ -1890,11 +1890,11 @@ bool ThreeCxAnchorClient::performCtrl(const std::string& url, const char* conten
 	return false;
 }
 
-void ThreeCxAnchorClient::warmCtrlConnection()
+void TelephonyAnchorClient::warmCtrlConnection()
 {
 	// Establish the control-plane TLS session ahead of the first command so a
 	// makecall right after dialing doesn't pay the handshake. A POST to the DN
-	// root is a no-op command-wise (3CX answers 4xx) but completes the TLS+TCP
+	// root is a no-op command-wise (Telephony answers 4xx) but completes the TLS+TCP
 	// setup that perform() will then reuse.
 	std::string url;
 	{
@@ -1906,7 +1906,7 @@ void ThreeCxAnchorClient::warmCtrlConnection()
 	ESP_LOGI(TAG, "Control connection pre-warmed (HTTP %d)", status);
 }
 
-void ThreeCxAnchorClient::warmStatusConnection()
+void TelephonyAnchorClient::warmStatusConnection()
 {
 	// Prime the persistent status-GET session (getLegStatus/reconcileParticipantId/
 	// getParticipantCaller/resolveDevice all share it) ahead of the first real call, same
@@ -1922,7 +1922,7 @@ void ThreeCxAnchorClient::warmStatusConnection()
 	ESP_LOGI(TAG, "Status connection pre-warmed (HTTP %d)", status);
 }
 
-void ThreeCxAnchorClient::closeCtrlClient()
+void TelephonyAnchorClient::closeCtrlClient()
 {
 	std::lock_guard<std::mutex> ctrlLock(_ctrlMutex);
 	if (_ctrlClient)
@@ -1932,7 +1932,7 @@ void ThreeCxAnchorClient::closeCtrlClient()
 	}
 }
 
-void ThreeCxAnchorClient::closeStatusClient()
+void TelephonyAnchorClient::closeStatusClient()
 {
 	std::lock_guard<std::mutex> statusLock(_statusMutex);
 	if (_statusClient)
@@ -1942,7 +1942,7 @@ void ThreeCxAnchorClient::closeStatusClient()
 	}
 }
 
-void ThreeCxAnchorClient::closePostClient()
+void TelephonyAnchorClient::closePostClient()
 {
 	// Free EVERY slot's persistent warm POST handle (and any surviving GET handle). stopMediaStreams
 	// keeps the warm POST alive between calls for TLS resumption; only a full anchor teardown frees
@@ -1974,7 +1974,7 @@ void ThreeCxAnchorClient::closePostClient()
 	}
 }
 
-void ThreeCxAnchorClient::stopAllMediaStreams()
+void TelephonyAnchorClient::stopAllMediaStreams()
 {
 	// Snapshot the active participant ids under _mutex (fixed array, no heap), then stop each slot
 	// (stopMediaStreams takes _mutex itself, so we can't hold it across the calls). Used by
@@ -1994,7 +1994,7 @@ void ThreeCxAnchorClient::stopAllMediaStreams()
 	}
 }
 
-bool ThreeCxAnchorClient::readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out)
+bool TelephonyAnchorClient::readJsonStringField(esp_http_client_handle_t client, const std::string& field, std::string& out)
 {
 	std::vector<char> buffer;
 	char tempBuf[512];
@@ -2030,15 +2030,15 @@ bool ThreeCxAnchorClient::readJsonStringField(esp_http_client_handle_t client, c
 	return found;
 }
 
-void ThreeCxAnchorClient::wsEventTrampoline(void* handlerArgs, esp_event_base_t /*base*/,
+void TelephonyAnchorClient::wsEventTrampoline(void* handlerArgs, esp_event_base_t /*base*/,
                                            int32_t eventId, void* eventData)
 {
-	auto* self = static_cast<ThreeCxAnchorClient*>(handlerArgs);
+	auto* self = static_cast<TelephonyAnchorClient*>(handlerArgs);
 	self->handleWsEvent(eventId, eventData);
 }
 
 // ── #43: WS event worker pool ────────────────────────────────────────────────
-bool ThreeCxAnchorClient::startWsWorkers()
+bool TelephonyAnchorClient::startWsWorkers()
 {
 	if (_wsWorkQueue) return true;   // idempotent (restart path reuses)
 	if (!_wsWorkerDoneSem)
@@ -2059,7 +2059,7 @@ bool ThreeCxAnchorClient::startWsWorkers()
 		// TLS HTTP the WS task used to carry. Unpinned so the scheduler keeps it off the SIP core.
 		// #100: stack in PSRAM (WithCaps) — with kWsWorkers>1 for concurrent setup, N*12 KB would
 		// otherwise eat internal RAM. TLS I/O only (no flash writes) → PSRAM-safe; self-deletes WithCaps.
-		if (xTaskCreateWithCaps(&ThreeCxAnchorClient::wsWorkerTrampoline, "3cx_wsw", 12288, this, 4,
+		if (xTaskCreateWithCaps(&TelephonyAnchorClient::wsWorkerTrampoline, "3cx_wsw", 12288, this, 4,
 		                &_wsWorkerHandles[i], PD_TASK_STACK_CAPS) != pdPASS)
 		{
 			ESP_LOGE(TAG, "startWsWorkers: xTaskCreate worker %d failed (heap?)", i);
@@ -2072,7 +2072,7 @@ bool ThreeCxAnchorClient::startWsWorkers()
 	return true;
 }
 
-void ThreeCxAnchorClient::stopWsWorkers()
+void TelephonyAnchorClient::stopWsWorkers()
 {
 	if (!_wsWorkQueue) return;
 	_wsWorkersRun.store(false, std::memory_order_release);
@@ -2098,27 +2098,27 @@ void ThreeCxAnchorClient::stopWsWorkers()
 	for (int i = 0; i < kWsWorkers; ++i) _wsWorkerHandles[i] = nullptr;
 }
 
-bool ThreeCxAnchorClient::enqueueWsWork(WsWorkItem* item)
+bool TelephonyAnchorClient::enqueueWsWork(WsWorkItem* item)
 {
 	if (!item) return false;
 	if (!_wsWorkQueue || xQueueSend(_wsWorkQueue, &item, 0) != pdTRUE)
 	{
-		// Queue not ready or full — drop it (3CX repeats the upset every ~750 ms). No leak.
+		// Queue not ready or full — drop it (Telephony repeats the upset every ~750 ms). No leak.
 		delete item;
 		return false;
 	}
 	return true;
 }
 
-void ThreeCxAnchorClient::wsWorkerTrampoline(void* arg)
+void TelephonyAnchorClient::wsWorkerTrampoline(void* arg)
 {
-	auto* self = static_cast<ThreeCxAnchorClient*>(arg);
+	auto* self = static_cast<TelephonyAnchorClient*>(arg);
 	self->runWsWorker();
 	if (self->_wsWorkerDoneSem) xSemaphoreGive(self->_wsWorkerDoneSem);   // released BEFORE delete
 	vTaskDeleteWithCaps(nullptr);   // #100: created WithCaps(PSRAM) — reclaim the PSRAM stack/TCB
 }
 
-void ThreeCxAnchorClient::runWsWorker()
+void TelephonyAnchorClient::runWsWorker()
 {
 	// Capture the queue locally: stopWsWorkers() nulls the _wsWorkQueue member, but only
 	// AFTER it has joined us via the done-sem, so the handle stays valid for our lifetime.
@@ -2140,7 +2140,7 @@ void ThreeCxAnchorClient::runWsWorker()
 
 // The blocking body, lifted verbatim from the old inline handler so behaviour is unchanged —
 // only the EXECUTION CONTEXT moved off the WS event task (#43).
-void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
+void TelephonyAnchorClient::processWsWork(const WsWorkItem& w)
 {
 	if (!_running.load(std::memory_order_acquire)) return;   // bail during teardown
 
@@ -2152,7 +2152,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 
 	if (w.kind == WsWork::Remove)
 	{
-		// #100: map the removed participant to a slot. 3CX may name our own leg or (issue #40) the
+		// #100: map the removed participant to a slot. Telephony may name our own leg or (issue #40) the
 		// far leg; match by id first, else fall back to the sole active call (single-leg DN). The
 		// teardown frees the slot (idempotent via its per-slot tearingDown gate); freeSlotLocked
 		// also clears its inboundSignaledPartId so a recycled partId can re-announce next time.
@@ -2162,7 +2162,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 			CallSlot* s = slotForLocked(w.partId);
 			if (!s)
 			{
-				// Far-leg Remove: 3CX names the external party's participant id, not ours.
+				// Far-leg Remove: Telephony names the external party's participant id, not ours.
 				// Match against each slot's recorded far-leg id so N-call teardown works.
 				for (auto& c : _calls)
 					if (!c.participantId.empty() && c.farPartId == w.partId) { s = &c; break; }
@@ -2197,7 +2197,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	// (Upset) #100: RE-RESOLVE the control leg at PROCESS time. handleWsEvent resolves controlLeg at
 	// ENQUEUE time, but under a concurrent burst an early upset for a leg can be queued BEFORE
 	// makecall finishes creating that leg's slot — the enqueue-time heuristic then maps it to a
-	// DIFFERENT in-flight leg, and once the real leg goes Connected 3CX stops repeating the upset so
+	// DIFFERENT in-flight leg, and once the real leg goes Connected Telephony stops repeating the upset so
 	// the stale mapping never self-corrects and that call never bridges (the N>=4 mis-map). By
 	// process time the slots are stable: if the surfaced partId now owns a slot, IT is the control
 	// leg; otherwise keep handleWsEvent's far-leg/inbound mapping (issue #40). A slot that is
@@ -2207,7 +2207,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	// upsetPending pair (set at enqueue time in handleWsEvent). A repeat upset that lands while
 	// this worker is mid status-check does NOT spawn a second worker — it just flags upsetPending,
 	// and the tail of this loop rechecks once more before releasing the flight flag. This is what
-	// collapses "3CX repeats the upset every ~750ms" into ONE getLegStatus()/startMediaStreams()
+	// collapses "Telephony repeats the upset every ~750ms" into ONE getLegStatus()/startMediaStreams()
 	// pass instead of up to kWsWorkers concurrent cold-handshake passes for the same still-pending
 	// call, while still catching a Dialing->Connected transition that arrives mid-check (a blanket
 	// drop-the-repeat gate would silently lose that transition instead).
@@ -2224,12 +2224,12 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 
 		if (!outbound)
 		{
-			// INBOUND. A 3CX ROUTE POINT connects the PSTN leg immediately, so the very first upset is
+			// INBOUND. A Telephony ROUTE POINT connects the PSTN leg immediately, so the very first upset is
 			// already 'Connected' — we must NOT fall into the outbound "Answered" path (that bridges
 			// dead air to a phone that never rang). Announce ONCE (per-slot flag) so the engine rings
 			// the local extensions, then pre-warm BOTH media streams during ringing so audio cuts
 			// through the instant the handset answers. No audio is written until a handset bridges
-			// (MediaBridge), so 3CX just sees an idle stream meanwhile. answerCall() opens media when a
+			// (MediaBridge), so Telephony just sees an idle stream meanwhile. answerCall() opens media when a
 			// local handset answers, so there is exactly one inbound media starter and no race here.
 			bool announce = false;
 			{
@@ -2262,7 +2262,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 		}
 		else
 		{
-			// OUTBOUND. Re-apply the throttle the original code ran synchronously: 3CX repeats the
+			// OUTBOUND. Re-apply the throttle the original code ran synchronously: Telephony repeats the
 			// upset every ~750 ms, and with the work deferred several can queue before our first
 			// startMediaStreams() completes. Skip only once THIS slot is fully up (POST live AND
 			// Answered already fired) — media is pre-warmed during dialing, so postLive alone is true
@@ -2333,9 +2333,9 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 				else
 				{
 					// Our own OUTBOUND leg, not yet Connected (dialing/ringing): pre-warm the GET
-					// stream ONLY. 3CX streams ringback/early-media on the GET during dialing, so it
-					// works pre-connect and the 3CX->handset direction cuts through at answer. But
-					// 3CX does NOT route a POST (device->3CX) stream opened before the leg is
+					// stream ONLY. Telephony streams ringback/early-media on the GET during dialing, so it
+					// works pre-connect and the Telephony->handset direction cuts through at answer. But
+					// Telephony does NOT route a POST (device->Telephony) stream opened before the leg is
 					// Connected — it accepts the writes then silently drops them (hardware-confirmed).
 					// So the POST is opened in the Connected branch above, to the now-Connected leg.
 					// (Inbound differs: its route-point leg is already Connected during the local
@@ -2364,7 +2364,7 @@ void ThreeCxAnchorClient::processWsWork(const WsWorkItem& w)
 	}
 }
 
-void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
+void TelephonyAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 {
 	auto* data = static_cast<esp_websocket_event_data_t*>(eventData);
 
@@ -2392,7 +2392,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 			// late upsert cannot prime a new rx task (startRxIfNeeded) against a tearing-down client.
 			if (!_running.load(std::memory_order_acquire)) break;
 			// DIAGNOSTIC: dump every WS data frame raw, before any filtering, so we
-			// can see exactly what 3CX pushes on ring/answer/hangup. op_code 0x01=text,
+			// can see exactly what Telephony pushes on ring/answer/hangup. op_code 0x01=text,
 			// 0x02=binary, 0x08=close, 0x09=ping, 0x0A=pong, 0x00=continuation.
 			ESP_LOGD(TAG, "WS frame: op=0x%02x len=%d off=%d total=%d", data->op_code,
 			         data->data_len, data->payload_offset, data->payload_len);
@@ -2423,7 +2423,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 
 						// Parse entity path to verify DN and participantId:
 						// /callcontrol/{dn}/participants/{id}. The tokenizer +
-						// shape gate live in ThreeCxAnchorLogic.hpp so the parse
+						// shape gate live in TelephonyAnchorLogic.hpp so the parse
 						// is host-unit-tested (issue #49).
 						threecx::ParticipantEntity ent = threecx::parseParticipantEntity(entityStr);
 						if (ent.valid)
@@ -2441,7 +2441,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 
 								if (evTypeNum == TCX_EV_UPSET)
 								{
-									// #100: map the surfaced participant to the leg(s) WE control. 3CX
+									// #100: map the surfaced participant to the leg(s) WE control. Telephony
 									// repeats the Upset every ~750ms and may surface either our OWN leg
 									// (result.id) or, for outbound, the FAR leg — on which a specific-id
 									// GET/drop 403s (issue #40). Mapping rules:
@@ -2524,7 +2524,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 											{
 												continue;   // already fully up
 											}
-											// Single-flight per slot: 3CX repeats an unresolved upset every ~750ms,
+											// Single-flight per slot: Telephony repeats an unresolved upset every ~750ms,
 											// and without this gate each repeat spawned its OWN worker — with
 											// kWsWorkers==POCKETDIAL_MAX_ANCHOR_CALLS, up to 4 running concurrently,
 											// each paying its own cold getLegStatus() handshake for the SAME
@@ -2611,7 +2611,7 @@ void ThreeCxAnchorClient::handleWsEvent(int32_t eventId, void* eventData)
 	}
 }
 
-bool ThreeCxAnchorClient::startRxIfNeeded(const std::string& participantId)
+bool TelephonyAnchorClient::startRxIfNeeded(const std::string& participantId)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
 	// Find-or-claim THIS participant's call slot (#100). A full table means we are already
@@ -2644,7 +2644,7 @@ bool ThreeCxAnchorClient::startRxIfNeeded(const std::string& participantId)
 	// #100: stack in PSRAM (WithCaps) — N concurrent calls' GET-rx tasks would otherwise exhaust
 	// internal RAM. The task does HTTPS GET reads + the audio rx callback only (no flash writes),
 	// so a PSRAM stack is safe. Force-kill + self-exit both use vTaskDeleteWithCaps.
-	BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(&ThreeCxAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, arg, 6, &slot->rxTaskHandle, 1, PD_TASK_STACK_CAPS);
+	BaseType_t rc = xTaskCreatePinnedToCoreWithCaps(&TelephonyAnchorClient::rxTaskTrampoline, "3cx_media_rx", 6144, arg, 6, &slot->rxTaskHandle, 1, PD_TASK_STACK_CAPS);
 	if (rc != pdPASS)
 	{
 		ESP_LOGE(TAG, "Failed to create Rx task for %s", participantId.c_str());
@@ -2657,7 +2657,7 @@ bool ThreeCxAnchorClient::startRxIfNeeded(const std::string& participantId)
 	return true;
 }
 
-bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
+bool TelephonyAnchorClient::startMediaStreams(const std::string& participantId)
 {
 	ESP_LOGI(TAG, "Starting media streams for participant %s", participantId.c_str());
 
@@ -2738,7 +2738,7 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 		esp_http_client_set_header(slot->postClient, "Content-Type", "application/octet-stream");
 
 		// write_len = -1 => chunked transfer-encoding (IDF adds Transfer-Encoding; we frame each
-		// write ourselves in writeAudio). Do NOT pass 0 (that sent Content-Length:0 and 3CX
+		// write ourselves in writeAudio). Do NOT pass 0 (that sent Content-Length:0 and Telephony
 		// closed the stream — the old outbound-audio bug).
 		const int64_t openT0 = esp_timer_get_time();
 		esp_err_t err = esp_http_client_open(slot->postClient, -1);
@@ -2770,12 +2770,12 @@ bool ThreeCxAnchorClient::startMediaStreams(const std::string& participantId)
 		ESP_LOGI(TAG, "POST open %lld ms -> %s handshake", (long long)openMs, fullHandshake ? "FULL" : "resumed");
 		slot->postLive.store(true, std::memory_order_release);
 	}
-	ESP_LOGI(TAG, "POST (device->3CX) audio stream OPEN: %s", postUrl.c_str());
+	ESP_LOGI(TAG, "POST (device->Telephony) audio stream OPEN: %s", postUrl.c_str());
 
 	return true;
 }
 
-void ThreeCxAnchorClient::stopMediaStreams(const std::string& participantId)
+void TelephonyAnchorClient::stopMediaStreams(const std::string& participantId)
 {
 	// Find this call's slot (snapshot under _mutex; the slot array never moves).
 	CallSlot* slot = nullptr;
@@ -2876,7 +2876,7 @@ void ThreeCxAnchorClient::stopMediaStreams(const std::string& participantId)
 		std::lock_guard<std::mutex> lock(slot->postMutex);
 		if (slot->postLive.load(std::memory_order_acquire) && slot->postClient)
 		{
-			// RFC 9112 §7.1 last-chunk so 3CX sees end-of-stream, not an aborted socket.
+			// RFC 9112 §7.1 last-chunk so Telephony sees end-of-stream, not an aborted socket.
 			esp_http_client_write(slot->postClient, "0\r\n\r\n", 5);
 			// Close the REQUEST but KEEP the handle: its TLS session resumes on this slot's next
 			// call (no ~1s ECDHE). The handle is freed only on full teardown (closePostClient).
@@ -2894,10 +2894,10 @@ void ThreeCxAnchorClient::stopMediaStreams(const std::string& participantId)
 	ESP_LOGI(TAG, "Media streams stopped for %s", participantId.c_str());
 }
 
-void ThreeCxAnchorClient::rxTaskTrampoline(void* arg)
+void TelephonyAnchorClient::rxTaskTrampoline(void* arg)
 {
 	auto* a = static_cast<RxTaskArg*>(arg);
-	ThreeCxAnchorClient* self = a->self;
+	TelephonyAnchorClient* self = a->self;
 	CallSlot* slot = a->slot;
 	delete a;                  // one-time per-call heap arg (see startRxIfNeeded)
 	self->runRxLoop(slot);
@@ -2910,7 +2910,7 @@ void ThreeCxAnchorClient::rxTaskTrampoline(void* arg)
 	vTaskDeleteWithCaps(nullptr);   // #100: created WithCaps(PSRAM) — reclaim the PSRAM stack/TCB
 }
 
-void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)
+void TelephonyAnchorClient::runRxLoop(CallSlot* slot)
 {
 	// #100: operate on THIS call's slot. Alias the old single-call member names to the slot's
 	// handles (references), so the rest of this function — including its keep-running checks and
@@ -2955,7 +2955,7 @@ void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)
 	// rather than giving up — otherwise inbound audio is lost for the whole call.
 	//
 	// LATENCY: the client handle is created ONCE and re-opened across retries so
-	// the TLS session persists — the 3CX reference examples do the same with
+	// the TLS session persists — the Telephony reference examples do the same with
 	// keep-alive agents. The old loop tore the client down per attempt, paying a
 	// full mbedTLS handshake (~0.5-1s on the S3) per 404, which serialized into
 	// multi-second answer-to-audio delays. Now only the first attempt (or a
@@ -3020,11 +3020,11 @@ void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)
 
 	if (!opened)
 	{
-		ESP_LOGW(TAG, "GET (3CX->device) stream never opened — no inbound audio");
+		ESP_LOGW(TAG, "GET (Telephony->device) stream never opened — no inbound audio");
 		teardownGetClient();
 		return;
 	}
-	ESP_LOGI(TAG, "GET (3CX->device) audio stream OPEN: %s", getUrl.c_str());
+	ESP_LOGI(TAG, "GET (Telephony->device) audio stream OPEN: %s", getUrl.c_str());
 
 	alignas(2) char readBuf[514]; // +1 for carry byte, +1 for alignment padding; alignas(2) for safe int16_t reinterpret_cast
 	bool hasCarry = false;
@@ -3070,7 +3070,7 @@ void ThreeCxAnchorClient::runRxLoop(CallSlot* slot)
 		// per-100-chunk log × N concurrent calls flooded the UART (serial loss). ESP_LOGD for more.
 		if (rxReads == 0)
 		{
-			ESP_LOGI(TAG, "GET read: first chunk %d bytes <- 3CX (%s)", bytesRead, activePartId.c_str());
+			ESP_LOGI(TAG, "GET read: first chunk %d bytes <- Telephony (%s)", bytesRead, activePartId.c_str());
 		}
 		rxReads++;
 

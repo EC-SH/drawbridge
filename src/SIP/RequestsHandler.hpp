@@ -34,7 +34,7 @@
 #include "RtpSender.hpp"
 #include "RtpReceiver.hpp"
 #include "MediaBridge.hpp"
-#include "ThreeCxAnchorClient.hpp"
+#include "TelephonyAnchorClient.hpp"
 #include "LoopbackAnchorClient.hpp"
 #include "TelephonyProvider.hpp"
 #include "TelephonyApiConfig.hpp"
@@ -223,7 +223,7 @@ public:
 	}
 #endif
 
-	// ── WAN trunk (3CX call-control API) config ──────────────────────────────────
+	// ── WAN trunk (Telephony call-control API) config ──────────────────────────────────
 	// NVS-persisted ("storage"/"3cx_*") credentials for the PSTN trunk. The dial
 	// plan exposes it as the dial-9 prefix: "9<number>" goes out the trunk. The
 	// setter validates + persists; the new client config takes effect on reboot
@@ -231,8 +231,8 @@ public:
 	struct TrunkConfig
 	{
 		std::string baseUrl;       // https://pbx.example.com:5001
-		std::string clientId;      // 3CX API client id
-		std::string clientSecret;  // 3CX API client secret (never display)
+		std::string clientId;      // Telephony API client id
+		std::string clientSecret;  // Telephony API client secret (never display)
 		std::string sourceDn;      // the DN the device originates calls as
 		bool useLoopback = true;   // true = mock loopback anchor (no PSTN)
 	};
@@ -712,7 +712,7 @@ private:
 		const std::string& activeIp,
 		const std::string& toTag,
 		const char* logPrefix);
-	// Route an INVITE out the WAN anchor (3CX/loopback). `dialed` is the number
+	// Route an INVITE out the WAN anchor (Telephony/loopback). `dialed` is the number
 	// handed to the trunk — the 9-prefix is already stripped by the dial plan.
 	void routeAnchorCall(const std::shared_ptr<SipMessage>& data,
 	                     const std::shared_ptr<SipClient>& caller,
@@ -728,7 +728,7 @@ private:
 	// keyed by a server-minted Call-ID and carry their UAC state on the Session
 	// (isAnchorInbound/UacBranch/RemoteTag/AnchorParticipantId).
 	//   routeInboundAnchorCall : RING-ALL — fork a delayed-offer INVITE to every
-	//                            registered extension (the monitored DN is a 3CX route
+	//                            registered extension (the monitored DN is a Telephony route
 	//                            point, not a phone), arm a no-answer timer. First answer
 	//                            wins; the rest are CANCELled. Drops the upstream leg if no
 	//                            extension is registered or the one media bridge is busy.
@@ -763,7 +763,7 @@ private:
 
 	// Server-side RTP media source (the 440 tone / star-code media beachhead). One concurrent
 	// stream; the ESP-only UDP socket + 20 ms pacing task live inside it. This is SEPARATE from
-	// the anchor bridges below (it plays tones to a handset, independent of any 3CX call).
+	// the anchor bridges below (it plays tones to a handset, independent of any Telephony call).
 	RtpSender            _rtpSender;
 	// #100: N concurrent anchor media bridges. Each bridge owns its OWN RtpReceiver (a distinct
 	// LAN ephemeral RX port the handset sends to) + RtpSender (the playout→handset stream), so up
@@ -773,7 +773,7 @@ private:
 	// the participant (see the registerAudioRxCallback wiring in loadAnchorConfig).
 	RtpSender            _rtpSenders[POCKETDIAL_MAX_ANCHOR_CALLS];
 	RtpReceiver          _rtpReceivers[POCKETDIAL_MAX_ANCHOR_CALLS];
-	ThreeCxAnchorClient  _threeCxClient;
+	TelephonyAnchorClient  _threeCxClient;
 	LoopbackAnchorClient _loopbackClient;
 	// Honest stubs for declared-but-unimplemented providers (compile-time
 	// scaffolding only: start() fails, isConnected() is always false).
@@ -836,7 +836,7 @@ private:
 	std::vector<std::pair<sockaddr_in, std::shared_ptr<SipMessage>>> _outbox;
 
 	// Out-of-band send queue for messages enqueued OFF the SIP receive thread —
-	// e.g. the 3CX WebSocket Answered/Dropped callbacks (200 OK, BYE). handle() and
+	// e.g. the Telephony WebSocket Answered/Dropped callbacks (200 OK, BYE). handle() and
 	// tick() both clear _outbox at the START of their body (per-pass scratch), which
 	// silently wiped async sends before they ever reached the wire. _asyncOutbox is
 	// only ever appended off-thread and drained at the END of handle()/tick(); it is
@@ -1012,7 +1012,7 @@ private:
 	// NVS persistence for _forwards / _ringGroups. No-ops on host (the maps are the
 	// store); on ESP they read/write the "pbxcfg" NVS namespace. Caller holds _mutex.
 	void loadPbxConfig();                 // boot-time reload into the maps
-	void loadThreeCxConfig();             // boot-time reload of 3CX settings
+	void loadTelephonyConfig();             // boot-time reload of Telephony settings
 	TrunkConfig _trunkCfg;                // last-loaded/saved trunk config (under _mutex)
 	// Issue #42/#55: these no longer touch NVS inline. Called under _mutex from the
 	// signaling/star-code paths, they only mark the corresponding store dirty (a bit

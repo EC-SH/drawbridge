@@ -5,7 +5,7 @@ const char* telephonyProviderName(TelephonyProviderType t)
 	switch (t)
 	{
 	case TelephonyProviderType::Loopback:        return "LOOPBACK";
-	case TelephonyProviderType::ThreeCx:         return "3CX";
+	case TelephonyProviderType::Telephony:         return "Telephony";
 	case TelephonyProviderType::Apidaze:         return "APIDAZE";
 	case TelephonyProviderType::VoipInnovations: return "VOIP-INNOVATIONS";
 	case TelephonyProviderType::Sangoma:         return "SANGOMA";
@@ -16,7 +16,7 @@ const char* telephonyProviderName(TelephonyProviderType t)
 bool telephonyProviderImplemented(TelephonyProviderType t)
 {
 	return t == TelephonyProviderType::Loopback ||
-	       t == TelephonyProviderType::ThreeCx;
+	       t == TelephonyProviderType::Telephony;
 }
 
 bool TelephonyProviderRegistry::registerProvider(TelephonyProviderType t, AnchorClient* provider)

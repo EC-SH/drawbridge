@@ -14,7 +14,7 @@
 // raw UTF-8 in JSON strings; only `"`, `\`, and U+0000..U+001F MUST be escaped).
 //
 // Pure and host-compilable (no ESP/socket dependencies) so it is unit-tested in
-// the host suite (tests/JsonEscape_test.cpp) and reused by the ESP 3CX anchor
+// the host suite (tests/JsonEscape_test.cpp) and reused by the ESP Telephony anchor
 // when building the makecall control-plane POST body from a caller-supplied
 // destination (issue #56 — defense-in-depth against JSON injection at the anchor
 // boundary, independent of the upstream isValidAor input filter).

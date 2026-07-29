@@ -49,14 +49,14 @@ add_executable(sip_parser_tests
     # pool directly; host-compilable like the other RequestsHandler-backed suites.
     PoolSafety_test.cpp
     # Audit coverage cluster (#48 #49 #61 #62): direct host tests for the admin
-    # credential/session manager, the 3CX anchor's pure parse/URL logic (extracted
+    # credential/session manager, the Telephony anchor's pure parse/URL logic (extracted
     # to a host header so the ESP-only impl's contract is testable), the telephony
     # credential table + provider registry, and the OTA session state machine.
     AdminAuth_test.cpp
     AdminHttpGate_test.cpp
     Metrics_test.cpp
     Syslog_test.cpp
-    ThreeCxAnchorLogic_test.cpp
+    TelephonyAnchorLogic_test.cpp
     TelephonyApi_test.cpp
     OtaUpdater_test.cpp
     # OTA session state machine (host stub mirrors the device esp_ota_* lifecycle).
@@ -126,7 +126,7 @@ add_executable(sip_parser_tests
     Refer_test.cpp
     ../src/SIP/MediaBridge.cpp
     ../src/SIP/LoopbackAnchorClient.cpp
-    ../src/SIP/ThreeCxAnchorClient.cpp
+    ../src/SIP/TelephonyAnchorClient.cpp
 )
 
 target_link_libraries(sip_parser_tests PRIVATE gtest gtest_main)

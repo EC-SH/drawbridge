@@ -45,7 +45,7 @@ public:
 	bool isBroadcast() const { return _isBroadcast; }
 	void setBroadcast(bool val) { _isBroadcast = val; }
 
-	// True only for sessions bridged to the WAN media anchor (3CX/loopback).
+	// True only for sessions bridged to the WAN media anchor (Telephony/loopback).
 	// The anchor event callbacks and CANCEL/BYE teardown branches MUST match on
 	// this — not on "dest is a non-pool client", which is also true of the 777
 	// echo, 440 tone, and *69/*11 virtual sessions and made anchor teardown hit

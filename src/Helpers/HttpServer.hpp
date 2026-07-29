@@ -171,7 +171,7 @@ private:
 	// Issue #45: bound concurrent connection handlers. Each accepted socket previously
 	// spawned an unconditional detached std::thread (~8 KB pthread stack + the socket).
 	// A handful of browser tabs each firing 3-4 parallel XHRs could spike the LWIP
-	// socket pool + heap exactly when the 3CX anchor needs its three persistent TLS
+	// socket pool + heap exactly when the Telephony anchor needs its three persistent TLS
 	// sockets — a soft-DoS that defeats the socket-budget headroom and silently drops
 	// connections. We now cap in-flight handlers: beyond the cap the accept loop replies
 	// 503 and closes immediately instead of spawning. _activeConns is incremented in

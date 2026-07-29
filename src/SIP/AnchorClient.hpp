@@ -72,7 +72,7 @@ public:
 	// Periodic, non-blocking maintenance pump, driven from RequestsHandler::tick()
 	// (≤1 Hz). Implementations must do only constant-time work here — read flags,
 	// spawn a worker for any blocking I/O — never block, log, or allocate. The
-	// ThreeCx anchor uses it to run the _outboundActive reconcile watchdog.
+	// Telephony anchor uses it to run the _outboundActive reconcile watchdog.
 	virtual void tick() = 0;
 
 	// TLS handshake telemetry: how many media-stream opens did a FULL handshake (cold ECDHE)
@@ -91,7 +91,7 @@ public:
 	// handshake at connect. 0 disables it. This is a SETTING, not a constant, so a different
 	// upstream provider's session-ticket lifetime (or a change in the current one) is a
 	// config edit rather than a recompile. Default no-op for anchors that don't stream media
-	// (loopback); the real implementation is in ThreeCxAnchorClient.
+	// (loopback); the real implementation is in TelephonyAnchorClient.
 	virtual void setRewarmIntervalSec(uint32_t sec) { (void)sec; }
 };
 
