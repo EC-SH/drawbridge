@@ -143,7 +143,7 @@ bool LoopbackAnchorClient::answerCall(const std::string& participantId)
 		evCb = _eventCb;
 	}
 
-	// Mirror 3CX: answering the inbound participant connects the leg, which the real
+	// Mirror Telephony: answering the inbound participant connects the leg, which the real
 	// client observes as a Connected upsert → Answered. Fire it on a sim thread so the
 	// callback never runs under the caller's lock (matches makeCall's threading).
 	if (evCb)

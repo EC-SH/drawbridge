@@ -55,7 +55,7 @@ namespace
 	// #100: after the 200 OK goes to the handset on an outbound anchor call, how long we wait for
 	// its ACK before reaping the call as abandoned. A call that bridges LATE (past the caller's
 	// own INVITE deadline, under a cold-handshake burst) finds the handset already gone — it never
-	// ACKs, so without this the 3CX leg + media bridge linger forever (a zombie that survives a
+	// ACKs, so without this the Telephony leg + media bridge linger forever (a zombie that survives a
 	// board reboot and must be killed by hand on the PBX). On a healthy call the ACK lands in ~1 s.
 	constexpr auto ANCHOR_ACK_TIMEOUT = std::chrono::seconds(15);
 
@@ -116,7 +116,7 @@ RequestsHandler::RequestsHandler(std::string serverIp, int serverPort,
 	loadAdminHttpTtl();
 	loadAdminHttpLockEnabled();
 	loadDevices();
-	loadThreeCxConfig();
+	loadTelephonyConfig();
 	// #107: anchor TLS re-warm cadence (defaults to 60 min if the NVS key is absent).
 	loadRewarmInterval();
 	// Prewarm the per-extension HA1 cache off the REGISTER hot path so the first
@@ -921,7 +921,7 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 
 	// Dial plan: a leading '9' is the explicit trunk-access prefix. "101" rings
 	// LAN extension 101; "9101" strips the 9 and places 101 via the WAN anchor
-	// (3CX call-control API) — even if a local "9101" could exist. Checked before
+	// (Telephony call-control API) — even if a local "9101" could exist. Checked before
 	// the registrar lookup so the prefix always means "go out the trunk".
 	if (destNumber.size() >= 2 && destNumber[0] == '9' &&
 	    _anchorClient && _anchorClient->isConnected())
@@ -934,7 +934,7 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 	auto called = findClient(data->getToNumber());
 	if (!called.has_value())
 	{
-		// Outbound WAN call via 3CX Media Anchor (legacy fallback: an unregistered
+		// Outbound WAN call via Telephony Media Anchor (legacy fallback: an unregistered
 		// destination without the 9-prefix still tries the trunk when one is up).
 		if (_anchorClient && _anchorClient->isConnected())
 		{
@@ -1180,8 +1180,8 @@ std::string RequestsHandler::buildMediaSdp(const std::string& serverIp, int rtpP
 	// Direction:
 	//   sendonly (default) — the 440 tone beachhead: the server streams to the caller
 	//                        and ignores any media the caller sends back.
-	//   sendrecv           — the 3CX media bridge: the handset must BOTH send its audio
-	//                        (forwarded to 3CX over the POST stream) AND receive 3CX's
+	//   sendrecv           — the Telephony media bridge: the handset must BOTH send its audio
+	//                        (forwarded to Telephony over the POST stream) AND receive Telephony's
 	//                        audio. rtpPort here MUST be the bridge receiver's port.
 	std::string s;
 	s += "v=0\r\n";
@@ -1941,7 +1941,7 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
-	// DIAGNOSTIC: an ACK for a 3CX-routed (anchor) session means the handset
+	// DIAGNOSTIC: an ACK for a Telephony-routed (anchor) session means the handset
 	// ACCEPTED our 200 OK and the SIP call is fully connected — so any remaining
 	// silence is purely an RTP/media problem, not a SIP one.
 	if (session.value()->isAnchor())
@@ -1949,13 +1949,13 @@ void RequestsHandler::onAck(std::shared_ptr<SipMessage> data)
 		// #100: the handset ACKed our 200 — the call is genuinely established, so disarm the
 		// post-200 ACK-deadline reaper (else tick() would tear down a live call at the deadline).
 		session.value()->clearRingTimer();
-		queueLog("[3CX] Handset ACK received — SIP dialog CONNECTED for " + std::string(data->getCallID()));
+		queueLog("[Telephony] Handset ACK received — SIP dialog CONNECTED for " + std::string(data->getCallID()));
 		// The server is the UAS for the handset leg of a WAN-anchor (trunk) call, so
 		// this ACK confirms our 200 OK and is the end of the transaction — ABSORB it.
 		// Falling through routes the ACK to getToNumber() (the dialed PSTN number,
 		// not a registered extension) via endHandle(), which answers the ACK with a
 		// 404 — illegal (you never respond to an ACK) and it makes tag-strict phones
-		// (Yealink) retransmit, storming the dialog until 3CX reaps the call (~15s).
+		// (Yealink) retransmit, storming the dialog until Telephony reaps the call (~15s).
 		return;
 	}
 
@@ -4363,7 +4363,7 @@ RequestsHandler::Telemetry RequestsHandler::getTelemetry()
 	// the concurrent-call count, so this is the number to watch against LWIP_MAX_SOCKETS at the edge.
 	t.tlsSocketsEst    = t.anchorConnected ? (3 + 2 * activeBridges) : 0;
 	// TLS handshake split (full ECDHE vs resumed) on the POST media stream — shows resumption
-	// holding and reveals 3CX's session-ticket lifetime over idle gaps.
+	// holding and reveals Telephony's session-ticket lifetime over idle gaps.
 	if (_anchorClient) _anchorClient->getTlsHandshakeStats(t.tlsFullHandshakes, t.tlsResumedHandshakes);
 	t.totalRegistrations = _totalRegistrations.load(std::memory_order_relaxed);
 	t.totalCallsStarted  = _totalCallsStarted.load(std::memory_order_relaxed);
@@ -4379,7 +4379,7 @@ void RequestsHandler::tick()
 	}
 	_lastTick = now;
 
-	// Periodic non-blocking pump for the WAN anchor (e.g. the 3CX _outboundActive reconcile
+	// Periodic non-blocking pump for the WAN anchor (e.g. the Telephony _outboundActive reconcile
 	// watchdog). Called outside the registrar _mutex (invariant #2); it only reads atomics and
 	// may spawn its own worker for any blocking I/O.
 	if (_anchorClient) _anchorClient->tick();
@@ -4408,7 +4408,7 @@ void RequestsHandler::tick()
 		{
 			// Invited = no-answer (CFNA/hunt/anchor-never-connected). #100: a CONNECTED OUTBOUND
 			// anchor whose ACK deadline expired is an abandoned call (handset gone, never ACKed) —
-			// reap it too so its 3CX leg + bridge don't zombie.
+			// reap it too so its Telephony leg + bridge don't zombie.
 			const bool connectedAbandonedAnchor =
 				session->getState() == Session::State::Connected &&
 				session->isAnchor() && !session->isAnchorInbound();
@@ -4436,15 +4436,15 @@ void RequestsHandler::tick()
 					if (cancel) _outbox.emplace_back(target->getAddress(), std::move(cancel));
 				}
 				asyncDropCall(session->getAnchorParticipantId());
-				queueLog("[3CX] Inbound: no answer from " +
+				queueLog("[Telephony] Inbound: no answer from " +
 				         std::to_string(session->getPendingTargets().size()) + " extension(s) — cancelled");
 				endCall(callID, session->getAnchorParticipantId(), "", "inbound no answer");
 				continue;
 			}
 
-			// #100: plain OUTBOUND anchor call that expired — either 3CX never connected it (still
+			// #100: plain OUTBOUND anchor call that expired — either Telephony never connected it (still
 			// Invited) or the handset never ACKed our 200 (Connected but abandoned). Either way DROP
-			// the 3CX leg + free its media bridge so it doesn't linger as a zombie on the PBX (which
+			// the Telephony leg + free its media bridge so it doesn't linger as a zombie on the PBX (which
 			// erodes the key's concurrent-call budget and otherwise needs a manual kill). 503 the
 			// caller only while it's still ringing (a Connected-abandoned handset is already gone).
 			if (session->isAnchor())
@@ -4464,7 +4464,7 @@ void RequestsHandler::tick()
 					resp->setContact(buildContact(std::string(invite->getToNumber())));
 					_outbox.emplace_back(invite->getSource(), std::move(resp));
 				}
-				queueLog(std::string("[3CX] anchor call reaped (no ") + (stillRinging ? "answer" : "ACK") +
+				queueLog(std::string("[Telephony] anchor call reaped (no ") + (stillRinging ? "answer" : "ACK") +
 				         ") — dropped leg " + part);
 				endCall(callID, session->getSrc() ? session->getSrc()->getNumber() : "", part, "anchor reap");
 				continue;
@@ -4545,7 +4545,7 @@ void RequestsHandler::tick()
 			{
 				if (!bpart.empty()) asyncDropCall(bpart);
 				b.stopBridge();
-				queueLog("[3CX] reaped orphaned media bridge (no session) leg " + bpart);
+				queueLog("[Telephony] reaped orphaned media bridge (no session) leg " + bpart);
 			}
 		}
 
@@ -6471,7 +6471,7 @@ std::string RequestsHandler::setTrunkConfig(const TrunkConfig& cfg)
 
 	std::lock_guard<std::mutex> lock(_mutex);
 	_trunkCfg = cfg;
-	queueLog("[3CX] Trunk config saved (applies on next reboot)");
+	queueLog("[Telephony] Trunk config saved (applies on next reboot)");
 	return "";
 }
 
@@ -6522,7 +6522,7 @@ std::string RequestsHandler::setTelephonyApiActive(size_t idx)
 	return err;
 }
 
-void RequestsHandler::loadThreeCxConfig()
+void RequestsHandler::loadTelephonyConfig()
 {
 	std::string baseUrl;
 	std::string clientId;
@@ -6587,7 +6587,7 @@ void RequestsHandler::loadThreeCxConfig()
 	// ── Provider registry (fixed-size factory, boot-constructed instances) ────
 	// Construction is single-threaded; the registry is read-only afterwards.
 	_providerRegistry.registerProvider(TelephonyProviderType::Loopback, &_loopbackClient);
-	_providerRegistry.registerProvider(TelephonyProviderType::ThreeCx, &_threeCxClient);
+	_providerRegistry.registerProvider(TelephonyProviderType::Telephony, &_threeCxClient);
 	_providerRegistry.registerProvider(TelephonyProviderType::Apidaze, &_stubApidaze);
 	_providerRegistry.registerProvider(TelephonyProviderType::VoipInnovations, &_stubVoipInnovations);
 	_providerRegistry.registerProvider(TelephonyProviderType::Sangoma, &_stubSangoma);
@@ -6596,12 +6596,12 @@ void RequestsHandler::loadThreeCxConfig()
 	_tapiCfg.load();
 
 	// Resolve the boot provider TYPE. Default = the legacy trunk decision
-	// (loopback unless live 3CX creds are provisioned — byte-for-byte the old
+	// (loopback unless live Telephony creds are provisioned — byte-for-byte the old
 	// behavior). An ACTIVE+ENABLED Telephony-API slot overrides it; a slot
 	// pointing at an unimplemented (stub) provider falls back to loopback with
 	// an honest log instead of pretending to dial.
 	TelephonyProviderType bootType = useLoopback ? TelephonyProviderType::Loopback
-	                                             : TelephonyProviderType::ThreeCx;
+	                                             : TelephonyProviderType::Telephony;
 	std::string tapiUrl, tapiId, tapiSecret, tapiDn;
 	bool credsFromSlot = false;
 	{
@@ -6644,10 +6644,10 @@ void RequestsHandler::loadThreeCxConfig()
 #if !defined(ESP_PLATFORM) && !defined(ESP32)
 	// Host builds never run a live upstream client (no TLS/WebSocket stack in
 	// the host binary) — same force-to-loopback the old code applied.
-	if (bootType == TelephonyProviderType::ThreeCx)
+	if (bootType == TelephonyProviderType::Telephony)
 	{
 		bootType = TelephonyProviderType::Loopback;
-		queueLog("[3CX] Config: Using loopback mock client (host build force)");
+		queueLog("[Telephony] Config: Using loopback mock client (host build force)");
 	}
 #endif
 
@@ -6659,11 +6659,11 @@ void RequestsHandler::loadThreeCxConfig()
 	}
 	if (bootType == TelephonyProviderType::Loopback)
 	{
-		queueLog("[3CX] Config: Using loopback mock client");
+		queueLog("[Telephony] Config: Using loopback mock client");
 	}
 	else
 	{
-		queueLog(std::string("[3CX] Config: Using real ") +
+		queueLog(std::string("[Telephony] Config: Using real ") +
 		         telephonyProviderName(bootType) + " client on " +
 		         (credsFromSlot ? tapiUrl : baseUrl));
 	}
@@ -6700,12 +6700,12 @@ void RequestsHandler::loadThreeCxConfig()
 		if (sca->anchor->start())
 		{
 			std::lock_guard<std::mutex> lock(sca->handler->_mutex);
-			sca->handler->queueLog("[3CX] Anchor client started");
+			sca->handler->queueLog("[Telephony] Anchor client started");
 		}
 		else
 		{
 			std::lock_guard<std::mutex> lock(sca->handler->_mutex);
-			sca->handler->queueLog("[3CX] Failed to start anchor client", true);
+			sca->handler->queueLog("[Telephony] Failed to start anchor client", true);
 		}
 		delete sca;
 		vTaskDelete(NULL);
@@ -6719,12 +6719,12 @@ void RequestsHandler::loadThreeCxConfig()
 		if (_anchorClient->start())
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
-			queueLog("[3CX] Anchor client started");
+			queueLog("[Telephony] Anchor client started");
 		}
 		else
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
-			queueLog("[3CX] Failed to start anchor client", true);
+			queueLog("[Telephony] Failed to start anchor client", true);
 		}
 	});
 #endif
@@ -6734,7 +6734,7 @@ void RequestsHandler::loadThreeCxConfig()
 		std::lock_guard<std::mutex> lock(_mutex);
 		if (ev.type == AnchorClient::CallEvent::Answered)
 		{
-			queueLog("[3CX] Event: Answered, participantId=" + ev.participantId);
+			queueLog("[Telephony] Event: Answered, participantId=" + ev.participantId);
 			// #100: bind THIS answered participant to ITS session. asyncMakeCall stamped the own
 			// leg onto the session at origination, so match by participant id; fall back to a still-
 			// unbound Invited anchor session (covers a rare Answered-before-bind race). Was "first
@@ -6781,41 +6781,41 @@ void RequestsHandler::loadThreeCxConfig()
 					if (bridge && bridge->startBridge(handsetIp, handsetPort, callId, ev.participantId))
 					{
 						int rxPort = bridge->receiverPort();
-						queueLog("[3CX] MediaBridge started: Handset=" + handsetIp + ":" +
-						         std::to_string(handsetPort) + " <-> 3CX (rx port " + std::to_string(rxPort) + ")");
+						queueLog("[Telephony] MediaBridge started: Handset=" + handsetIp + ":" +
+						         std::to_string(handsetPort) + " <-> Telephony (rx port " + std::to_string(rxPort) + ")");
 						std::string sdpBody = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
 
 						auto ok = buildOkWithSdp(inviteMsg, activeIp, toTag, sdpBody);
-						dumpWire("[3CX] 200 OK ->", ok);
+						dumpWire("[Telephony] 200 OK ->", ok);
 
 						// Runs on the WS event task, NOT the SIP receive thread — use _asyncOutbox so
 						// the start-of-body _outbox.clear() in handle()/tick() can't wipe the 200 OK.
 						_asyncOutbox.emplace_back(inviteMsg->getSource(), std::move(ok));
 						session->setState(Session::State::Connected);
-						// Remember the upstream (3CX) participant so the handset's BYE drops it by id.
+						// Remember the upstream (Telephony) participant so the handset's BYE drops it by id.
 						session->setAnchorParticipantId(ev.participantId);
 						// #100: re-arm as an ACK deadline. If the handset never ACKs this 200 (it
 						// bridged late, past the caller's deadline, and the phone already gave up),
-						// tick() reaps the call and drops the 3CX leg + bridge — else it zombies on
-						// 3CX (survives a board reboot). onAck clears it on a healthy call (~1 s).
+						// tick() reaps the call and drops the Telephony leg + bridge — else it zombies on
+						// Telephony (survives a board reboot). onAck clears it on a healthy call (~1 s).
 						session->armRingTimer(std::chrono::steady_clock::now() + ANCHOR_ACK_TIMEOUT);
 					}
 					else
 					{
-						queueLog("[3CX] MediaBridge failed to start (no free bridge)", true);
+						queueLog("[Telephony] MediaBridge failed to start (no free bridge)", true);
 					}
 				}
 			}
 		}
 		else if (ev.type == AnchorClient::CallEvent::Incoming)
 		{
-			queueLog("[3CX] Event: Incoming, participantId=" + ev.participantId +
+			queueLog("[Telephony] Event: Incoming, participantId=" + ev.participantId +
 			         (ev.callerId.empty() ? "" : (", caller=" + ev.callerId)));
 			routeInboundAnchorCall(ev.participantId, ev.callerId);
 		}
 		else if (ev.type == AnchorClient::CallEvent::Dropped)
 		{
-			queueLog("[3CX] Event: Dropped, participantId=" + ev.participantId);
+			queueLog("[Telephony] Event: Dropped, participantId=" + ev.participantId);
 			// #100: terminate ONLY the session for THIS participant (was: the first anchor session,
 			// which tore down an unrelated concurrent call). Stop just this call's media bridge.
 			for (auto& [callId, session] : _sessions)
@@ -6859,7 +6859,7 @@ void RequestsHandler::loadThreeCxConfig()
 						}
 					}
 					std::string localCallId = callId;
-					endCall(localCallId, ev.participantId, handset ? handset->getNumber() : "", "3CX hangup (inbound)");
+					endCall(localCallId, ev.participantId, handset ? handset->getNumber() : "", "Telephony hangup (inbound)");
 					break;
 				}
 
@@ -6882,7 +6882,7 @@ void RequestsHandler::loadThreeCxConfig()
 
 				// Copy callId to a local std::string before calling endCall to avoid dangling reference
 				std::string localCallId = callId;
-				endCall(localCallId, session->getSrc() ? session->getSrc()->getNumber() : "", inviteMsg ? inviteMsg->getToNumber() : "", "3CX hangup");
+				endCall(localCallId, session->getSrc() ? session->getSrc()->getNumber() : "", inviteMsg ? inviteMsg->getToNumber() : "", "Telephony hangup");
 				break;
 			}
 		}
@@ -7065,32 +7065,32 @@ void RequestsHandler::routeAnchorCall(const std::shared_ptr<SipMessage>& data,
 	_sessions.emplace(data->getCallID(), newSession);
 
 	// Send "180 Ringing" back to the handset. Generate the dialog To-tag ONCE
-	// here and store it on the session; the 200 OK (sent later from the 3CX
+	// here and store it on the session; the 200 OK (sent later from the Telephony
 	// Answered callback) MUST reuse this exact tag, or Yealink-class phones
 	// treat the 200 as a foreign dialog and never leave the ringing state.
 	std::string localTag = IDGen::GenerateID(9);
 	newSession->setLocalTag(localTag);
-	// #100: arm a no-answer timer so an outbound anchor call that 3CX never connects (makecall
-	// accepted but the leg never reaches Connected) is reaped by tick() — its 3CX leg dropped —
+	// #100: arm a no-answer timer so an outbound anchor call that Telephony never connects (makecall
+	// accepted but the leg never reaches Connected) is reaped by tick() — its Telephony leg dropped —
 	// instead of lingering as a zombie. Re-armed as an ACK deadline once we send the 200 OK.
 	newSession->armRingTimer(std::chrono::steady_clock::now() + NO_ANSWER_TIMEOUT);
 	std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
-	sendRinging(data, activeIp, localTag, "[3CX]");
+	sendRinging(data, activeIp, localTag, "[Telephony]");
 
-	// Trigger outbound 3CX call asynchronously to avoid blocking the main SIP thread
+	// Trigger outbound Telephony call asynchronously to avoid blocking the main SIP thread
 	asyncMakeCall(dialed, std::string(data->getCallID()), caller->getNumber());
 }
 
 void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, const std::string& callerId)
 {
 	// Runs under _mutex (the anchor event callback holds it). The monitored DN (sourceDn) is
-	// a 3CX route point, not a phone, so we RING-ALL: fork an offerless INVITE to every
+	// a Telephony route point, not a phone, so we RING-ALL: fork an offerless INVITE to every
 	// registered extension (server-as-UAC, the register-beep machinery), first answer wins.
 	// sourceDn is only the gate that says this anchor is configured to take inbound at all.
 	const std::string dn = _trunkCfg.sourceDn;
 	if (dn.empty())
 	{
-		queueLog("[3CX] Inbound: no sourceDn configured — dropping participant " + participantId, true);
+		queueLog("[Telephony] Inbound: no sourceDn configured — dropping participant " + participantId, true);
 		asyncDropCall(participantId);
 		return;
 	}
@@ -7098,7 +7098,7 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 	// #100: drop inbound only when EVERY media bridge is busy (no concurrent capacity left).
 	if (allBridgesBusy())
 	{
-		queueLog("[3CX] Inbound: all media bridges busy — dropping inbound to " + dn);
+		queueLog("[Telephony] Inbound: all media bridges busy — dropping inbound to " + dn);
 		asyncDropCall(participantId);
 		return;
 	}
@@ -7108,13 +7108,13 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 	{
 		if (s->isAnchorInbound() && s->getState() != Session::State::Bye)
 		{
-			queueLog("[3CX] Inbound: a call is already in progress — dropping new inbound");
+			queueLog("[Telephony] Inbound: a call is already in progress — dropping new inbound");
 			asyncDropCall(participantId);
 			return;
 		}
 	}
 
-	// RING-ALL: the monitored DN (sourceDn) is a 3CX route point, not a registered phone,
+	// RING-ALL: the monitored DN (sourceDn) is a Telephony route point, not a registered phone,
 	// so fork the inbound call to EVERY registered extension. First to answer wins
 	// (onInboundAnchorOk); the rest are CANCELled. Gather the live registrar set — we hold
 	// _mutex, so reading _clientPool directly is safe (an empty number ⇒ free pool slot).
@@ -7128,7 +7128,7 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 	}
 	if (targets.empty())
 	{
-		queueLog("[3CX] Inbound: no extensions registered — dropping participant " + participantId, true);
+		queueLog("[Telephony] Inbound: no extensions registered — dropping participant " + participantId, true);
 		asyncDropCall(participantId);
 		return;
 	}
@@ -7158,7 +7158,7 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 	auto session = allocateSession(callId, pstn);
 	if (!session)
 	{
-		queueLog("[3CX] Inbound: session pool exhausted — dropping", true);
+		queueLog("[Telephony] Inbound: session pool exhausted — dropping", true);
 		asyncDropCall(participantId);
 		return;
 	}
@@ -7179,7 +7179,7 @@ void RequestsHandler::routeInboundAnchorCall(const std::string& participantId, c
 	{
 		buildInboundInviteFork(session, target, callerDisplay);
 	}
-	queueLog("[3CX] Inbound: ringing " + std::to_string(targets.size()) +
+	queueLog("[Telephony] Inbound: ringing " + std::to_string(targets.size()) +
 	         " extension(s) for participant " + participantId);
 }
 
@@ -7328,7 +7328,7 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 		auto obye = buildServerBye(handset->getNumber(), handset->getAddress(), callId, orphanFrom,
 		                           std::string(ok->getTo()));
 		if (obye) _outbox.emplace_back(handset->getAddress(), std::move(obye));
-		queueLog("[3CX] Inbound: extra answer from " + handset->getNumber() + " — rejected (call already up)");
+		queueLog("[Telephony] Inbound: extra answer from " + handset->getNumber() + " — rejected (call already up)");
 		return;
 	}
 
@@ -7387,13 +7387,13 @@ void RequestsHandler::onInboundAnchorOk(const std::shared_ptr<SipMessage>& ok, c
 			int rxPort = b->receiverPort();
 			sdpAnswer = buildMediaSdp(activeIp, rxPort, /*sendRecv=*/true);
 			bridged = true;
-			queueLog("[3CX] Inbound: handset " + handsetIp + ":" + std::to_string(handsetPort) +
+			queueLog("[Telephony] Inbound: handset " + handsetIp + ":" + std::to_string(handsetPort) +
 			         " answered; bridge up (rx " + std::to_string(rxPort) + ")");
 		}
 	}
 	else
 	{
-		queueLog("[3CX] Inbound: no usable SDP / bridge failed — tearing down", true);
+		queueLog("[Telephony] Inbound: no usable SDP / bridge failed — tearing down", true);
 	}
 
 	// ACK the 2xx (RFC 3261 §13.2.2.4): a NEW transaction branch, CSeq 1 ACK. Carries
@@ -7475,8 +7475,8 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		if (!mca->anchor->makeCall(mca->dest, &ownLeg))
 		{
 			std::lock_guard<std::mutex> lock(mca->handler->_mutex);
-			mca->handler->queueLog("[3CX] Failed to initiate outbound call to " + mca->dest, true);
-			mca->handler->endCall(mca->callId, mca->callerNumber, mca->dest, "3CX call fail");
+			mca->handler->queueLog("[Telephony] Failed to initiate outbound call to " + mca->dest, true);
+			mca->handler->endCall(mca->callId, mca->callerNumber, mca->dest, "Telephony call fail");
 		}
 		else
 		{
@@ -7484,7 +7484,7 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 			// the later Answered/Dropped maps to the right call when several are in flight.
 			mca->handler->bindOutboundParticipant(mca->callId, ownLeg);
 			std::lock_guard<std::mutex> lock(mca->handler->_mutex);
-			mca->handler->queueLog("[3CX] Initiating outbound call to " + mca->dest);
+			mca->handler->queueLog("[Telephony] Initiating outbound call to " + mca->dest);
 		}
 		delete mca;
 		vTaskDeleteWithCaps(NULL);   // #100: created WithCaps(PSRAM)
@@ -7496,14 +7496,14 @@ void RequestsHandler::asyncMakeCall(const std::string& destination, const std::s
 		if (!_anchorClient->makeCall(destination, &ownLeg))
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
-			queueLog("[3CX] Failed to initiate outbound call to " + destination, true);
-			endCall(callId, callerNumber, destination, "3CX call fail");
+			queueLog("[Telephony] Failed to initiate outbound call to " + destination, true);
+			endCall(callId, callerNumber, destination, "Telephony call fail");
 		}
 		else
 		{
 			bindOutboundParticipant(callId, ownLeg);   // #100: bind own leg to session (locks _mutex)
 			std::lock_guard<std::mutex> lock(_mutex);
-			queueLog("[3CX] Initiating outbound call to " + destination);
+			queueLog("[Telephony] Initiating outbound call to " + destination);
 		}
 	});
 #endif
@@ -7531,7 +7531,7 @@ void RequestsHandler::asyncDropCall(const std::string& participantId)
 		vTaskDeleteWithCaps(NULL);   // #100: created WithCaps(PSRAM)
 	}, "3cx_dropcall", 12288, arg, 5, NULL, PD_TASK_STACK_CAPS) != pdPASS)   // #100: stack in PSRAM
 	{
-		queueLog("[3CX] asyncDropCall: drop worker xTaskCreate FAILED (heap exhausted) — leg NOT dropped", true);
+		queueLog("[Telephony] asyncDropCall: drop worker xTaskCreate FAILED (heap exhausted) — leg NOT dropped", true);
 		delete arg;
 	}
 #else
@@ -7558,7 +7558,7 @@ void RequestsHandler::asyncAnswerCall(const std::string& participantId)
 		if (!aca->anchor->answerCall(aca->partId))
 		{
 			std::lock_guard<std::mutex> lock(aca->handler->_mutex);
-			aca->handler->queueLog("[3CX] Failed to answer inbound participant " + aca->partId, true);
+			aca->handler->queueLog("[Telephony] Failed to answer inbound participant " + aca->partId, true);
 		}
 		delete aca;
 		vTaskDeleteWithCaps(NULL);   // #100: created WithCaps(PSRAM)
@@ -7569,7 +7569,7 @@ void RequestsHandler::asyncAnswerCall(const std::string& participantId)
 		if (!_anchorClient->answerCall(participantId))
 		{
 			std::lock_guard<std::mutex> lock(_mutex);
-			queueLog("[3CX] Failed to answer inbound participant " + participantId, true);
+			queueLog("[Telephony] Failed to answer inbound participant " + participantId, true);
 		}
 	});
 #endif

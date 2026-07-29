@@ -44,14 +44,14 @@ TEST(TelephonyApiConfig, SetGetRoundTrip)
 	TelephonyApiConfig cfg;
 	cfg.setStorePath(tempStorePath("roundtrip"));
 
-	auto s = makeSlot(TelephonyProviderType::ThreeCx, true,
+	auto s = makeSlot(TelephonyProviderType::Telephony, true,
 	                  "https://pbx.example.com", "client-id", "s3cr3t", "100");
 	ASSERT_EQ(cfg.setSlot(0, s, /*keepSecret=*/false), "");   // "" == success
 
 	TelephonyApiConfig::SlotView v = cfg.view(0);
-	EXPECT_EQ(v.type, TelephonyProviderType::ThreeCx);
+	EXPECT_EQ(v.type, TelephonyProviderType::Telephony);
 	EXPECT_TRUE(v.enabled);
-	EXPECT_TRUE(v.implemented);          // 3CX is a real provider
+	EXPECT_TRUE(v.implemented);          // Telephony is a real provider
 	EXPECT_EQ(v.baseUrl, "https://pbx.example.com");
 	EXPECT_EQ(v.clientId, "client-id");
 	EXPECT_EQ(v.routeDn, "100");
@@ -69,7 +69,7 @@ TEST(TelephonyApiConfig, SlotViewNeverExposesSecret)
 {
 	TelephonyApiConfig cfg;
 	cfg.setStorePath(tempStorePath("secret"));
-	auto s = makeSlot(TelephonyProviderType::ThreeCx, false,
+	auto s = makeSlot(TelephonyProviderType::Telephony, false,
 	                  "https://x", "id", "TOP-SECRET", "100");
 	ASSERT_EQ(cfg.setSlot(1, s, false), "");
 
@@ -88,11 +88,11 @@ TEST(TelephonyApiConfig, KeepSecretPreservesStoredValue)
 {
 	TelephonyApiConfig cfg;
 	cfg.setStorePath(tempStorePath("keepsecret"));
-	ASSERT_EQ(cfg.setSlot(0, makeSlot(TelephonyProviderType::ThreeCx, false,
+	ASSERT_EQ(cfg.setSlot(0, makeSlot(TelephonyProviderType::Telephony, false,
 	                                  "https://x", "id", "orig-secret", "100"), false), "");
 
 	// Edit the routeDn but pass an empty secret with keepSecret=true.
-	auto edit = makeSlot(TelephonyProviderType::ThreeCx, false, "https://x", "id", "", "200");
+	auto edit = makeSlot(TelephonyProviderType::Telephony, false, "https://x", "id", "", "200");
 	ASSERT_EQ(cfg.setSlot(0, edit, /*keepSecret=*/true), "");
 	EXPECT_EQ(cfg.view(0).routeDn, "200");
 	EXPECT_EQ(cfg.bootSlot(0)->secret, "orig-secret");   // preserved
@@ -143,7 +143,7 @@ TEST(TelephonyApiConfig, EnabledRealProviderRequiresHttps)
 	TelephonyApiConfig cfg;
 	cfg.setStorePath(tempStorePath("https"));
 	// An ENABLED non-loopback slot must have an https:// base URL.
-	auto bad = makeSlot(TelephonyProviderType::ThreeCx, true, "http://insecure", "id", "x", "100");
+	auto bad = makeSlot(TelephonyProviderType::Telephony, true, "http://insecure", "id", "x", "100");
 	EXPECT_NE(cfg.setSlot(0, bad, false), "");
 	// Loopback is exempt (on-box, no PSTN).
 	auto loop = makeSlot(TelephonyProviderType::Loopback, true, "", "", "", "");
@@ -194,12 +194,12 @@ TEST(TelephonyApiConfig, ClearActiveSlotDropsSelection)
 TEST(TelephonyProvider, NameAndImplementedFlags)
 {
 	EXPECT_STREQ(telephonyProviderName(TelephonyProviderType::Loopback), "LOOPBACK");
-	EXPECT_STREQ(telephonyProviderName(TelephonyProviderType::ThreeCx), "3CX");
+	EXPECT_STREQ(telephonyProviderName(TelephonyProviderType::Telephony), "Telephony");
 	EXPECT_STREQ(telephonyProviderName(TelephonyProviderType::Count), "?");   // out of range
 
-	// Only Loopback + 3CX are real; the rest are honest stubs.
+	// Only Loopback + Telephony are real; the rest are honest stubs.
 	EXPECT_TRUE(telephonyProviderImplemented(TelephonyProviderType::Loopback));
-	EXPECT_TRUE(telephonyProviderImplemented(TelephonyProviderType::ThreeCx));
+	EXPECT_TRUE(telephonyProviderImplemented(TelephonyProviderType::Telephony));
 	EXPECT_FALSE(telephonyProviderImplemented(TelephonyProviderType::Apidaze));
 	EXPECT_FALSE(telephonyProviderImplemented(TelephonyProviderType::Sangoma));
 }
@@ -210,14 +210,14 @@ TEST(TelephonyProviderRegistry, RegisterAndSelect)
 {
 	TelephonyProviderRegistry reg;
 	StubTelephonyProvider loopback(TelephonyProviderType::Loopback);
-	StubTelephonyProvider threecx(TelephonyProviderType::ThreeCx);
+	StubTelephonyProvider threecx(TelephonyProviderType::Telephony);
 
 	EXPECT_EQ(reg.select(TelephonyProviderType::Loopback), nullptr);   // none yet
 	ASSERT_TRUE(reg.registerProvider(TelephonyProviderType::Loopback, &loopback));
-	ASSERT_TRUE(reg.registerProvider(TelephonyProviderType::ThreeCx, &threecx));
+	ASSERT_TRUE(reg.registerProvider(TelephonyProviderType::Telephony, &threecx));
 
 	EXPECT_EQ(reg.select(TelephonyProviderType::Loopback), &loopback);
-	EXPECT_EQ(reg.select(TelephonyProviderType::ThreeCx), &threecx);
+	EXPECT_EQ(reg.select(TelephonyProviderType::Telephony), &threecx);
 	// Unregistered type -> nullptr (caller falls back to loopback).
 	EXPECT_EQ(reg.select(TelephonyProviderType::Apidaze), nullptr);
 }
@@ -225,15 +225,15 @@ TEST(TelephonyProviderRegistry, RegisterAndSelect)
 TEST(TelephonyProviderRegistry, RejectsNullAndDoubleRegistration)
 {
 	TelephonyProviderRegistry reg;
-	StubTelephonyProvider a(TelephonyProviderType::ThreeCx);
-	StubTelephonyProvider b(TelephonyProviderType::ThreeCx);
+	StubTelephonyProvider a(TelephonyProviderType::Telephony);
+	StubTelephonyProvider b(TelephonyProviderType::Telephony);
 
-	EXPECT_FALSE(reg.registerProvider(TelephonyProviderType::ThreeCx, nullptr));   // null rejected
-	ASSERT_TRUE(reg.registerProvider(TelephonyProviderType::ThreeCx, &a));
+	EXPECT_FALSE(reg.registerProvider(TelephonyProviderType::Telephony, nullptr));   // null rejected
+	ASSERT_TRUE(reg.registerProvider(TelephonyProviderType::Telephony, &a));
 	// Idempotent re-register of the SAME pointer is ok; a DIFFERENT one is refused.
-	EXPECT_TRUE(reg.registerProvider(TelephonyProviderType::ThreeCx, &a));
-	EXPECT_FALSE(reg.registerProvider(TelephonyProviderType::ThreeCx, &b));
-	EXPECT_EQ(reg.select(TelephonyProviderType::ThreeCx), &a);   // unchanged
+	EXPECT_TRUE(reg.registerProvider(TelephonyProviderType::Telephony, &a));
+	EXPECT_FALSE(reg.registerProvider(TelephonyProviderType::Telephony, &b));
+	EXPECT_EQ(reg.select(TelephonyProviderType::Telephony), &a);   // unchanged
 }
 
 TEST(TelephonyProviderRegistry, OutOfRangeTypeIsSafe)

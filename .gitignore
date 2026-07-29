@@ -106,7 +106,7 @@ PRICING_MODEL.md
 SOAK_TEST_CHECKLIST.md
 ntp_verify.txt
 reference/
-components/3cx-callcontrol-xapi.yaml
+components/telephony-callcontrol-xapi.yaml
 
 # Internal engineering docs (security findings, audit reports, design specs for unbuilt features)
 docs/internal/

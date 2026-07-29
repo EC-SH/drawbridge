@@ -18,11 +18,11 @@
 
 #include "PoolConfig.hpp"     // #100: POCKETDIAL_MAX_ANCHOR_CALLS (per-call slot count)
 
-class ThreeCxAnchorClient : public AnchorClient
+class TelephonyAnchorClient : public AnchorClient
 {
 public:
-	ThreeCxAnchorClient();
-	~ThreeCxAnchorClient() override;
+	TelephonyAnchorClient();
+	~TelephonyAnchorClient() override;
 
 	bool init(const std::string& baseUrl,
 	          const std::string& clientId,
@@ -111,7 +111,7 @@ private:
 
 	// Token lifetime measured against the monotonic timer (not wall clock, so no
 	// SNTP dependency). Derived from the JWT's own exp/iat claims, NOT from the
-	// OAuth expires_in field — 3CX reports expires_in:60 but the JWT is valid ~1h,
+	// OAuth expires_in field — Telephony reports expires_in:60 but the JWT is valid ~1h,
 	// and re-issuing a token invalidates the one the active media streams hold.
 	int64_t _tokenObtainedUs = 0;
 	int64_t _tokenLifetimeUs = 0;
@@ -135,7 +135,7 @@ private:
 		int64_t                  outboundActiveSetUs = 0; // guarded by _mutex
 		std::string              inboundSignaledPartId;   // Incoming fired once (guarded by _mutex)
 		std::string              farPartId;               // far-leg participant id — populated at Connected so Remove can match it (guarded by _mutex)
-		// 3CX repeats an unresolved Upset every ~750ms. Without these, each repeat spawned its own
+		// Telephony repeats an unresolved Upset every ~750ms. Without these, each repeat spawned its own
 		// worker, and kWsWorkers==POCKETDIAL_MAX_ANCHOR_CALLS let up to 4 run truly concurrently —
 		// each paying its OWN cold getLegStatus() handshake (a fresh esp_http_client per call, so
 		// TLS session resumption never kicks in) for what is the SAME still-pending call. upsetInFlight
@@ -162,11 +162,11 @@ private:
 	CallSlot* allocSlotLocked(const std::string& participantId);
 	void      freeSlotLocked(CallSlot& slot);
 	// Heap arg handed to a slot's rx task so the static trampoline knows its slot.
-	struct RxTaskArg { ThreeCxAnchorClient* self; CallSlot* slot; };
+	struct RxTaskArg { TelephonyAnchorClient* self; CallSlot* slot; };
 
 	// Persistent control-plane HTTPS connection (makecall / participant drop).
 	// Kept open across requests so each command is one RTT instead of a fresh
-	// mbedTLS handshake — mirrors the keep-alive agents in the 3CX reference
+	// mbedTLS handshake — mirrors the keep-alive agents in the Telephony reference
 	// examples. Guarded by _ctrlMutex; never touched under _mutex.
 	esp_http_client_handle_t      _ctrlClient = nullptr;
 	std::mutex                    _ctrlMutex;
@@ -225,7 +225,7 @@ private:
 	{
 		WsWork      kind = WsWork::Upset;
 		std::string controlLeg;   // the leg WE control (own outbound leg, or inbound partId)
-		std::string partId;       // the participant 3CX surfaced in the event entity path
+		std::string partId;       // the participant Telephony surfaced in the event entity path
 		std::string callerId;     // inbound From display name (best-effort)
 	};
 	static constexpr int kWsWorkers    = POCKETDIAL_MAX_ANCHOR_CALLS; // one worker per concurrent call slot
@@ -263,7 +263,7 @@ private:
 	// Tear down EVERY active call slot (shutdown + WS-disconnect). Snapshots the active
 	// participant ids under _mutex, then stopMediaStreams() each (can't hold _mutex across them).
 	void stopAllMediaStreams();
-	// Non-virtual teardown shared by stop() and the destructor so ~ThreeCxAnchorClient()
+	// Non-virtual teardown shared by stop() and the destructor so ~TelephonyAnchorClient()
 	// never makes a virtual call (cppcheck virtualCallInConstructor; dynamic binding is
 	// not used in a destructor anyway).
 	void shutdownImpl();
@@ -295,7 +295,7 @@ private:
 	// ctrl connection) so the body is readable; creds snapshot under _mutex, blocking I/O lock-free.
 	bool httpPostBody(const std::string& url, const char* contentType, const std::string& body, std::string& respBody, int* statusOut = nullptr);
 	// The leg WE control for an outbound call: makecall result.id, else a destination digit-suffix
-	// match in the live participant list — the id 3CX authorizes us to stream/drop (issue #40).
+	// match in the live participant list — the id Telephony authorizes us to stream/drop (issue #40).
 	std::string resolveOutboundLeg(const std::string& makecallRespBody, const std::string& destination);
 	// Status of a specific leg read from the LIST (GET /participants -> find id). Replaces
 	// getParticipantStatus(id), which 403s for a leg this DN cannot directly control (issue #40).

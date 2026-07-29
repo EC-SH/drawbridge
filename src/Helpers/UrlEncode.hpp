@@ -8,7 +8,7 @@
 // as %XX with uppercase hex. Bytes are treated as unsigned so non-ASCII encodes
 // correctly. Pure and host-compilable (no ESP/socket dependencies) so it is
 // unit-tested in the host suite (tests/UrlEncode_test.cpp) and reused by the ESP
-// 3CX anchor when building device-specific makecall URLs from a device_id that may
+// Telephony anchor when building device-specific makecall URLs from a device_id that may
 // carry reserved characters.
 inline std::string urlEncode(const std::string& in)
 {

@@ -101,7 +101,7 @@ idf_component_register(SRCS ${MAIN_SRC}
                             "../src/SIP/SipStatus.cpp"
                             "../src/SIP/RtpSender.cpp"
                             "../src/SIP/RtpReceiver.cpp"
-                            "../src/SIP/ThreeCxAnchorClient.cpp"
+                            "../src/SIP/TelephonyAnchorClient.cpp"
                             "../src/SIP/LoopbackAnchorClient.cpp"
                             "../src/SIP/MediaBridge.cpp"
                             "../src/SIP/PlayoutBuffer.cpp"

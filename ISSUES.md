@@ -106,7 +106,7 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Status**: ⏳ Open / Planned (likely de-scoped by the ESP32-only pivot, #96/#97)
 * **Labels**: `api-integration`, `media`, `desktop`, `anchor`
 * **Severity**: High
-* **Description**: `ThreeCxAnchorClient` is currently completely stubbed out on host/desktop builds. Refactor the network socket, task, and HTTP/WebSocket client interfaces to use POSIX/Windows compatible headers (instead of `esp_websocket_client` / `esp_http_client`), allowing the WAN-anchor gateway integration to be testable and runnable on local PCs.
+* **Description**: `TelephonyAnchorClient` is currently completely stubbed out on host/desktop builds. Refactor the network socket, task, and HTTP/WebSocket client interfaces to use POSIX/Windows compatible headers (instead of `esp_websocket_client` / `esp_http_client`), allowing the WAN-anchor gateway integration to be testable and runnable on local PCs.
 
 ---
 
@@ -533,12 +533,12 @@ The connector is a **media-terminating SIP endpoint** that `REGISTER`s to pocket
 * **Description**: The inverse of `RtpSender` — receive the handset's RTP on the media socket, strip the RTP header, decode G.711 µ-law➔PCM16, and feed it to the anchor `POST /stream` with a small jitter buffer. Shipped as part of the WAN-anchor media path.
 
 ### 🟢 Issue #63: Call-Control Client (token + makecall + /stream + events)
-* **Status**: ✅ Resolved (PR #39 — `ThreeCxAnchorClient.cpp`)
+* **Status**: ✅ Resolved (PR #39 — `TelephonyAnchorClient.cpp`)
 * **Labels**: `api-integration`, `anchor`, `http`
 * **Description**: The outbound anchor leg per the call-control specification: JWT `exp` token lifecycle management, `makecall` trigger, concurrent `GET`/`POST /stream` (chunked transfer) over mTLS, and WebSocket `wss://` updates to detect call connection and remote hangups. Hardware-confirmed.
 
 ### 🟢 Issue #64: Bridge Orchestration (virtual-ext intercept + leg mapping)
-* **Status**: ✅ Resolved (PR #39 — `RequestsHandler` ↔ `ThreeCxAnchorClient`)
+* **Status**: ✅ Resolved (PR #39 — `RequestsHandler` ↔ `TelephonyAnchorClient`)
 * **Labels**: `api-integration`, `sip`, `media`
 * **Description**: The SIP state machine wired to the anchor leg: intercept INVITEs on virtual extension blocks, negotiate `a=sendrecv` SDP, map SIP INVITE ➔ `makecall`, bridge audio streams, and map SIP BYE/CANCEL ↔ upstream participant drops (reliable teardown via reconcile + watchdog). Hardware-confirmed.
 

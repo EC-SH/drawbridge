@@ -29,7 +29,7 @@ public:
 	// Check if the bridge is currently active
 	bool isActive() const { return _active.load(std::memory_order_acquire); }
 
-	// #100: route one inbound (3CX->device) PCM chunk to this bridge's playout buffer IFF this
+	// #100: route one inbound (Telephony->device) PCM chunk to this bridge's playout buffer IFF this
 	// bridge is active and serving `participantId`. Returns true if it consumed the chunk. The
 	// anchor exposes a SINGLE rx callback; RequestsHandler owns it and fans out to the bridge that
 	// owns the participant (the bridge no longer registers the anchor callback itself).

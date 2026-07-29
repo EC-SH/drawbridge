@@ -12,7 +12,7 @@
 // the concrete implementation linked into the firmware.
 //
 // Concrete implementations today:
-//   ThreeCxAnchorClient   — first real provider (HTTPS call-control API + OAuth2)
+//   TelephonyAnchorClient   — first real provider (HTTPS call-control API + OAuth2)
 //   LoopbackAnchorClient  — on-box mock (no PSTN), the safe default
 //   StubTelephonyProvider — honest compile-time scaffolding for providers that
 //                           are declared in the enum but NOT implemented yet.
@@ -37,7 +37,7 @@ using ITelephonyProvider = AnchorClient;
 enum class TelephonyProviderType : uint8_t
 {
 	Loopback        = 0,  // on-box mock anchor (no PSTN) — implemented
-	ThreeCx         = 1,  // commercial softswitch call-control API — implemented
+	Telephony         = 1,  // commercial softswitch call-control API — implemented
 	Apidaze         = 2,  // scaffolding only (StubTelephonyProvider)
 	VoipInnovations = 3,  // scaffolding only (StubTelephonyProvider)
 	Sangoma         = 4,  // scaffolding only (StubTelephonyProvider)

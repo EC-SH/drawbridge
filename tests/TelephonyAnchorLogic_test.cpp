@@ -1,6 +1,6 @@
-// ThreeCxAnchorLogic_test.cpp — host coverage for the 3CX anchor's pure parsing
-// and URL logic (src/SIP/ThreeCxAnchorLogic.hpp). Issue #49 [H-8]: the real
-// ThreeCxAnchorClient impl is ESP-only (cJSON/mbedTLS/esp_http_client), so its
+// TelephonyAnchorLogic_test.cpp — host coverage for the Telephony anchor's pure parsing
+// and URL logic (src/SIP/TelephonyAnchorLogic.hpp). Issue #49 [H-8]: the real
+// TelephonyAnchorClient impl is ESP-only (cJSON/mbedTLS/esp_http_client), so its
 // JWT-lifetime decode, WS entity-path parse, and call-control URL builders had
 // no behavioral test. This suite drives the extracted, dependency-free logic —
 // the SAME functions the on-device arm now calls — so the parse contract that
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "ThreeCxAnchorLogic.hpp"
+#include "TelephonyAnchorLogic.hpp"
 
 namespace
 {
@@ -18,7 +18,7 @@ using namespace threecx;
 
 // ── base64url decode helper ─────────────────────────────────────────────────
 
-TEST(ThreeCxLogic, Base64UrlDecodesPlainJson)
+TEST(TelephonyLogic, Base64UrlDecodesPlainJson)
 {
 	// {"a":1} -> base64url "eyJhIjoxfQ" (no padding)
 	std::vector<uint8_t> out;
@@ -27,13 +27,13 @@ TEST(ThreeCxLogic, Base64UrlDecodesPlainJson)
 	EXPECT_EQ(s, "{\"a\":1}");
 }
 
-TEST(ThreeCxLogic, Base64UrlRejectsInvalidByte)
+TEST(TelephonyLogic, Base64UrlRejectsInvalidByte)
 {
 	std::vector<uint8_t> out;
 	EXPECT_FALSE(base64UrlDecode("not valid!", out));   // space + '!' are non-alphabet
 }
 
-TEST(ThreeCxLogic, Base64UrlHandlesUrlAlphabet)
+TEST(TelephonyLogic, Base64UrlHandlesUrlAlphabet)
 {
 	// '-' and '_' are the URL-safe substitutes for '+' and '/'. Decoding must
 	// accept them without requiring a prior translation step.
@@ -45,7 +45,7 @@ TEST(ThreeCxLogic, Base64UrlHandlesUrlAlphabet)
 
 // ── scanJsonNumber ──────────────────────────────────────────────────────────
 
-TEST(ThreeCxLogic, ScanJsonNumberExtractsField)
+TEST(TelephonyLogic, ScanJsonNumberExtractsField)
 {
 	int64_t v = 0;
 	ASSERT_TRUE(scanJsonNumber("{\"iat\":1700000000,\"exp\":1700003600}", "exp", v));
@@ -54,7 +54,7 @@ TEST(ThreeCxLogic, ScanJsonNumberExtractsField)
 	EXPECT_EQ(v, 1700000000);
 }
 
-TEST(ThreeCxLogic, ScanJsonNumberMissingOrNonNumeric)
+TEST(TelephonyLogic, ScanJsonNumberMissingOrNonNumeric)
 {
 	int64_t v = 0;
 	EXPECT_FALSE(scanJsonNumber("{\"exp\":123}", "iat", v));         // absent
@@ -63,7 +63,7 @@ TEST(ThreeCxLogic, ScanJsonNumberMissingOrNonNumeric)
 	EXPECT_FALSE(scanJsonNumber("{\"note\":\"exp pending\"}", "exp", v));
 }
 
-TEST(ThreeCxLogic, ScanJsonNumberToleratesWhitespace)
+TEST(TelephonyLogic, ScanJsonNumberToleratesWhitespace)
 {
 	int64_t v = 0;
 	ASSERT_TRUE(scanJsonNumber("{ \"exp\" :  42 }", "exp", v));
@@ -92,14 +92,14 @@ static std::string makeJwt(const std::string& payloadJson)
 	return enc("{\"alg\":\"HS256\"}") + "." + enc(payloadJson) + ".sigsig";
 }
 
-TEST(ThreeCxLogic, DecodeJwtLifetimeRealClaims)
+TEST(TelephonyLogic, DecodeJwtLifetimeRealClaims)
 {
 	// exp - iat = 3600s -> 3.6e9 µs.
 	std::string jwt = makeJwt("{\"iat\":1700000000,\"exp\":1700003600}");
 	EXPECT_EQ(decodeJwtLifetimeUs(jwt), 3600LL * 1000000);
 }
 
-TEST(ThreeCxLogic, DecodeJwtFallbackOnMalformed)
+TEST(TelephonyLogic, DecodeJwtFallbackOnMalformed)
 {
 	// No dots / one dot / empty payload all fall back to the safe lifetime —
 	// never the bogus OAuth expires_in:60 that would trigger a refresh storm.
@@ -108,13 +108,13 @@ TEST(ThreeCxLogic, DecodeJwtFallbackOnMalformed)
 	EXPECT_EQ(decodeJwtLifetimeUs("a..c"), kTokenFallbackLifetimeUs);
 }
 
-TEST(ThreeCxLogic, DecodeJwtFallbackOnMissingClaims)
+TEST(TelephonyLogic, DecodeJwtFallbackOnMissingClaims)
 {
 	// Payload decodes but lacks iat — fall back.
 	EXPECT_EQ(decodeJwtLifetimeUs(makeJwt("{\"exp\":1700003600}")), kTokenFallbackLifetimeUs);
 }
 
-TEST(ThreeCxLogic, DecodeJwtFallbackOnInsaneSpan)
+TEST(TelephonyLogic, DecodeJwtFallbackOnInsaneSpan)
 {
 	// Negative span (exp before iat) and an over-a-day span are both rejected by
 	// the sanity window -> fallback, not a garbage lifetime.
@@ -126,7 +126,7 @@ TEST(ThreeCxLogic, DecodeJwtFallbackOnInsaneSpan)
 
 // ── entity-path tokenizer + participant parse ───────────────────────────────
 
-TEST(ThreeCxLogic, SplitEntityPathDropsEmptySegments)
+TEST(TelephonyLogic, SplitEntityPathDropsEmptySegments)
 {
 	auto t = splitEntityPath("/callcontrol/100/participants/7");
 	ASSERT_EQ(t.size(), 4u);
@@ -139,7 +139,7 @@ TEST(ThreeCxLogic, SplitEntityPathDropsEmptySegments)
 	EXPECT_TRUE(splitEntityPath("").empty());
 }
 
-TEST(ThreeCxLogic, ParseParticipantEntityValid)
+TEST(TelephonyLogic, ParseParticipantEntityValid)
 {
 	ParticipantEntity e = parseParticipantEntity("/callcontrol/2001/participants/42");
 	EXPECT_TRUE(e.valid);
@@ -149,7 +149,7 @@ TEST(ThreeCxLogic, ParseParticipantEntityValid)
 	EXPECT_TRUE(parseParticipantEntity("callcontrol/2001/participants/42").valid);
 }
 
-TEST(ThreeCxLogic, ParseParticipantEntityRejectsWrongShape)
+TEST(TelephonyLogic, ParseParticipantEntityRejectsWrongShape)
 {
 	// Wrong length, wrong literals, or a different resource → not valid. This is
 	// the gate that stops the anchor acting on an unrelated WS event.
@@ -162,7 +162,7 @@ TEST(ThreeCxLogic, ParseParticipantEntityRejectsWrongShape)
 
 // ── URL builders ────────────────────────────────────────────────────────────
 
-TEST(ThreeCxLogic, UrlBuilders)
+TEST(TelephonyLogic, UrlBuilders)
 {
 	const std::string base = "https://pbx.example.com";
 	EXPECT_EQ(tokenUrl(base), "https://pbx.example.com/connect/token");
@@ -171,7 +171,7 @@ TEST(ThreeCxLogic, UrlBuilders)
 	EXPECT_EQ(legacyMakeCallUrl(base, "100"), "https://pbx.example.com/callcontrol/100/makecall");
 }
 
-TEST(ThreeCxLogic, ParticipantActionUrls)
+TEST(TelephonyLogic, ParticipantActionUrls)
 {
 	const std::string base = "https://pbx.example.com";
 	// The drop/answer/stream actions are what issue #40's teardown fix POSTs to.
@@ -186,7 +186,7 @@ TEST(ThreeCxLogic, ParticipantActionUrls)
 	          "https://pbx.example.com/callcontrol/100/participants/7");
 }
 
-TEST(ThreeCxLogic, ControlWsUrlSchemeRewrite)
+TEST(TelephonyLogic, ControlWsUrlSchemeRewrite)
 {
 	EXPECT_EQ(controlWsUrl("https://pbx.example.com"),
 	          "wss://pbx.example.com/callcontrol/ws");

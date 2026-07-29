@@ -1,8 +1,8 @@
 #ifndef THREECX_ANCHOR_LOGIC_HPP
 #define THREECX_ANCHOR_LOGIC_HPP
 
-// ── 3CX anchor: pure, host-compilable parsing/URL logic ──────────────────────
-// Issue #49 [H-8]: the ThreeCxAnchorClient implementation (cJSON + mbedTLS +
+// ── Telephony anchor: pure, host-compilable parsing/URL logic ──────────────────────
+// Issue #49 [H-8]: the TelephonyAnchorClient implementation (cJSON + mbedTLS +
 // esp_http_client + FreeRTOS) compiles only on-device, so the JWT-lifetime
 // decode, the WS-event entity-path tokenizer, and the call-control URL builders
 // were locked behind `#if ESP_PLATFORM` and never unit-tested. CI compiled them
@@ -28,8 +28,8 @@ namespace threecx
 
 // Fallback token lifetime when the JWT can't be decoded: 50 minutes (µs). This
 // is the JWT's real ~1h validity minus margin, deliberately NOT the OAuth
-// expires_in (3CX reports 60s there, which would cause a refresh storm). Mirrors
-// kTokenFallbackLifetimeUs in ThreeCxAnchorClient.cpp.
+// expires_in (Telephony reports 60s there, which would cause a refresh storm). Mirrors
+// kTokenFallbackLifetimeUs in TelephonyAnchorClient.cpp.
 inline constexpr int64_t kTokenFallbackLifetimeUs = 50LL * 60 * 1000000;
 
 // ── base64url decode (no padding required) ───────────────────────────────────
@@ -70,7 +70,7 @@ inline bool base64UrlDecode(const std::string& in, std::vector<uint8_t>& out)
 // whitespace, parses an integer (optionally signed). Returns false if the key
 // is absent or the value is not numeric. Sufficient for JWT `exp`/`iat` claims,
 // which are always integer seconds. (The on-device path uses cJSON; for the
-// well-formed tokens 3CX issues the two agree.)
+// well-formed tokens Telephony issues the two agree.)
 inline bool scanJsonNumber(const std::string& json, const std::string& key, int64_t& out)
 {
 	const std::string needle = "\"" + key + "\"";
@@ -143,7 +143,7 @@ inline int64_t decodeJwtLifetimeUs(const std::string& jwt)
 }
 
 // ── WS entity-path tokenizer ─────────────────────────────────────────────────
-// Split a 3CX WS-event entity path on '/', dropping empty segments. The control
+// Split a Telephony WS-event entity path on '/', dropping empty segments. The control
 // events carry "/callcontrol/{dn}/participants/{id}". Mirrors the inline
 // std::getline split in handleWsEvent().
 inline std::vector<std::string> splitEntityPath(const std::string& entity)
@@ -191,7 +191,7 @@ inline ParticipantEntity parseParticipantEntity(const std::string& entity)
 }
 
 // ── Call-control URL builders ────────────────────────────────────────────────
-// These mirror the string concatenations scattered through ThreeCxAnchorClient
+// These mirror the string concatenations scattered through TelephonyAnchorClient
 // (makeCall / dropCall / answerCall / reconcile / stream). Centralizing them
 // makes the path shape testable and keeps the on-device builders consistent.
 
