@@ -12,9 +12,10 @@
 // Layering / portability:
 //   * The pure DSP + packetization helpers (µ-law encode, tone synthesis, RTP header
 //     build) are PLATFORM-INDEPENDENT and host-unit-tested (see tests/Rtp_test.cpp).
-//   * The actual UDP socket + the 20 ms FreeRTOS pacing task are ESP-ONLY and guarded
-//     by `#if defined(ESP_PLATFORM)`. On host these compile to no-op stubs so the
-//     desktop gtest build (build_desktop) still builds & links.
+//   * The UDP socket + 20 ms pacing loop exist on BOTH arms (issue #62): the ESP arm
+//     uses lwIP + a FreeRTOS task; the desktop/server arm (Linux & Windows — x86,
+//     x86_64, ARM; a first-class deployment target) uses BSD/WinSock sockets + a
+//     std::thread paced by steady_clock, mirroring the UdpServer/HttpServer split.
 //
 // Concurrency cap: ONE concurrent stream. A second dial of 440 while a stream is
 // live is rejected by the caller (onInvite) with 486 Busy Here. isActive() is the
@@ -29,7 +30,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
 #include <netinet/in.h>
 #elif defined _WIN32 || defined _WIN64
 #include <WinSock2.h>
@@ -41,6 +42,9 @@
 #include <array>
 #include <mutex>
 #include <functional>
+#if !defined(ESP_PLATFORM) && !defined(ESP32)
+#include <thread>
+#endif
 
 class RtpSender
 {
@@ -124,6 +128,18 @@ private:
 	std::atomic<bool> _stopRequested{false};
 	std::atomic<bool> _taskRunning{false};
 	sockaddr_in       _dest{};
+#else
+	// Host / desktop arm (issue #62) — same shape and flag semantics as the ESP
+	// branch, with a joinable std::thread standing in for the FreeRTOS task. The
+	// thread clears _taskRunning as its LAST act; start() joins a drained
+	// predecessor (bounded: the loop exits within one 20 ms frame of
+	// _stopRequested) so the slot is immediately reusable after stop().
+	void runLoop();                       // 20 ms-paced sender loop (std::thread)
+	int               _sock = -1;
+	sockaddr_in       _dest{};
+	std::atomic<bool> _stopRequested{false};
+	std::atomic<bool> _taskRunning{false};
+	std::thread       _senderThread;
 #endif
 
 	std::atomic<bool> _active{false};

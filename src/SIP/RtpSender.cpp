@@ -9,6 +9,23 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "PsramTask.hpp"   // #100: PSRAM-backed task stack (off the scarce internal-RAM heap)
+#elif defined(__linux__) || defined(__APPLE__)
+#include <arpa/inet.h>     // inet_pton
+#include <sys/socket.h>
+#include <unistd.h>        // close
+#include <cstdio>          // fprintf diagnostics (no ESP_LOG on host)
+#include <cstdlib>         // std::rand for SSRC/seq seeding
+#include <chrono>
+#include <thread>
+#include <system_error>    // std::thread spawn failure
+#elif defined(_WIN32) || defined(_WIN64)
+#include <WinSock2.h>
+#include <WS2tcpip.h>      // inet_pton
+#include <cstdio>
+#include <cstdlib>
+#include <chrono>
+#include <thread>
+#include <system_error>
 #else
 #include <cstdlib>   // std::rand on host (only for SSRC/seq seeding in stubbed start)
 #endif
@@ -151,7 +168,14 @@ RtpSender::~RtpSender()
 		vTaskDelay(pdMS_TO_TICKS(5));
 	}
 #else
-	stop("");   // host stub: just clears the (no-task) active flag
+	// Ask the sender thread to stop, then JOIN it before this object's storage is
+	// reclaimed (runLoop captures `this`). Bounded: the loop observes _stopRequested
+	// within one 20 ms frame — mirrors the ESP destructor's bounded wait.
+	_stopRequested.store(true, std::memory_order_release);
+	if (_senderThread.joinable())
+	{
+		_senderThread.join();
+	}
 #endif
 }
 
@@ -324,16 +348,22 @@ void RtpSender::runLoop()
 		buildRtpHeader(packet, /*marker=*/firstPkt, RtpSender::PAYLOAD_TYPE_PCMU,
 			seq, timestamp, ssrc);
 
-		bool hasAudio = false;
 		if (provider)
 		{
-			hasAudio = provider(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT);
+			if (!provider(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT))
+			{
+				// Bridge underrun: comfort silence (µ-law silent byte is 0xFF).
+				std::memset(packet + RtpSender::RTP_HEADER_BYTES, 0xFF, RtpSender::SAMPLES_PER_PKT);
+			}
 		}
-
-		if (!hasAudio)
+		else
 		{
-			// Fallback: silence (µ-law silent byte is 0xFF)
-			std::memset(packet + RtpSender::RTP_HEADER_BYTES, 0xFF, RtpSender::SAMPLES_PER_PKT);
+			// No provider = the 440 media-test stream: synthesize the continuous
+			// tone the class contract promises ("hearing audio proves the RTP
+			// pipe"). The silence fallback here was a regression from the
+			// FrameProvider/bridge work — it silently muted extension 440.
+			synthTone(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT,
+				RtpSender::DEFAULT_TONE_HZ, phase);
 		}
 
 		if (sock >= 0)
@@ -372,18 +402,126 @@ void RtpSender::runLoop()
 	ESP_LOGI("RtpSender", "Media stream stopped");
 }
 
-#else   // ── Host stubs: keep the SDP-answer / cap logic testable, no real I/O ──
+#else
+// ─────────────────────────────────────────────────────────────────────────────
+//  Host / desktop (Linux & Windows — x86, x86_64, ARM): real UDP socket +
+//  20 ms std::thread pacing loop (issue #62). Modeled on the ESP arm above and
+//  on the UdpServer/HttpServer platform-split conventions (int fd,
+//  close()/closesocket(), WSAStartup on demand). The desktop build is a
+//  first-class deployment target — extension 440 produces audible tone here
+//  exactly as on the ESP32.
+//
+//  Semantic difference vs the ESP arm, kept deliberately: stop() frees the
+//  logical slot (_callID/_active) IMMEDIATELY and lets the sender thread drain
+//  its final frame on its own; the next start() joins the drained thread
+//  (bounded ≤ one 20 ms frame) instead of refusing with 486. FreeRTOS tasks
+//  cannot be joined, so the ESP arm must refuse the overlap window — a
+//  std::thread can, so the host keeps the immediate stop()→idle semantics the
+//  registrar and the unit suite have always observed on this arm.
+// ─────────────────────────────────────────────────────────────────────────────
 
-bool RtpSender::start(const std::string& /*destIp*/, uint16_t /*destPort*/, const std::string& callID, FrameProvider provider)
+namespace
 {
-	std::lock_guard<std::mutex> lock(_slotMutex);
-	if (_active.load(std::memory_order_acquire))
+	inline void closeUdpSocket(int fd)
 	{
-		return false;   // single-stream cap still enforced on host (for tests)
+#if defined(_WIN32) || defined(_WIN64)
+		closesocket(fd);
+#else
+		close(fd);
+#endif
 	}
-	_callID = callID;
-	_provider = provider;
+}
+
+bool RtpSender::start(const std::string& destIp, uint16_t destPort, const std::string& callID, FrameProvider provider)
+{
+	// Join any drained predecessor BEFORE taking the slot lock — its teardown
+	// grabs the same mutex, so joining under the lock would deadlock. Safe
+	// unlocked: start()/stop() are serialized on the registrar (SIP) thread, and
+	// a joinable-but-inactive thread is by construction already past its loop
+	// (stop() set _stopRequested when it cleared _active).
+	if (_senderThread.joinable())
+	{
+		if (_active.load(std::memory_order_acquire))
+		{
+			return false;   // live stream: single-stream cap (the 486 path)
+		}
+		_senderThread.join();
+	}
+
+	std::lock_guard<std::mutex> lock(_slotMutex);
+	if (_active.load(std::memory_order_acquire) || _taskRunning.load(std::memory_order_acquire))
+	{
+		return false;
+	}
+
+#if defined(_WIN32) || defined(_WIN64)
+	// Cheap if already initialised — same reasoning as UdpServer::openSocket().
+	WSADATA wsa;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+	{
+		return false;
+	}
+#endif
+
+	sockaddr_in dest{};
+	dest.sin_family = AF_INET;
+	dest.sin_port   = htons(destPort);
+	if (inet_pton(AF_INET, destIp.c_str(), &dest.sin_addr) != 1)
+	{
+		std::fprintf(stderr, "RtpSender: bad destination IP '%s'\n", destIp.c_str());
+		return false;
+	}
+
+	const int sock = static_cast<int>(socket(AF_INET, SOCK_DGRAM, 0));
+	if (sock < 0)
+	{
+		std::fprintf(stderr, "RtpSender: socket() failed\n");
+		return false;
+	}
+
+	// Bind the dedicated server media port so the source port is deterministic and
+	// matches the SDP we advertised (symmetric-RTP UAs latch the source port).
+	sockaddr_in local{};
+	local.sin_family      = AF_INET;
+	local.sin_addr.s_addr = htonl(INADDR_ANY);
+	local.sin_port        = htons(static_cast<uint16_t>(_serverRtpPort));
+	if (bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) < 0)
+	{
+		// Non-fatal: an ephemeral source port still delivers media to the caller.
+		std::fprintf(stderr, "RtpSender: bind(%d) failed; using ephemeral source port\n",
+			_serverRtpPort);
+	}
+
+	_sock          = sock;
+	_dest          = dest;
+	_callID        = callID;
+	_provider      = provider;
+	_stopRequested.store(false, std::memory_order_release);
+	// Mark running BEFORE the thread launches (same ordering contract as the ESP
+	// arm); the thread clears it as its very last shared-state access.
+	_taskRunning.store(true, std::memory_order_release);
 	_active.store(true, std::memory_order_release);
+
+	try
+	{
+		_senderThread = std::thread([this]
+		{
+			runLoop();
+			_taskRunning.store(false, std::memory_order_release);
+		});
+	}
+	catch (const std::system_error&)
+	{
+		// Same failure class HttpServer::acceptLoop guards against.
+		closeUdpSocket(sock);
+		_sock = -1;
+		_callID.clear();
+		_provider = nullptr;
+		_taskRunning.store(false, std::memory_order_release);
+		_active.store(false, std::memory_order_release);
+		return false;
+	}
+
 	return true;
 }
 
@@ -398,10 +536,100 @@ bool RtpSender::stop(const std::string& callID)
 	{
 		return false;
 	}
+
+	// NON-BLOCKING, same contract as the ESP arm: the registrar calls this while
+	// holding its handler mutex, so never wait out the sender's 20 ms cadence
+	// here. The slot is logically freed NOW (immediate stop()→isActive()==false);
+	// the draining thread only touches its local socket copy from here on, and
+	// the next start() joins the remnant before reusing the slot.
+	_stopRequested.store(true, std::memory_order_release);
 	_callID.clear();
 	_provider = nullptr;
 	_active.store(false, std::memory_order_release);
 	return true;
+}
+
+void RtpSender::runLoop()
+{
+	// Snapshot the immutable per-stream socket + destination ONCE under the lock
+	// (written only in start() before this thread exists — same as the ESP arm).
+	int           sock;
+	sockaddr_in   dest;
+	FrameProvider provider;
+	{
+		std::lock_guard<std::mutex> lock(_slotMutex);
+		sock     = _sock;
+		dest     = _dest;
+		provider = _provider;
+	}
+
+	// Per-stream RTP state. Random start seq/timestamp/SSRC per RFC 3550 §5.1.
+	uint16_t seq       = static_cast<uint16_t>(rand32());
+	uint32_t timestamp = rand32();
+	const uint32_t ssrc = rand32();
+	double   phase     = 0.0;
+	bool     firstPkt  = true;
+
+	// One fixed packet buffer reused every 20 ms — no per-packet heap.
+	uint8_t packet[RtpSender::PACKET_BYTES];
+
+	// Pace at exactly 20 ms: sleep_until against an absolute deadline compensates
+	// for send jitter (the std::chrono analogue of vTaskDelayUntil).
+	const auto period = std::chrono::milliseconds(RtpSender::PTIME_MS);
+	auto next = std::chrono::steady_clock::now() + period;
+
+	while (!_stopRequested.load(std::memory_order_acquire))
+	{
+		buildRtpHeader(packet, /*marker=*/firstPkt, RtpSender::PAYLOAD_TYPE_PCMU,
+			seq, timestamp, ssrc);
+
+		if (provider)
+		{
+			if (!provider(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT))
+			{
+				// Bridge underrun: comfort silence (µ-law silent byte is 0xFF).
+				std::memset(packet + RtpSender::RTP_HEADER_BYTES, 0xFF, RtpSender::SAMPLES_PER_PKT);
+			}
+		}
+		else
+		{
+			// No provider = the 440 media-test stream: synthesize the continuous
+			// tone (same regression fix as the ESP arm above).
+			synthTone(packet + RtpSender::RTP_HEADER_BYTES, RtpSender::SAMPLES_PER_PKT,
+				RtpSender::DEFAULT_TONE_HZ, phase);
+		}
+
+		if (sock >= 0)
+		{
+			// Fire-and-forget UDP; const char* cast keeps WinSock happy too.
+			sendto(sock, reinterpret_cast<const char*>(packet),
+				static_cast<int>(sizeof(packet)), 0,
+				reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
+		}
+
+		firstPkt   = false;
+		++seq;
+		timestamp += RtpSender::SAMPLES_PER_PKT;   // 160 per 20 ms frame
+
+		std::this_thread::sleep_until(next);
+		next += period;
+	}
+
+	// This thread owns its socket fd. The logical slot (_callID/_active) was
+	// already cleared by stop() — or the destructor is tearing us down — so only
+	// the fd and its _sock mirror need care here, guarded so a successor stream's
+	// socket is never touched.
+	{
+		std::lock_guard<std::mutex> lock(_slotMutex);
+		if (sock >= 0)
+		{
+			closeUdpSocket(sock);
+		}
+		if (_sock == sock)
+		{
+			_sock = -1;
+		}
+	}
 }
 
 #endif
