@@ -702,6 +702,43 @@ void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)
 		return;
 	}
 
+	// Codec gate, before any session is allocated: an offer with no audio codec
+	// this PBX will relay (Opus-only, G.729-only ...) gets a clean 488 now,
+	// instead of a 200 OK whose rewritten m-line advertised payloads the phone
+	// never offered -- the "signalling completes, media is dead" failure
+	// PHONE_COMPATIBILITY.md used to document as a phone-side setting.
+	if (data->hasSdp() && !data->offersSupportedAudio(/*allowWideband=*/true))
+	{
+		auto response = getMessageFromPool(data->toString(), data->getSource());
+		response->setHeader("SIP/2.0 488 Not Acceptable Here");
+		response->clearBody();
+		std::string activeIp = (_serverIp == "0.0.0.0") ? getPrimaryLocalIP() : _serverIp;
+		response->addHeader("Warning", "304 " + activeIp + " \"No compatible audio codec (PCMU/PCMA/G722)\"");
+		response->setVia(std::string(data->getVia()) + ";received=" + activeIp);
+		_outbox.emplace_back(data->getSource(), std::move(response));
+		return;
+	}
+
+	// #125: Secure mode -- registration auth alone left call setup open to
+	// anyone who can reach UDP/5060. Challenge the INVITE with the same digest
+	// machinery; admitSecure() takes the method from the request line, so it
+	// verifies against INVITE. The stateless 401 needs no session; the
+	// credentialed retry arrives with CSeq+1 and falls through here. Learn
+	// mode keeps its TOFU semantics and Open mode never challenges. Endpoint
+	// firmware must carry a digest client before a site flips to Secure --
+	// tincan-core does as of 2026-08-31.
+	if (_registrarMode.load(std::memory_order_relaxed) == RegistrarMode::Secure)
+	{
+		std::string rejectReason;
+		const AuthDecision decision = admitSecure(data, std::string(data->getFromNumber()), rejectReason);
+		if (decision == AuthDecision::Challenge) return;   // 401 already enqueued
+		if (decision == AuthDecision::Reject)
+		{
+			sendForbidden(data, rejectReason.empty() ? "Forbidden" : rejectReason);
+			return;
+		}
+	}
+
 	std::string destNumber(data->getToNumber());
 	if (destNumber == "777")
 	{
@@ -1857,7 +1894,10 @@ void RequestsHandler::onOk(std::shared_ptr<SipMessage> data)
 						response->setTo(originalTo);
 					}
 
-					response->enforceG711();
+					// Relayed answer on a peer-to-peer leg: keep the callee's codec pick
+					// and order (it already intersected the caller's offer), dropping
+					// only what this PBX won't carry -- never the blind "0 8 101".
+					(void)response->filterAudioCodecs(/*allowWideband=*/true);
 					endHandle(session.value()->getSrc()->getNumber(), std::move(response));
 
 					if (inviteMsg)
@@ -2232,7 +2272,7 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 			   << "Content-Length: " << cSdp.size() << "\r\n\r\n"
 			   << cSdp;
 			auto inv = getMessageFromPool(ss.str(), bClient->getAddress());
-			inv->enforceG711();
+			(void)inv->filterAudioCodecs(/*allowWideband=*/true);   // C's SDP relayed P2P
 			inv->syncContentLength();
 			_outbox.emplace_back(bClient->getAddress(), std::move(inv));
 			_transferPendingAcks.push_back(callID);
@@ -2258,7 +2298,7 @@ void RequestsHandler::onRefer(std::shared_ptr<SipMessage> data)
 			   << "Content-Length: " << bSdp.size() << "\r\n\r\n"
 			   << bSdp;
 			auto inv = getMessageFromPool(ss.str(), cClient->getAddress());
-			inv->enforceG711();
+			(void)inv->filterAudioCodecs(/*allowWideband=*/true);   // B's SDP relayed P2P
 			inv->syncContentLength();
 			_outbox.emplace_back(cClient->getAddress(), std::move(inv));
 			_transferPendingAcks.push_back(replacesCallIdKey);
@@ -2722,7 +2762,9 @@ void RequestsHandler::buildInviteFork(const std::shared_ptr<SipMessage>& invite,
 		inviteFork->addHeader("P-Auto-Answer", "normal");
 	}
 	inviteFork->addHeader("Supported", "timer");
-	inviteFork->enforceG711();
+	// Caller's offer relayed peer-to-peer: preserve its preference order, drop
+	// only unsupported payloads (onInvite already 488'd offers with nothing left).
+	(void)inviteFork->filterAudioCodecs(/*allowWideband=*/true);
 	_outbox.emplace_back(target->getAddress(), std::move(inviteFork));
 }
 
@@ -5114,7 +5156,7 @@ void RequestsHandler::onParkInvite(std::shared_ptr<SipMessage> data,
 	ok->setTo(std::string(data->getTo()) + ";tag=" + toTag);
 	ok->setContact(buildContact(orbit));
 	if (!parkedSdp.empty()) ok->setBody(parkedSdp);
-	ok->enforceG711();
+	(void)ok->filterAudioCodecs(/*allowWideband=*/true);   // parked party's own SDP, relayed P2P
 	ok->syncContentLength();
 	_outbox.emplace_back(data->getSource(), ok);
 
@@ -5174,7 +5216,7 @@ void RequestsHandler::sendParkReinvite(ParkSlot& slot, const std::string& sdp)
 	   << body;
 
 	auto inv = getMessageFromPool(ss.str(), slot.parkedAddr);
-	inv->enforceG711();
+	(void)inv->filterAudioCodecs(/*allowWideband=*/true);   // retriever's SDP relayed P2P
 	inv->syncContentLength();
 	_outbox.emplace_back(slot.parkedAddr, std::move(inv));
 	// We owe an ACK once the parked party 200s this re-INVITE (handleParkOk).
@@ -5236,7 +5278,7 @@ void RequestsHandler::startParkRingback(ParkSlot& slot, const std::shared_ptr<Si
 	   << body;
 
 	auto inv = getMessageFromPool(ss.str(), addr);
-	inv->enforceG711();
+	(void)inv->filterAudioCodecs(/*allowWideband=*/true);   // parked party's SDP relayed P2P
 	inv->syncContentLength();
 	_outbox.emplace_back(addr, std::move(inv));
 	queueLog("Park: timeout on " + slot.orbit + " — ringing back parker " + parker->getNumber());

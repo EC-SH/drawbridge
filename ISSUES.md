@@ -285,7 +285,7 @@ This backlog is prioritized by architectural dependency and deployment urgency.
 * **Description**: The SoftAP currently runs open (no passphrase). Any device on the same radio can join, reach the SIP registrar, and attempt to register extensions. Fix: set `authmode = WIFI_AUTH_WPA2_PSK` in `esp_wifi_ap_config_t` with a unique per-device PSK (generated at first boot, displayed via TUI [2] NETWORK, QR-encoded on the display build). This is the primary security control for SoftAP deployments; HTTPS (#134) and SRTP (#135) depend on this being in place first.
 
 #### 🟡 Issue #125: SIP digest auth for INVITE — REGISTER auth ships; INVITE challenge is incomplete
-* **Status**: ⏳ Open
+* **Status**: ✅ Resolved 2026-08-31 on `feat/sdp-negotiation-invite-auth` — `onInvite` challenges every INVITE in Secure mode via `admitSecure()` (401 → credentialed retry, 403 on bad digest); Open/Learn unchanged. Shipped together with relay codec negotiation (`filterAudioCodecs`, 488 gate) and the pocket-dial HMAC-MD5 nonce tag. **Deploy note:** endpoints must carry a digest client before a site flips to Secure (tincan-core does; hardphones always did). Host tests: `InviteAdmission_test.cpp`
 * **Labels**: `sip-engine`, `security`, `priority-high`
 * **Description**: REGISTER digest challenge (RFC 2617 MD5) is shipped in Secure mode. INVITE challenges are not uniformly applied — an attacker who can reach the UDP port can call any extension without credentials. Extend the challenge machinery to INVITE: 401 challenge on first attempt, accept only if the digest matches the registered extension's HA1.
 

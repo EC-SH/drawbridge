@@ -80,7 +80,7 @@ Code branches on `defined(ESP_PLATFORM) || defined(ESP32)` (~~formerly also `|| 
 
 ### SIP interoperability quirks (don't "fix" these — they're deliberate)
 - `clearBody()` strips caller SDP from forwarded `180 Ringing` (prevents early-media loops on Yealink-class phones) and rewrites `Content-Length`.
-- `enforceG711()` forces the codec list to `0 8 101` on forked INVITE / 200 OK SDP. Any SDP mutation MUST resync `Content-Length` afterward (this was the historical `777`/`999` bug class).
+- Codec policy is split by leg. `enforceG711()` still pins the list to `0 8 101`, but ONLY on SDP the server itself terminates (777 echo, register beep, anchor/440 media). Relayed peer-to-peer SDP (hunt/answer relay, invite fork, transfer and park re-INVITEs) goes through `filterAudioCodecs(true)`: the endpoint's payload ORDER is preserved and only unsupported payloads (anything but PCMU/PCMA/G.722/telephone-event) are dropped with their `a=rtpmap`/`a=fmtp`; nothing is ever added, and `onInvite` answers 488 when no audio codec survives. Do not put `enforceG711()` back on a relay leg -- it advertised payloads the phone never offered. Any SDP mutation MUST still resync `Content-Length` afterward (this was the historical `777`/`999` bug class).
 
 ## Layout notes
 - `src/` — cross-platform engine (Helpers + SIP). The single source of truth; ~~sketches and~~ firmware (and the host build) compile it.
