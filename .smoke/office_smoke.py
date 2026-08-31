@@ -173,10 +173,24 @@ class Phone:
             time.sleep(0.02)
         return None
 
-    def _my_sdp(self, inactive=False):
+    # Payload-type -> rtpmap line, for building offers that exercise the PBX's
+    # relay codec policy (order preserved, G.722 admitted, unknowns dropped, 488
+    # when nothing is left).
+    RTPMAP = {
+        0: "a=rtpmap:0 PCMU/8000", 8: "a=rtpmap:8 PCMA/8000", 9: "a=rtpmap:9 G722/8000",
+        96: "a=rtpmap:96 opus/48000/2", 101: "a=rtpmap:101 telephone-event/8000",
+    }
+
+    def _my_sdp(self, inactive=False, codecs=None):
         if inactive:
             return ("v=0\r\no=- 0 0 IN IP4 %s\r\ns=smoke\r\nc=IN IP4 %s\r\nt=0 0\r\n"
                     "m=audio 9 RTP/AVP 0\r\na=inactive\r\n") % (self.local_ip, self.local_ip)
+        if codecs:
+            attrs = "".join(self.RTPMAP[pt] + "\r\n" for pt in codecs if pt in self.RTPMAP)
+            return ("v=0\r\no=- 0 0 IN IP4 %s\r\ns=smoke\r\nc=IN IP4 %s\r\nt=0 0\r\n"
+                    "m=audio %d RTP/AVP %s\r\n%sa=sendrecv\r\n"
+                    ) % (self.local_ip, self.local_ip, self.rtp_port,
+                         " ".join(str(pt) for pt in codecs), attrs)
         return ("v=0\r\no=- 0 0 IN IP4 %s\r\ns=smoke\r\nc=IN IP4 %s\r\nt=0 0\r\n"
                 "m=audio %d RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n"
                 ) % (self.local_ip, self.local_ip, self.rtp_port)
@@ -322,12 +336,13 @@ class Phone:
         return False
 
     # ── outbound: INVITE / ACK / BYE / CANCEL ────────────────────────────────
-    def invite(self, dest, timeout=8.0, sdp_inactive=False):
+    def invite(self, dest, timeout=8.0, sdp_inactive=False, codecs=None):
         """Places a call to `dest`. Returns (callid, final_status, remote_sdp) — status 0
-        on no-response timeout."""
+        on no-response timeout. `codecs` overrides the offered payload list (see
+        RTPMAP) to probe the relay codec policy."""
         tag = "ft%s" % rid(6)
         callid = "call-%s-%s-%s@%s" % (self.ext, dest, rid(6), self.local_ip)
-        sdp = self._my_sdp(inactive=sdp_inactive)
+        sdp = self._my_sdp(inactive=sdp_inactive, codecs=codecs)
         branch = "z9hG4bK%s" % rid(12)
         req = ("INVITE sip:%s@%s SIP/2.0\r\n"
                "Via: SIP/2.0/UDP %s:%d;branch=%s\r\n"
@@ -552,6 +567,39 @@ def scenario_echo_test(phones):
     report("*777 echo test", ok,
            "echoed SDP port=%d (own=%d, match=%s), rtp %d/%d looped back" %
            (ep[1], a.rtp_port, self_match, recvd, sent))
+    return ok
+
+
+def scenario_codec_policy(phones):
+    """Relay codec policy (filterAudioCodecs): a G.722-first offer reaches the callee
+    with its order intact and nothing added; an Opus-only offer is refused 488 at the
+    PBX instead of being 'answered' with payloads the phone never offered."""
+    a = phones["A"]; d = phones["D"]
+    t0 = now_ms()
+    callid, status, answer = a.invite(d.ext, codecs=[9, 0, 101])
+    ev = d.wait_event("INCOMING_CALL", timeout=5.0, match=lambda e: e["callid"] == callid)
+    fork_body = ev["body"] if ev else ""
+    order_kept = "RTP/AVP 9 0 101" in fork_body
+    nothing_added = "RTP/AVP 0 8 101" not in fork_body and " 8 " not in fork_body.split("m=audio")[-1][:40]
+    g722_rtpmap = "a=rtpmap:9 G722/8000" in fork_body
+    # D answers PCMU-only (default _my_sdp); the relayed answer to A must be D's pick,
+    # not a rewrite.
+    answer_ok = status == 200 and "RTP/AVP 0 101" in answer and "RTP/AVP 0 8 101" not in answer
+    if status == 200:
+        a.bye(callid)
+        time.sleep(0.3)
+
+    callid2, status2, _ = a.invite(d.ext, codecs=[96, 101])
+    refused = (status2 == 488)
+    leaked = d.wait_event("INCOMING_CALL", timeout=1.0, match=lambda e: e["callid"] == callid2)
+    if status2 == 200:
+        a.bye(callid2)
+
+    ok = order_kept and nothing_added and g722_rtpmap and answer_ok and refused and leaked is None
+    report("Codec policy (relay)", ok,
+           "G.722-first fork kept order=%s nothing added=%s rtpmap kept=%s; answer relayed as-is=%s "
+           "(status %s); Opus-only refused 488=%s (status %s) not forwarded=%s" %
+           (order_kept, nothing_added, g722_rtpmap, answer_ok, status, refused, status2, leaked is None))
     return ok
 
 
@@ -862,6 +910,7 @@ def main():
                   "aborting remaining scenarios (they all assume a registered office).")
         else:
             scenario_echo_test(phones)
+            scenario_codec_policy(phones)
             scenario_park_retrieve(phones)
             scenario_blind_transfer(board_ip, local_ip)
             scenario_attended_transfer(board_ip, local_ip)
