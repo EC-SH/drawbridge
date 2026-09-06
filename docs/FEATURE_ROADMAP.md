@@ -2,9 +2,9 @@
 
 **Status:** Living document | **Last updated:** 2026-06-12 | **Scope:** Engineering / product-capability only
 
-> **Staleness note (2026-07-22):** this file has drifted behind `ISSUES.md` and the current
+> **Staleness note (2026-07-22):** this file has drifted behind the current
 > source tree — several items shown below as "proposed" (attended transfer, session timers,
-> UPDATE, DND, ring groups) have since shipped. Treat `ISSUES.md` + a grep of `src/` as the
+> UPDATE, DND, ring groups) have since shipped. Treat a grep of `src/` as the
 > ground truth for what's actually missing; use this file for the historical design rationale
 > only, not as a current features-still-missing checklist.
 
@@ -20,7 +20,6 @@ ARCHITECTURE.md ·
 [THREAT_MODEL.md](THREAT_MODEL.md) ·
 PROVISIONING.md ·
 [OTA.md](OTA.md) ·
-[../ISSUES.md](../ISSUES.md) ·
 [../README.md](../README.md)
 
 > **Framing.** DRAWBRIDGE is a *signalling-only* SIP registrar/proxy: it brokers call
@@ -127,7 +126,7 @@ Complexity is a t-shirt size for *signalling-side* work unless noted.
 | **P2** | **Optional self-signed HTTPS for dashboard** | Documented add-on *on top of* WPA2 only. Browser-warning UX is bad on a LAN appliance and TLS handshakes cost MCU RAM/CPU; not the primary control. | **M** | [THREAT_MODEL.md](THREAT_MODEL.md) §6 (answered "not as primary") |
 | **P2** | **SRTP for media** | App-layer media encryption. Heavyweight on the MCU and key-management UX; WPA2 already encrypts media at the link layer for far less. Low priority given the P2P/no-DSP model. | **L** | [THREAT_MODEL.md](THREAT_MODEL.md) I-1 |
 
-### 3.4 Developer / ops experience (cross-ref [../ISSUES.md](../ISSUES.md))
+### 3.4 Developer / ops experience
 
 | Pri | Feature | Rationale (technical) | Complexity | Issue |
 |-----|---------|----------------------|------------|-------|

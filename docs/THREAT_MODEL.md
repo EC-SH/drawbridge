@@ -233,7 +233,7 @@ narrows the *second* admin surface; it does not reduce the first.
 
 Related constraint: **admin PINs may not begin `4887`** (enforced at set-pin) — a PIN with
 that prefix would be shadowed mid-entry by the star-code and could never complete a DTMF
-`*PIN#code` admin command. PINs provisioned before this guard keep the collision (ISSUES.md).
+`*PIN#code` admin command. PINs provisioned before this guard keep the collision.
 
 ---
 

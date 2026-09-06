@@ -17,7 +17,7 @@
 //   StubTelephonyProvider — honest compile-time scaffolding for providers that
 //                           are declared in the enum but NOT implemented yet.
 //
-// Invariants (mirrors CLAUDE.md):
+// Invariants (mirror the project engineering notes):
 //   * Provider objects are constructed ONCE at boot (they are members of
 //     RequestsHandler / static storage) — the registry stores raw pointers and
 //     never allocates.
