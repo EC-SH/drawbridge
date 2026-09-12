@@ -195,6 +195,7 @@ void RequestsHandler::initHandlers()
 	_handlers.emplace(SipMessageTypes::UPDATE,            std::bind(&RequestsHandler::onUpdate,         this, std::placeholders::_1));
 	_handlers.emplace(SipMessageTypes::MESSAGE,           std::bind(&RequestsHandler::onMessage,        this, std::placeholders::_1));
 	_handlers.emplace(SipMessageTypes::SUBSCRIBE,         std::bind(&RequestsHandler::onSubscribe,      this, std::placeholders::_1));
+	_handlers.emplace(SipMessageTypes::FINAL_FAILURE,     std::bind(&RequestsHandler::onFinalFailure,   this, std::placeholders::_1));
 }
 
 void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
@@ -244,7 +245,10 @@ void RequestsHandler::handle(std::shared_ptr<SipMessage> request)
 				case 480: handlerKey = SipMessageTypes::UNAVAILABLE;        break;
 				case 486: handlerKey = SipMessageTypes::BUSY;               break;
 				case 487: handlerKey = SipMessageTypes::REQUEST_TERMINATED; break;
-				default:  handlerKey = std::string(request->getType());     break;
+				default:  handlerKey = (status->code >= 300)
+					              ? SipMessageTypes::FINAL_FAILURE
+					              : std::string(request->getType());
+					break;
 			}
 		}
 		else
@@ -655,6 +659,37 @@ void RequestsHandler::onReqTerminated(std::shared_ptr<SipMessage> data)
 		return;
 	}
 	endHandle(data->getFromNumber(), data);
+}
+
+void RequestsHandler::onFinalFailure(std::shared_ptr<SipMessage> data)
+{
+	// Catch-all for a non-2xx final response whose status code has no more specific
+	// handlerKey in handle()'s switch (403/404/481/5xx/6xx, ...) — most notably the
+	// phone's reply to a CANCEL sent AFTER its own final response already closed the
+	// INVITE transaction (RFC 3261 §9.1 makes that CANCEL illegal; the phone's answer
+	// to it lands here instead of a specific case). Register-beep dialogs (server-
+	// originated UAC, no Session — tracked in _beepDialogs by Call-ID) are the only
+	// current claimant, recognised by Call-ID exactly like onOk()/onReqTerminated()
+	// above. Whoever claims it must ACK in the SAME transaction when this really is
+	// one (RFC 3261 §17.1.1.3) and release its own slot either way — never leave it
+	// for the beep's own timeout sweep.
+	if (BeepDialog* bd = findBeepByCallID(data->getCallID()))
+	{
+		std::string cseq(data->getCSeq());
+		if (cseq.find(SipMessageTypes::INVITE) != std::string::npos &&
+			(bd->state == BeepState::AwaitingInviteOk || bd->state == BeepState::AwaitingCancelDone))
+		{
+			auto ack = buildBeepAck(data);   // same helper the 200-OK/487 paths reuse
+			if (ack) _outbox.emplace_back(bd->addr, std::move(ack));
+		}
+		freeTxsForCallId(bd->callID); // stop retransmitting the beep INVITE
+		*bd = BeepDialog{};   // release the slot regardless of what claimed the ACK above
+		return;
+	}
+
+	// Nothing owns it -- recorded, not acted on.
+	queueLog("[SIP] unclaimed final response " + std::string(data->getHeader())
+		+ " for callID=" + std::string(data->getCallID()), false);
 }
 
 void RequestsHandler::onInvite(std::shared_ptr<SipMessage> data)

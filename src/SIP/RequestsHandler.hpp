@@ -332,6 +332,14 @@ private:
 	void onRefer(std::shared_ptr<SipMessage> data);   // blind transfer (RFC 3515)
 	void onUpdate(std::shared_ptr<SipMessage> data);  // RFC 3311 mid-dialog UPDATE
 	void onMessage(std::shared_ptr<SipMessage> data); // inbound MESSAGE (RFC 3428): ack 200 OK
+	// Catch-all for any non-2xx final response whose status code has no more
+	// specific handlerKey (see the status-code switch in handle()) — e.g. 403/404/
+	// 481/5xx/6xx. Register-beep dialogs are still the only current claimant
+	// (180/480/486/487 are already handled by their own case labels above this
+	// falls through from); whoever owns the Call-ID must ACK (if the response
+	// really finishes an INVITE transaction) and release its slot rather than let
+	// the response fall off the dispatch table unclaimed.
+	void onFinalFailure(std::shared_ptr<SipMessage> data);
 
 	// ── BLF/presence: SUBSCRIBE/NOTIFY dialog-event package (RFC 6665 + 4235) ────
 	// onSubscribe: Event-package gate (489 on anything but "dialog"), AOR validation

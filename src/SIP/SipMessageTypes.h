@@ -34,6 +34,10 @@ public:
 	static constexpr auto ACCEPTED           = "SIP/2.0 202 Accepted";
 	// RFC 3311 mid-dialog SDP renegotiation without re-INVITE.
 	static constexpr auto UPDATE             = "UPDATE";
+	// Dispatch key (never a wire start line): every non-2xx final response that
+	// has no more specific key above is routed here, so it reaches a handler at
+	// all instead of falling off the table unacknowledged.
+	static constexpr auto FINAL_FAILURE = "final-failure";
 };
 
 #endif
