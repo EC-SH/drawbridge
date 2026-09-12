@@ -431,6 +431,13 @@ private:
 	std::array<BeepDialog, POCKETDIAL_MAX_BEEPS> _beepDialogs;
 	// Find the beep slot owning a Call-ID, or nullptr. Caller holds _mutex.
 	BeepDialog* findBeepByCallID(std::string_view callID);
+	// Claim a final response (180/480/486/487/...) addressed to a register-beep
+	// dialog: ACK it in the same INVITE transaction if still awaiting one (RFC
+	// 3261 §17.1.1.3), then release the slot unconditionally. Returns true if a
+	// beep dialog owned this Call-ID (caller must not process the response
+	// further — falling through to endHandle()'s registrar lookup on the beep's
+	// own "pbx" From mints a stray 404, #178).
+	bool claimBeepFinalResponse(const std::shared_ptr<SipMessage>& data);
 
 	// ── RFC 3261 §17 INVITE client transaction layer ──────────────────────────
 	// One slot per outgoing INVITE fork.  Retransmit interval (Timer A) doubles

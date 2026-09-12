@@ -609,24 +609,35 @@ void RequestsHandler::onCancel(std::shared_ptr<SipMessage> data)
 	endHandle(data->getToNumber(), data);
 }
 
+bool RequestsHandler::claimBeepFinalResponse(const std::shared_ptr<SipMessage>& data)
+{
+	// Register-beep dialogs are server-originated UAC (no Session — tracked in
+	// _beepDialogs by Call-ID). RFC 3261 §17.1.1.3 — the UAC MUST ACK a non-2xx
+	// final response within the INVITE transaction (same branch). The #90 bug
+	// freed the dialog the instant a CANCEL was queued, so a 487 arriving after
+	// found no slot, was never ACKed, and the phone retransmitted it. ACK it,
+	// THEN free — the "complete the teardown before releasing the leg" discipline
+	// (cf. lnp-audit).
+	BeepDialog* bd = findBeepByCallID(data->getCallID());
+	if (!bd)
+	{
+		return false;
+	}
+	if (bd->state == BeepState::AwaitingInviteOk ||
+		bd->state == BeepState::AwaitingCancelDone)
+	{
+		auto ack = buildBeepAck(data);   // same INVITE branch, To-tag from this response
+		if (ack) _outbox.emplace_back(bd->addr, std::move(ack));
+	}
+	freeTxsForCallId(bd->callID); // stop retransmitting the beep INVITE
+	*bd = BeepDialog{};   // INVITE transaction complete — now release the slot
+	return true;
+}
+
 void RequestsHandler::onReqTerminated(std::shared_ptr<SipMessage> data)
 {
-	// Register-beep 487: the phone's final response to a beep INVITE we CANCELled (or
-	// that the phone terminated on its own). RFC 3261 §17.1.1.3 — the UAC MUST ACK a
-	// non-2xx final response within the INVITE transaction (same branch). The #90 bug
-	// freed the dialog the instant the CANCEL was queued, so this 487 found no slot, was
-	// never ACKed, and the phone retransmitted it. ACK it, THEN free — the BEAST's
-	// "complete the teardown before releasing the leg" discipline (cf. lnp-audit).
-	if (BeepDialog* bd = findBeepByCallID(data->getCallID()))
+	if (claimBeepFinalResponse(data))
 	{
-		if (bd->state == BeepState::AwaitingInviteOk ||
-			bd->state == BeepState::AwaitingCancelDone)
-		{
-			auto ack = buildBeepAck(data);   // same INVITE branch, To-tag from the 487
-			if (ack) _outbox.emplace_back(bd->addr, std::move(ack));
-		}
-		freeTxsForCallId(bd->callID); // stop retransmitting the beep INVITE
-		*bd = BeepDialog{};   // INVITE transaction complete — now release the slot
 		return;
 	}
 
@@ -1357,6 +1368,16 @@ void RequestsHandler::onTrying(std::shared_ptr<SipMessage> data)
 
 void RequestsHandler::onRinging(std::shared_ptr<SipMessage> data)
 {
+	// A 180 to our register-beep INVITE is provisional — RFC 3261 never ACKs a
+	// provisional response, and the beep dialog isn't over yet, so there's
+	// nothing to do but recognise it and stop (#178): falling through to
+	// endHandle()'s registrar lookup on the beep's own "pbx" From minted a
+	// stray 404 back at the phone that just rang.
+	if (findBeepByCallID(data->getCallID()))
+	{
+		return;
+	}
+
 	auto session = getSession(data->getCallID());
 	if (session.has_value() && session.value()->isBroadcast())
 	{
@@ -1374,6 +1395,16 @@ void RequestsHandler::onRinging(std::shared_ptr<SipMessage> data)
 
 void RequestsHandler::onBusy(std::shared_ptr<SipMessage> data)
 {
+	// The phone declined our register-beep INVITE with a 486 (#178): ACK it and
+	// free the slot exactly like onReqTerminated()'s 487 path, instead of
+	// falling through to endHandle()'s registrar lookup on the beep's own "pbx"
+	// From, which doesn't exist and used to mint a stray 404 back at the phone
+	// that just answered.
+	if (claimBeepFinalResponse(data))
+	{
+		return;
+	}
+
 	auto session = getSession(data->getCallID());
 	if (session.has_value() && session.value()->isBroadcast())
 	{
@@ -1452,6 +1483,14 @@ void RequestsHandler::onBusy(std::shared_ptr<SipMessage> data)
 
 void RequestsHandler::onUnavailable(std::shared_ptr<SipMessage> data)
 {
+	// The phone answered our register-beep INVITE with a 480 (#178): same
+	// treatment as the 486 path in onBusy() — ACK it and free the slot rather
+	// than fall through to a stray 404.
+	if (claimBeepFinalResponse(data))
+	{
+		return;
+	}
+
 	auto session = getSession(data->getCallID());
 	if (session.has_value() && session.value()->isBroadcast())
 	{

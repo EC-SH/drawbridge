@@ -177,3 +177,59 @@ TEST(BeepTeardown, RetransmittedFinalDoesNotReAck) {
     EXPECT_EQ(f.cap.countMethodTo(f.phone, "ACK"), 1)
         << "exactly one ACK — the slot must free after the first 487 is ACKed";
 }
+
+// Issue #178: a phone declining the auto-answer beep with a 486 fell through onBusy() to
+// endHandle()'s registrar lookup on the beep INVITE's own From ("pbx"), which doesn't
+// exist, and minted a stray 404 back at the phone that had just answered. It must instead
+// be claimed and ACKed like the 487 path.
+TEST(BeepTeardown, BusyToBeepInviteIsAckedNotStray404) {
+    BeepFixture f;
+    auto invite = f.registerAndGetBeepInvite();
+    ASSERT_NE(invite, nullptr);
+
+    f.cap.clear();
+    f.handler.handle(makeFinalForBeep(invite, "SIP/2.0 486 Busy Here", f.phone));
+
+    EXPECT_NE(f.cap.firstMethodTo(f.phone, "ACK"), nullptr)
+        << "a 486 to our beep INVITE must be ACKed (RFC 3261 §17.1.1.3) — #178";
+    EXPECT_EQ(f.cap.countMethodTo(f.phone, "SIP/2.0 404"), 0)
+        << "must not mint a 404 back at the phone that just answered — #178";
+}
+
+// Same as the 486 case, for a phone that answers 480 (temporarily unavailable) instead.
+TEST(BeepTeardown, UnavailableToBeepInviteIsAckedNotStray404) {
+    BeepFixture f;
+    auto invite = f.registerAndGetBeepInvite();
+    ASSERT_NE(invite, nullptr);
+
+    f.cap.clear();
+    f.handler.handle(makeFinalForBeep(invite, "SIP/2.0 480 Temporarily Unavailable", f.phone));
+
+    EXPECT_NE(f.cap.firstMethodTo(f.phone, "ACK"), nullptr)
+        << "a 480 to our beep INVITE must be ACKed (RFC 3261 §17.1.1.3) — #178";
+    EXPECT_EQ(f.cap.countMethodTo(f.phone, "SIP/2.0 404"), 0)
+        << "must not mint a 404 back at the phone that just answered — #178";
+}
+
+// A 180 Ringing before the phone's final answer is provisional: no ACK is ever sent for
+// a provisional response, and the beep dialog must not be disturbed by it — nor should it
+// fall through to the stray-404 registrar path (the other half of #178's title).
+TEST(BeepTeardown, RingingToBeepInviteIsSwallowedWithoutAckOrStray404) {
+    BeepFixture f;
+    auto invite = f.registerAndGetBeepInvite();
+    ASSERT_NE(invite, nullptr);
+
+    f.cap.clear();
+    f.handler.handle(makeFinalForBeep(invite, "SIP/2.0 180 Ringing", f.phone));
+
+    EXPECT_EQ(f.cap.countMethodTo(f.phone, "ACK"), 0)
+        << "a provisional 180 must never be ACKed";
+    EXPECT_EQ(f.cap.countMethodTo(f.phone, "SIP/2.0 404"), 0)
+        << "must not mint a 404 back at the phone — #178";
+
+    // The dialog must still be alive: a following 487 is still claimed and ACKed.
+    f.cap.clear();
+    f.handler.handle(makeFinalForBeep(invite, "SIP/2.0 487 Request Terminated", f.phone));
+    EXPECT_NE(f.cap.firstMethodTo(f.phone, "ACK"), nullptr)
+        << "the beep dialog must survive a preceding 180 and still ACK its real final response";
+}
